@@ -94,7 +94,7 @@ def get_task(task_id: str) -> dict[str, Any]:
 
 
 def claim_task(task_id: str, assignee: str) -> dict[str, Any]:
-    return flow_request("PATCH", f"/api/tasks/{task_id}", {"status": "doing", "assignee": assignee})
+    return flow_request("POST", f"/api/tasks/{task_id}/claim", {"agent_name": assignee})
 
 
 def post_note(task_id: str, note: str, author: str) -> dict[str, Any]:
@@ -110,7 +110,7 @@ def complete_run(run_id: str, exit_code: int) -> dict[str, Any]:
 
 
 def move_to_review(task_id: str) -> dict[str, Any]:
-    return flow_request("PATCH", f"/api/tasks/{task_id}", {"status": "review"})
+    return flow_request("POST", f"/api/tasks/{task_id}/move", {"status": "review"})
 
 
 def create_handoff(

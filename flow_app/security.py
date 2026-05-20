@@ -27,6 +27,7 @@ class Permission(Enum):
     TASKS_EDIT = "tasks:edit"
     TASKS_CLAIM = "tasks:claim"
     TASKS_MOVE = "tasks:move"
+    TASKS_NOTE = "tasks:note"
     TASKS_DONE = "tasks:done"
     TASKS_SET_HUMAN_REQUIRED = "tasks:set_human_required"
     KEY_MANAGE = "key:manage"
@@ -55,6 +56,7 @@ ROLE_PERMISSIONS: dict[ApiKeyRole, set[Permission]] = {
         Permission.TASKS_EDIT,
         Permission.TASKS_CLAIM,
         Permission.TASKS_MOVE,
+        Permission.TASKS_NOTE,
         Permission.TASKS_DONE,
         Permission.TASKS_SET_HUMAN_REQUIRED,
         Permission.KEY_MANAGE,
@@ -81,6 +83,7 @@ ROLE_PERMISSIONS: dict[ApiKeyRole, set[Permission]] = {
         Permission.TASKS_EDIT,
         Permission.TASKS_CLAIM,
         Permission.TASKS_MOVE,
+        Permission.TASKS_NOTE,
         Permission.TASKS_DONE,
         Permission.TASKS_SET_HUMAN_REQUIRED,
         Permission.BOARD_VIEW,
@@ -104,6 +107,7 @@ ROLE_PERMISSIONS: dict[ApiKeyRole, set[Permission]] = {
         Permission.TASKS_READ,
         Permission.TASKS_CLAIM,
         Permission.TASKS_MOVE,
+        Permission.TASKS_NOTE,
         Permission.BOARD_VIEW,
         Permission.AGENT_READ,
         Permission.DISPATCH,
@@ -118,6 +122,7 @@ ROLE_PERMISSIONS: dict[ApiKeyRole, set[Permission]] = {
         Permission.TASKS_READ,
         Permission.TASKS_CLAIM,
         Permission.TASKS_MOVE,
+        Permission.TASKS_NOTE,
         Permission.TASKS_DONE,
         Permission.BOARD_VIEW,
         Permission.AGENT_READ,

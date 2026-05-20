@@ -261,6 +261,58 @@ class TestDispatchStatuses:
             r = c.post("/api/agents", json={"name": "bad-agent", "dispatch_statuses": "invalid"})
             assert r.status_code == 422
 
+    def test_dispatch_without_task_id_uses_dispatch_statuses(self, tmp_path, monkeypatch):
+        def fake_popen(args, **kwargs):
+            return SimpleNamespace(pid=12345)
+
+        monkeypatch.setattr("flow_app.dispatcher.subprocess.Popen", fake_popen)
+        monkeypatch.setattr("flow_app.dispatcher.threading.Thread", _NoopThread)
+
+        with _client(tmp_path) as c:
+            agent = create_agent(c, capabilities="", dispatch_statuses="todo")
+            backlog_task = create_task(c, title="Backlog task", status="backlog", priority=100)
+            todo_task = create_task(c, title="Todo task", status="todo", priority=50)
+            human_required = create_task(
+                c,
+                title="Human todo task",
+                status="todo",
+                priority=100,
+                human_required=True,
+                blocker_reason="Needs human input.",
+            )
+
+            r = c.post(f"/api/agents/{agent['id']}/dispatch")
+            assert r.status_code == 200, r.text
+            assert r.json()["task_id"] == todo_task["id"]
+
+            assert c.get(f"/api/tasks/{backlog_task['id']}").json()["assignee"] is None
+            assert c.get(f"/api/tasks/{human_required['id']}").json()["assignee"] is None
+
+    def test_dispatch_without_task_id_skips_human_required(self, tmp_path, monkeypatch):
+        def fake_popen(args, **kwargs):
+            return SimpleNamespace(pid=12345)
+
+        monkeypatch.setattr("flow_app.dispatcher.subprocess.Popen", fake_popen)
+        monkeypatch.setattr("flow_app.dispatcher.threading.Thread", _NoopThread)
+
+        with _client(tmp_path) as c:
+            agent = create_agent(c, capabilities="", dispatch_statuses="review")
+            human_required = create_task(
+                c,
+                title="Human review task",
+                status="review",
+                priority=100,
+                human_required=True,
+                blocker_reason="Needs human input.",
+            )
+            review_task = create_task(c, title="Review task", status="review", priority=50)
+
+            r = c.post(f"/api/agents/{agent['id']}/dispatch")
+            assert r.status_code == 200, r.text
+            assert r.json()["task_id"] == review_task["id"]
+
+            assert c.get(f"/api/tasks/{human_required['id']}").json()["assignee"] is None
+
 
 # ---------- AgentRun lifecycle ----------
 

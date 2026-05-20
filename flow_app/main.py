@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from .config import FLOW_VERSION, FlowSettings, get_settings
 from .database import Base, build_engine, build_session_factory, default_database_url
-from .dispatcher import DispatchError, complete_run, dispatch_one, heartbeat_run, set_session_factory, stale_recovery
+from .dispatcher import DispatchError, _next_capable_task, complete_run, dispatch_one, heartbeat_run, set_session_factory, stale_recovery
 from .markdown_import import parse_markdown_tasks
 from .mcp import JsonRpcError, error_response, exception_response, handle_mcp_message
 from .models import Task, utcnow
@@ -568,9 +568,12 @@ def create_app(
         agent = get_agent(db, agent_id)
         if agent is None:
             raise HTTPException(status_code=404, detail="Agent not found.")
-        task = _require_task(db, task_id) if task_id else next_task(db)
+        if task_id:
+            task = _require_task(db, task_id)
+        else:
+            task = _next_capable_task(db, agent)
         if task is None:
-            raise HTTPException(status_code=404, detail="No unclaimed task is available.")
+            raise HTTPException(status_code=404, detail="No eligible task found for agent dispatch_statuses.")
         try:
             run = dispatch_one(
                 db,
@@ -962,7 +965,7 @@ def create_app(
         task_id: str,
         payload: NoteRequest,
         db: Session = Depends(get_db),
-        actor: Actor = Depends(require_permission(Permission.TASKS_EDIT)),
+        actor: Actor = Depends(require_permission(Permission.TASKS_NOTE)),
     ):
         task = _require_task(db, task_id)
         author = payload.author or actor.name

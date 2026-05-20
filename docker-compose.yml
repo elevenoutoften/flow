@@ -1,0 +1,22 @@
+services:
+  flow:
+    build: .
+    ports:
+      - "8100:8100"
+    volumes:
+      - flow-data:/data
+    environment:
+      - FLOW_DATABASE_URL=sqlite:////data/flow.sqlite
+      - FLOW_DATA_DIR=/data
+      - FLOW_DEFAULT_PROJECT=default
+      - FLOW_HOST=0.0.0.0
+      - FLOW_PORT=8100
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8100/healthz')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  flow-data:

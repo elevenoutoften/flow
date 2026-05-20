@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+
+# Testing
+.pytest_cache/
+.pytest-tmp/
+htmlcov/
+.coverage
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Data (runtime databases, never commit)
+data/
+*.sqlite
+*.sqlite3
+*.db
+
+# Secrets (never commit)
+.env
+.env.*
+
+# Agent workspace artifacts
+.codex-task-*.md
+.worktrees/
+
+# uv
+uv.lock
+
+# OS
+.DS_Store
+Thumbs.db

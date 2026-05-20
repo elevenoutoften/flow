@@ -1,0 +1,659 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="{{ theme }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Flow</title>
+  <meta name="description" content="Agent-first task board.">
+  <meta name="flow-api-base" content="">
+  <meta name="theme-color" content="#000000">
+  <meta name="color-scheme" content="dark">
+  <link rel="stylesheet" href="/static/flow.css?v={{ asset_version }}">
+  <script src="/static/flow.js?v={{ asset_version }}" defer></script>
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <div>
+        <p class="wordmark">FLOW</p>
+        <h1>Flow</h1>
+      </div>
+      <div class="topbar-actions">
+        <form class="project-filter" method="get">
+          <label>
+            <span>Project</span>
+            <select name="project" onchange="this.form.submit()">
+              <option value="">All projects</option>
+              {% for project in projects %}
+              <option value="{{ project.slug }}" {% if selected_project == project.slug %}selected{% endif %}>{{ project.name }}</option>
+              {% endfor %}
+            </select>
+          </label>
+        </form>
+        <button class="button" type="button" data-open-settings>Settings</button>
+        <button class="button" type="button" data-open-import>Import MD</button>
+        <button class="button" type="button" data-open-ideas>Ideas</button>
+        <button class="button filter-toggle" type="button" data-filter-human-required aria-pressed="false">Human required</button>
+        <button class="button button-ghost hidden" type="button" data-clear-human-filter>Clear filter</button>
+        <button class="button button-primary" type="button" data-open-create>New task</button>
+      </div>
+    </header>
+
+    <main class="board" aria-label="Task board">
+      {% if task_count == 0 %}
+      <section class="empty-board">
+        <p class="eyebrow">No tasks here yet</p>
+        <h2>Start with a project, an import, or a single task.</h2>
+        <div class="action-row">
+          <button class="button" type="button" data-open-settings>Settings</button>
+          <button class="button" type="button" data-open-import>Import Markdown</button>
+          <button class="button button-primary" type="button" data-open-create>New task</button>
+        </div>
+      </section>
+      {% endif %}
+      {% for column in columns %}
+      <section class="column" data-column="{{ column }}">
+        <div class="column-header">
+          <h2>{{ column.replace("_", " ").title() }}</h2>
+          <span class="count" data-column-count>{{ tasks_by_status[column] | length }}</span>
+        </div>
+        <div class="card-list" data-drop-zone data-column="{{ column }}">
+          {% for task in tasks_by_status[column] %}
+          <button
+            class="task-card"
+            type="button"
+            data-task-id="{{ task.id }}"
+            data-task-priority="{{ task.priority }}"
+            data-human-required="{{ 'true' if task.human_required else 'false' }}"
+          >
+            <span class="priority">P{{ task.priority }}</span>
+            {% if task.human_required %}
+            <span class="badge badge-human-required">Human Required</span>
+            {% if task.blocker_reason %}<span class="blocker-reason">{{ task.blocker_reason }}</span>{% endif %}
+            {% endif %}
+            <strong>{{ task.title }}</strong>
+            <span class="meta">{{ task.project }}</span>
+            <span class="meta">{{ task.assignee or "unclaimed" }}</span>
+            {% set dependencies = dependencies_by_task.get(task.id) %}
+            {% if dependencies and (dependencies.parent_tasks or dependencies.child_tasks) %}
+            <span class="dependency-summary" aria-label="Dependency links">
+              {% if dependencies.parent_tasks %}
+              <span class="dependency-group">
+                <span class="dependency-label">Parents</span>
+                {% for linked_task in dependencies.parent_tasks %}
+                <span class="dependency-item">{{ linked_task.title }} / {{ linked_task.status }}</span>
+                {% endfor %}
+              </span>
+              {% endif %}
+              {% if dependencies.child_tasks %}
+              <span class="dependency-group">
+                <span class="dependency-label">Children</span>
+                {% for linked_task in dependencies.child_tasks %}
+                <span class="dependency-item">{{ linked_task.title }} / {{ linked_task.status }}</span>
+                {% endfor %}
+              </span>
+              {% endif %}
+            </span>
+            {% endif %}
+            <span class="updated">{{ task.updated_at.strftime("%Y-%m-%d %H:%M") }}</span>
+          </button>
+          {% endfor %}
+        </div>
+      </section>
+      {% endfor %}
+    </main>
+  </div>
+
+  <aside class="drawer hidden" id="detail-drawer" aria-live="polite">
+    <div class="drawer-panel">
+      <div class="drawer-header">
+        <div>
+          <p class="eyebrow" id="detail-id">Task</p>
+          <h2 id="detail-title">Select a task</h2>
+        </div>
+        <button class="button button-ghost" type="button" data-close-detail>Close</button>
+      </div>
+
+      <form class="detail-form" id="detail-form">
+        <label>
+          <span>Title</span>
+          <input name="title" type="text" required>
+        </label>
+        <div class="form-grid">
+          <label>
+            <span>Status</span>
+            <select name="status">
+              {% for column in columns %}
+              <option value="{{ column }}">{{ column }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>
+            <span>Priority</span>
+            <input name="priority" type="number" min="0" max="1000" step="1">
+          </label>
+          <label>
+            <span>Project</span>
+            <input name="project" type="text" required>
+          </label>
+          <label>
+            <span>Assignee</span>
+            <input name="assignee" type="text">
+          </label>
+        </div>
+        <div class="form-grid">
+          <label class="checkbox-field">
+            <input name="human_required" type="checkbox" value="true" {% if not can_set_human_required %}disabled{% endif %}>
+            <span>Human required</span>
+          </label>
+          <label>
+            <span>Complexity</span>
+            <select name="complexity">
+              <option value="trivial">Trivial</option>
+              <option value="small">Small</option>
+              <option value="medium">Medium</option>
+              <option value="large">Large</option>
+              <option value="epic">Epic</option>
+            </select>
+          </label>
+          <label>
+            <span>Impact</span>
+            <select name="impact">
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+              <option value="critical">Critical</option>
+            </select>
+          </label>
+          <label>
+            <span>Effort</span>
+            <select name="effort">
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+            </select>
+          </label>
+          <label>
+            <span>Risk</span>
+            <select name="risk">
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+            </select>
+          </label>
+        </div>
+        <label>
+          <span>Blocker reason</span>
+          <textarea name="blocker_reason" rows="3" {% if not can_set_human_required %}disabled{% endif %}></textarea>
+        </label>
+        <div class="source-meta hidden" id="detail-source"></div>
+        <label>
+          <span>Description</span>
+          <textarea name="description" rows="5"></textarea>
+        </label>
+        <label>
+          <span>Acceptance criteria</span>
+          <textarea name="acceptance_criteria" rows="5"></textarea>
+        </label>
+        <div class="action-row">
+          <button class="button button-primary" type="submit">Save</button>
+          <button class="button" type="button" data-claim>Claim</button>
+          <button class="button" type="button" data-release>Release</button>
+          <button class="button button-done" type="button" data-done>Done</button>
+        </div>
+      </form>
+
+      <section>
+        <div class="section-heading">
+          <h3>Dependencies</h3>
+        </div>
+        <div class="dependency-detail" id="detail-dependencies">
+          <p class="meta">No dependency links.</p>
+        </div>
+      </section>
+
+      <section class="handoff-section" id="detail-handoff-section">
+        <div class="section-heading">
+          <h3>Handoff</h3>
+        </div>
+        <div class="handoff-detail" id="detail-handoff">
+          <p class="meta">No handoff recorded.</p>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-heading">
+          <h3>Notes</h3>
+        </div>
+        <div class="notes" id="detail-notes"></div>
+        <form class="note-form" id="note-form">
+          <textarea name="note" rows="3" placeholder="Add note" required></textarea>
+          <button class="button" type="submit">Add note</button>
+        </form>
+      </section>
+
+      <section>
+        <div class="section-heading">
+          <h3>API JSON</h3>
+        </div>
+        <pre class="json-panel" id="detail-json">{}</pre>
+      </section>
+    </div>
+  </aside>
+
+  <aside class="drawer hidden" id="create-drawer">
+    <div class="drawer-panel drawer-panel-narrow">
+      <div class="drawer-header">
+        <div>
+          <p class="eyebrow">Create</p>
+          <h2>New task</h2>
+        </div>
+        <button class="button button-ghost" type="button" data-close-create>Close</button>
+      </div>
+      <form class="detail-form" id="create-form">
+        <label>
+          <span>Title</span>
+          <input name="title" type="text" required>
+        </label>
+        <div class="form-grid">
+          <label>
+            <span>Status</span>
+            <select name="status">
+              {% for column in columns %}
+              <option value="{{ column }}" {% if column == "backlog" %}selected{% endif %}>{{ column }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>
+            <span>Priority</span>
+            <input name="priority" type="number" min="0" max="1000" step="1" value="50">
+          </label>
+          <label>
+            <span>Project</span>
+            <input name="project" type="text" value="{{ selected_project or default_project }}" required>
+          </label>
+          <label>
+            <span>Assignee</span>
+            <input name="assignee" type="text">
+          </label>
+          <label>
+            <span>Complexity</span>
+            <select name="complexity">
+              <option value="trivial">Trivial</option>
+              <option value="small" selected>Small</option>
+              <option value="medium">Medium</option>
+              <option value="large">Large</option>
+              <option value="epic">Epic</option>
+            </select>
+          </label>
+          <label>
+            <span>Impact</span>
+            <select name="impact">
+              <option value="low">Low</option>
+              <option value="medium" selected>Medium</option>
+              <option value="high">High</option>
+              <option value="critical">Critical</option>
+            </select>
+          </label>
+          <label>
+            <span>Effort</span>
+            <select name="effort">
+              <option value="low">Low</option>
+              <option value="medium" selected>Medium</option>
+              <option value="high">High</option>
+            </select>
+          </label>
+          <label>
+            <span>Risk</span>
+            <select name="risk">
+              <option value="low" selected>Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+            </select>
+          </label>
+        </div>
+        <label>
+          <span>Description</span>
+          <textarea name="description" rows="5"></textarea>
+        </label>
+        <label>
+          <span>Acceptance criteria</span>
+          <textarea name="acceptance_criteria" rows="5"></textarea>
+        </label>
+        <button class="button button-primary" type="submit">Create</button>
+      </form>
+    </div>
+  </aside>
+
+  <aside class="drawer hidden ideas-drawer" id="ideas-drawer">
+    <div class="drawer-panel">
+      <div class="drawer-header">
+        <div>
+          <p class="eyebrow">Ideas</p>
+          <h2>Intake queue</h2>
+        </div>
+        <button class="button button-ghost" type="button" data-close-ideas>Close</button>
+      </div>
+
+      <div class="section-heading">
+        <h3>List</h3>
+        <label class="checkbox-field">
+          <input id="ideas-archived-toggle" type="checkbox">
+          <span>Archived</span>
+        </label>
+      </div>
+
+      <div class="ideas-layout">
+        <section>
+          <div class="ideas-list" id="ideas-list">
+            <p class="meta">Open Ideas to load intake.</p>
+          </div>
+        </section>
+
+        <section class="idea-detail hidden" id="idea-detail">
+          <div class="section-heading">
+            <h3 id="idea-detail-title">Idea</h3>
+            <span class="badge hidden" id="idea-detail-status">archived</span>
+          </div>
+          <div class="idea-detail-meta" id="idea-detail-meta"></div>
+          <p id="idea-detail-description"></p>
+          <div class="action-row" id="idea-actions">
+            <button class="button" type="button" data-edit-idea>Edit</button>
+            <button class="button" type="button" data-archive-idea>Archive</button>
+            <button class="button" type="button" data-unarchive-idea>Unarchive</button>
+            <button class="button button-primary" type="button" data-toggle-promote-idea>Promote</button>
+          </div>
+        </section>
+
+        <form class="detail-form hidden" id="idea-edit-form">
+          <div class="section-heading">
+            <h3>Edit idea</h3>
+            <button class="button button-ghost" type="button" data-cancel-edit-idea>Cancel</button>
+          </div>
+          <label>
+            <span>Title</span>
+            <input name="title" required maxlength="200">
+          </label>
+          <label>
+            <span>Description</span>
+            <textarea name="description" rows="3"></textarea>
+          </label>
+          <label>
+            <span>Project</span>
+            <input name="project" maxlength="60">
+          </label>
+          <label>
+            <span>Author</span>
+            <input name="author" maxlength="60">
+          </label>
+          <button class="button button-primary" type="submit">Save</button>
+        </form>
+
+        <form class="detail-form hidden" id="idea-promote-form">
+          <label>
+            <span>Task titles</span>
+            <textarea name="titles" rows="5" placeholder="One task title per line" required></textarea>
+          </label>
+          <button class="button button-primary" type="submit">Create tasks</button>
+        </form>
+      </div>
+
+      <form class="detail-form" id="idea-form">
+        <div class="section-heading">
+          <h3>Create idea</h3>
+        </div>
+        <label>
+          <span>Title</span>
+          <input name="title" type="text" required>
+        </label>
+        <label>
+          <span>Description</span>
+          <textarea name="description" rows="4"></textarea>
+        </label>
+        <div class="form-grid">
+          <label>
+            <span>Project</span>
+            <select name="project" required>
+              {% for project in projects %}
+              <option value="{{ project.slug }}" {% if selected_project == project.slug or (not selected_project and project.slug == default_project) %}selected{% endif %}>{{ project.name }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>
+            <span>Author</span>
+            <input name="author" type="text" placeholder="optional">
+          </label>
+        </div>
+        <button class="button button-primary" type="submit">Create idea</button>
+      </form>
+    </div>
+  </aside>
+
+  <aside class="drawer hidden" id="projects-drawer">
+    <div class="drawer-panel drawer-panel-narrow">
+      <div class="drawer-header">
+        <div>
+          <p class="eyebrow">Projects</p>
+          <h2>Repos and defaults</h2>
+        </div>
+        <button class="button button-ghost" type="button" data-close-projects>Close</button>
+      </div>
+
+      <div class="project-list" id="project-list">
+        {% for project in projects %}
+        <article class="project-card" data-project-card="{{ project.slug }}">
+          <div class="project-card__top">
+            <div>
+              <strong>{{ project.name }}</strong>
+              <span class="meta">{{ project.slug }}</span>
+            </div>
+            <button class="button button-ghost" type="button" data-edit-project="{{ project.slug }}">Edit</button>
+          </div>
+          {% if project.repo_url %}<span class="meta">{{ project.repo_url }}</span>{% endif %}
+          {% if project.repo_path %}<span class="meta">{{ project.repo_path }}</span>{% endif %}
+          {% if project.default_branch %}<span class="meta">branch {{ project.default_branch }}</span>{% endif %}
+        </article>
+        {% endfor %}
+      </div>
+
+      <form class="detail-form" id="project-form">
+        <div class="section-heading">
+          <h3 id="project-form-title">Create project</h3>
+          <button class="button button-ghost hidden" id="project-form-cancel" type="button">Cancel edit</button>
+        </div>
+        <label>
+          <span>Slug</span>
+          <input name="slug" type="text" placeholder="{{ default_project }}" required>
+        </label>
+        <p class="meta hidden" id="project-slug-hint">Slug is fixed after creation.</p>
+        <label>
+          <span>Name</span>
+          <input name="name" type="text" placeholder="Default Project">
+        </label>
+        <label>
+          <span>Repo URL</span>
+          <input name="repo_url" type="text" placeholder="https://github.com/...">
+        </label>
+        <label>
+          <span>Repo path</span>
+          <input name="repo_path" type="text" placeholder="/path/to/project">
+        </label>
+        <label>
+          <span>Default branch</span>
+          <input name="default_branch" type="text" value="main">
+        </label>
+        <label>
+          <span>Description</span>
+          <textarea name="description" rows="3"></textarea>
+        </label>
+        <button class="button button-primary" id="project-submit-button" type="submit">Create project</button>
+      </form>
+    </div>
+  </aside>
+
+  {% if can_manage_api_keys %}
+  <aside class="drawer hidden" id="api-keys-drawer">
+    <div class="drawer-panel drawer-panel-narrow">
+      <div class="drawer-header">
+        <div>
+          <p class="eyebrow">Agents</p>
+          <h2>API keys</h2>
+        </div>
+        <button class="button button-ghost" type="button" data-close-api-keys>Close</button>
+      </div>
+
+      <div class="generated-key hidden" id="generated-api-key">
+        <label>
+          <span>Shown once</span>
+          <div class="key-secret">
+            <input id="generated-api-key-value" type="text" readonly>
+            <button class="button" type="button" data-copy-api-key>Copy</button>
+          </div>
+        </label>
+      </div>
+
+      <div class="api-key-list" id="api-key-list">
+        {% for api_key in api_keys %}
+        <article class="api-key-card{% if api_key.revoked_at %} is-revoked{% endif %}">
+          <div class="api-key-card__top">
+            <div>
+              <strong>{{ api_key.name }}</strong>
+              <span class="badge badge-role-{{ api_key.role }}">{{ api_key.role }}</span>
+              <span class="meta">{{ api_key.key_prefix }}...</span>
+            </div>
+            {% if api_key.revoked_at %}
+            <span class="badge">revoked</span>
+            {% else %}
+            <button class="button button-ghost" type="button" data-revoke-api-key="{{ api_key.id }}">Revoke</button>
+            {% endif %}
+          </div>
+          {% if api_key.description %}<p>{{ api_key.description }}</p>{% endif %}
+          <span class="meta">Created {{ api_key.created_at.strftime("%Y-%m-%d %H:%M") }}</span>
+        </article>
+        {% endfor %}
+      </div>
+
+      <form class="detail-form" id="api-key-form">
+        <label>
+          <span>Name</span>
+          <input name="name" type="text" placeholder="codex-worker-1" required>
+        </label>
+        <label>
+          <span>Role</span>
+          <select name="role">
+            <option value="read_only">Read only</option>
+            <option value="implementer">Implementer</option>
+            <option value="reviewer">Reviewer</option>
+            <option value="architect">Architect</option>
+            <option value="admin">Admin</option>
+          </select>
+        </label>
+        <label>
+          <span>Description</span>
+          <textarea name="description" rows="3"></textarea>
+        </label>
+        <button class="button button-primary" type="submit">Generate key</button>
+      </form>
+    </div>
+  </aside>
+  {% endif %}
+
+  <aside class="drawer hidden" id="import-drawer">
+    <div class="drawer-panel">
+      <div class="drawer-header">
+        <div>
+          <p class="eyebrow">Import</p>
+          <h2>Markdown task intake</h2>
+        </div>
+        <button class="button button-ghost" type="button" data-close-import>Close</button>
+      </div>
+
+      <form class="detail-form" id="import-form">
+        <div class="form-grid">
+          <label>
+            <span>Default project</span>
+            <input name="default_project" type="text" value="{{ selected_project or default_project }}" required>
+          </label>
+          <label>
+            <span>Default status</span>
+            <select name="default_status">
+              {% for column in columns %}
+              <option value="{{ column }}" {% if column == "backlog" %}selected{% endif %}>{{ column }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>
+            <span>Default priority</span>
+            <input name="default_priority" type="number" min="0" max="1000" value="50">
+          </label>
+          <label>
+            <span>Source filename</span>
+            <input name="source_filename" type="text" placeholder="tasks.md">
+          </label>
+        </div>
+        <label>
+          <span>Markdown file</span>
+          <input class="field-file" id="import-file" type="file" accept=".md,text/markdown,text/plain">
+        </label>
+        <label>
+          <span>Markdown</span>
+          <textarea name="markdown" rows="14" placeholder="- [ ] Add project API priority: 80&#10;  acceptance: Tests pass" required></textarea>
+        </label>
+        <div class="action-row">
+          <button class="button" type="submit">Preview import</button>
+          <button class="button button-primary hidden" type="button" id="commit-import">Create selected tasks</button>
+        </div>
+      </form>
+
+      <div class="import-preview hidden" id="import-preview"></div>
+    </div>
+  </aside>
+
+  <aside class="drawer hidden" id="settings-drawer">
+    <div class="drawer-panel drawer-panel-narrow">
+      <div class="drawer-header">
+        <div>
+          <h2>Settings</h2>
+        </div>
+        <button class="button button-ghost" type="button" data-close-settings>Close</button>
+      </div>
+
+      <div class="settings-layout">
+        <section>
+          <div class="section-heading">
+            <h3>Theme</h3>
+          </div>
+          <form class="theme-form" method="get" aria-label="Theme">
+            <label>
+              <span>Appearance</span>
+              <select name="theme" data-theme-select>
+                {% for t in available_themes %}
+                <option value="{{ t.value }}" {% if t.value == theme %}selected{% endif %}>{{ t.label }}</option>
+                {% endfor %}
+              </select>
+            </label>
+          </form>
+        </section>
+
+        <section>
+          <div class="section-heading">
+            <h3>Projects</h3>
+          </div>
+          <button class="button" type="button" data-open-projects>Manage projects</button>
+        </section>
+
+        {% if can_manage_api_keys %}
+        <section>
+          <div class="section-heading">
+            <h3>API Keys</h3>
+          </div>
+          <button class="button" type="button" data-open-api-keys>Manage API keys</button>
+        </section>
+        {% endif %}
+      </div>
+    </div>
+  </aside>
+
+  <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+</body>
+</html>

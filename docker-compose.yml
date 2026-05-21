@@ -21,5 +21,18 @@ services:
       retries: 3
       start_period: 10s
 
+  flow-runner:
+    build: .
+    volumes:
+      - flow-data:/data
+    environment:
+      - FLOW_DATABASE_URL=sqlite:////data/flow.sqlite
+      - FLOW_DATA_DIR=/data
+      - FLOW_RUNNER_PROFILES=hermes-delegator
+      - FLOW_RUNNER_INTERVAL=30
+      - FLOW_BASE_URL=http://flow:8100
+      - FLOW_API_KEY=change-me-to-a-real-key
+    command: ["python", "-m", "flow_app.runner"]
+
 volumes:
   flow-data:

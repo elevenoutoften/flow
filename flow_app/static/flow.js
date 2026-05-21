@@ -25,14 +25,13 @@
   const projectsDrawer = document.getElementById("projects-drawer");
   const apiKeysDrawer = document.getElementById("api-keys-drawer");
   const importDrawer = document.getElementById("import-drawer");
-  const ideasDrawer = document.getElementById("ideas-drawer");
+  const ideasWorkspace = document.getElementById("ideas-workspace");
   const settingsDrawer = document.getElementById("settings-drawer");
   const detailForm = document.getElementById("detail-form");
   const createForm = document.getElementById("create-form");
   const projectForm = document.getElementById("project-form");
   const apiKeyForm = document.getElementById("api-key-form");
   const importForm = document.getElementById("import-form");
-  const ideaForm = document.getElementById("idea-form");
   const ideaEditForm = document.getElementById("idea-edit-form");
   const ideaPromoteForm = document.getElementById("idea-promote-form");
   const noteForm = document.getElementById("note-form");
@@ -53,7 +52,11 @@
   const importPreview = document.getElementById("import-preview");
   const importFile = document.getElementById("import-file");
   const commitImportButton = document.getElementById("commit-import");
+  const projectSelect = document.getElementById("project-select");
   const ideasList = document.getElementById("ideas-list");
+  const ideasWorkspaceTitle = document.getElementById("ideas-workspace-title");
+  const ideasQuickAddInput = document.getElementById("ideas-quick-add-input");
+  const ideasQuickAddButton = document.getElementById("ideas-quick-add-btn");
   const ideasArchivedToggle = document.getElementById("ideas-archived-toggle");
   const ideaDetail = document.getElementById("idea-detail");
   const ideaDetailTitle = document.getElementById("idea-detail-title");
@@ -64,14 +67,12 @@
   const clearHumanFilterButton = document.querySelector("[data-clear-human-filter]");
 
   document.addEventListener("click", handleClick);
+  document.addEventListener("keydown", handleKeydown);
   detailForm.addEventListener("submit", handleDetailSave);
   createForm.addEventListener("submit", handleCreate);
   projectForm.addEventListener("submit", handleProjectSubmit);
   if (apiKeyForm) {
     apiKeyForm.addEventListener("submit", handleApiKeyCreate);
-  }
-  if (ideaForm) {
-    ideaForm.addEventListener("submit", handleIdeaCreate);
   }
   if (ideaEditForm) {
     ideaEditForm.addEventListener("submit", handleIdeaEdit);
@@ -81,6 +82,17 @@
   }
   if (ideasArchivedToggle) {
     ideasArchivedToggle.addEventListener("change", handleIdeasArchiveFilter);
+  }
+  if (ideasQuickAddButton) {
+    ideasQuickAddButton.addEventListener("click", handleIdeasQuickAdd);
+  }
+  if (ideasQuickAddInput) {
+    ideasQuickAddInput.addEventListener("keydown", function (event) {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        handleIdeasQuickAdd();
+      }
+    });
   }
   importForm.addEventListener("submit", handleImportPreview);
   noteForm.addEventListener("submit", handleNote);
@@ -206,7 +218,7 @@
     }
 
     if (event.target.closest("[data-close-ideas]")) {
-      ideasDrawer.classList.add("hidden");
+      closeIdeas();
       return;
     }
 
@@ -258,6 +270,12 @@
 
     if (event.target.closest("[data-done]")) {
       completeTask();
+    }
+  }
+
+  function handleKeydown(event) {
+    if (event.key === "Escape" && ideasWorkspace && !ideasWorkspace.classList.contains("hidden")) {
+      closeIdeas();
     }
   }
 
@@ -556,8 +574,17 @@
   }
 
   async function openIdeas() {
-    ideasDrawer.classList.remove("hidden");
+    ideasWorkspace.classList.remove("hidden");
     await loadIdeas();
+    if (ideasQuickAddInput) {
+      ideasQuickAddInput.focus();
+    }
+  }
+
+  function closeIdeas() {
+    if (ideasWorkspace) {
+      ideasWorkspace.classList.add("hidden");
+    }
   }
 
   async function loadIdeas() {
@@ -565,7 +592,16 @@
       return;
     }
     try {
-      const query = state.showArchivedIdeas ? "?archived=true" : "";
+      const selectedProject = getSelectedProject();
+      const params = new URLSearchParams();
+      if (state.showArchivedIdeas) {
+        params.set("archived", "true");
+      }
+      if (selectedProject) {
+        params.set("project", selectedProject);
+      }
+      updateIdeasWorkspaceTitle(selectedProject);
+      const query = params.toString() ? "?" + params.toString() : "";
       state.ideas = await requestJson("/api/ideas" + query);
       renderIdeas(state.ideas);
       if (state.currentIdea) {
@@ -580,6 +616,17 @@
     } catch (error) {
       showToast(error.message, "error");
     }
+  }
+
+  function getSelectedProject() {
+    return projectSelect ? projectSelect.value.trim() : "";
+  }
+
+  function updateIdeasWorkspaceTitle(projectSlug) {
+    if (!ideasWorkspaceTitle) {
+      return;
+    }
+    ideasWorkspaceTitle.textContent = projectSlug ? "Ideas for " + projectSlug : "Ideas across projects";
   }
 
   function renderIdeas(ideas) {
@@ -744,20 +791,32 @@
     }
   }
 
-  async function handleIdeaCreate(event) {
-    event.preventDefault();
+  async function handleIdeasQuickAdd() {
+    if (!ideasQuickAddInput) {
+      return;
+    }
+    const title = ideasQuickAddInput.value.trim();
+    if (!title) {
+      ideasQuickAddInput.focus();
+      return;
+    }
     try {
-      const payload = formPayload(ideaForm);
-      payload.author = payload.author || null;
+      const payload = { title: title };
+      const selectedProject = getSelectedProject();
+      if (selectedProject) {
+        payload.project = selectedProject;
+      }
       const idea = await requestJson("/api/ideas", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      ideaForm.reset();
+      ideasQuickAddInput.value = "";
       state.currentIdea = idea;
       state.showArchivedIdeas = false;
-      ideasArchivedToggle.checked = false;
+      if (ideasArchivedToggle) {
+        ideasArchivedToggle.checked = false;
+      }
       showToast("Created " + idea.id + ".");
       await loadIdeas();
       renderIdeaDetail(idea);

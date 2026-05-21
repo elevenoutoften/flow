@@ -1071,8 +1071,10 @@ def create_app(
     def api_create_idea(
         payload: IdeaCreate,
         db: Session = Depends(get_db),
-        _actor: Actor = Depends(require_permission(Permission.TASKS_CREATE)),
+        actor: Actor = Depends(require_permission(Permission.TASKS_CREATE)),
     ):
+        if not payload.author and actor.name:
+            payload.author = actor.name
         idea = create_idea(db, payload)
         _commit(db)
         return serialize_idea(idea, db)

@@ -81,6 +81,62 @@ def test_list_ideas_filters_project(client):
     assert filtered[0]["title"] == "Idea B"
 
 
+def test_ideas_filtered_by_project(client_with_admin):
+    client_with_admin.post("/api/ideas", json={"title": "Alpha idea", "project": "alpha"})
+    client_with_admin.post("/api/ideas", json={"title": "Beta idea", "project": "beta"})
+
+    response = client_with_admin.get("/api/ideas?project=alpha")
+
+    assert response.status_code == 200
+    ideas = response.json()
+    assert [idea["project"] for idea in ideas] == ["alpha"]
+    assert [idea["title"] for idea in ideas] == ["Alpha idea"]
+
+
+def test_quick_add_idea_with_project(client_with_admin):
+    response = client_with_admin.post("/api/ideas", json={"title": "Quick alpha", "project": "alpha"})
+
+    assert response.status_code == 201
+    idea = response.json()
+    assert idea["title"] == "Quick alpha"
+    assert idea["project"] == "alpha"
+
+
+def test_quick_add_idea_without_project_uses_default(client_with_admin):
+    response = client_with_admin.post("/api/ideas", json={"title": "Quick default"})
+
+    assert response.status_code == 201
+    idea = response.json()
+    assert idea["project"] == "default"
+
+
+def test_idea_author_auto_populated_from_session(client_with_admin):
+    response = client_with_admin.post("/api/ideas", json={"title": "Session author", "project": "default"})
+
+    assert response.status_code == 201
+    assert response.json()["author"] == "alice"
+
+
+def test_idea_author_preserved_when_explicit(client_with_admin):
+    response = client_with_admin.post(
+        "/api/ideas",
+        json={"title": "Explicit author", "project": "default", "author": "codex"},
+    )
+
+    assert response.status_code == 201
+    assert response.json()["author"] == "codex"
+
+
+def test_ideas_all_projects_unfiltered(client_with_admin):
+    client_with_admin.post("/api/ideas", json={"title": "Alpha idea", "project": "alpha"})
+    client_with_admin.post("/api/ideas", json={"title": "Beta idea", "project": "beta"})
+
+    response = client_with_admin.get("/api/ideas")
+
+    assert response.status_code == 200
+    assert {idea["project"] for idea in response.json()} == {"alpha", "beta"}
+
+
 def test_idea_not_found(client):
     assert client.get("/api/ideas/idea_999999").status_code == 404
     assert client.patch("/api/ideas/idea_999999", json={"title": "x"}).status_code == 404

@@ -22,7 +22,7 @@
         <form class="project-filter" method="get">
           <label>
             <span>Project</span>
-            <select name="project" onchange="this.form.submit()">
+            <select id="project-select" name="project" onchange="this.form.submit()">
               <option value="">All projects</option>
               {% for project in projects %}
               <option value="{{ project.slug }}" {% if selected_project == project.slug %}selected{% endif %}>{{ project.name }}</option>
@@ -325,26 +325,32 @@
     </div>
   </aside>
 
-  <aside class="drawer hidden ideas-drawer" id="ideas-drawer">
-    <div class="drawer-panel">
-      <div class="drawer-header">
+  <div class="ideas-workspace hidden" id="ideas-workspace" aria-live="polite">
+    <div class="ideas-workspace-panel">
+      <div class="ideas-workspace-header">
         <div>
           <p class="eyebrow">Ideas</p>
-          <h2>Intake queue</h2>
+          <h2 id="ideas-workspace-title">Intake queue</h2>
         </div>
-        <button class="button button-ghost" type="button" data-close-ideas>Close</button>
+        <div class="ideas-workspace-actions">
+          <label class="checkbox-field">
+            <input id="ideas-archived-toggle" type="checkbox">
+            <span>Archived</span>
+          </label>
+          <button class="button button-ghost" type="button" data-close-ideas>Close</button>
+        </div>
       </div>
 
-      <div class="section-heading">
-        <h3>List</h3>
-        <label class="checkbox-field">
-          <input id="ideas-archived-toggle" type="checkbox">
-          <span>Archived</span>
-        </label>
+      <div class="ideas-quick-add">
+        <input type="text" id="ideas-quick-add-input" placeholder="Quick add - press Enter to create" maxlength="200">
+        <button class="button button-primary" id="ideas-quick-add-btn" type="button">Add</button>
       </div>
 
-      <div class="ideas-layout">
+      <div class="ideas-workspace-body">
         <section>
+          <div class="section-heading">
+            <h3>List</h3>
+          </div>
           <div class="ideas-list" id="ideas-list">
             <p class="meta">Open Ideas to load intake.</p>
           </div>
@@ -397,37 +403,8 @@
           <button class="button button-primary" type="submit">Create tasks</button>
         </form>
       </div>
-
-      <form class="detail-form" id="idea-form">
-        <div class="section-heading">
-          <h3>Create idea</h3>
-        </div>
-        <label>
-          <span>Title</span>
-          <input name="title" type="text" required>
-        </label>
-        <label>
-          <span>Description</span>
-          <textarea name="description" rows="4"></textarea>
-        </label>
-        <div class="form-grid">
-          <label>
-            <span>Project</span>
-            <select name="project" required>
-              {% for project in projects %}
-              <option value="{{ project.slug }}" {% if selected_project == project.slug or (not selected_project and project.slug == default_project) %}selected{% endif %}>{{ project.name }}</option>
-              {% endfor %}
-            </select>
-          </label>
-          <label>
-            <span>Author</span>
-            <input name="author" type="text" placeholder="optional">
-          </label>
-        </div>
-        <button class="button button-primary" type="submit">Create idea</button>
-      </form>
     </div>
-  </aside>
+  </div>
 
   <aside class="drawer hidden" id="projects-drawer">
     <div class="drawer-panel drawer-panel-narrow">

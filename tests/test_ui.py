@@ -113,11 +113,11 @@ def test_board_has_qualification_fields_in_create_form(client):
     assert 'name="risk"' in html
 
 
-def test_board_has_ideas_button_and_drawer(client):
+def test_board_has_ideas_button_and_workspace(client):
     response = client.get("/")
     html = response.text
     assert "data-open-ideas" in html
-    assert "ideas-drawer" in html
+    assert 'id="ideas-workspace"' in html
     assert 'id="ideas-list"' in html
 
 
@@ -138,18 +138,45 @@ def test_board_includes_settings_drawer(client):
     assert "Manage API keys" in html
 
 
-def test_ideas_create_form_in_drawer(client):
+def test_ideas_quick_add_in_workspace(client):
     response = client.get("/")
     html = response.text
-    assert 'id="idea-form"' in html or 'name="idea-title"' in html or 'name="idea_title"' in html
+    assert 'id="ideas-quick-add-input"' in html
+    assert 'id="ideas-quick-add-btn"' in html
 
 
-def test_idea_edit_form_in_ideas_drawer(client):
-    """Idea edit form is present in the ideas drawer."""
+def test_idea_edit_form_in_ideas_workspace(client):
+    """Idea edit form is present in the ideas workspace."""
     html = client.get("/").text
     assert 'id="idea-edit-form"' in html
     assert "data-edit-idea" in html
     assert "data-cancel-edit-idea" in html
+
+
+def test_ideas_workspace_project_scoping_markup(client):
+    """Quick-add input and project select are present in the ideas workspace."""
+    html = client.get("/").text
+    assert 'id="ideas-workspace"' in html
+    assert 'id="ideas-quick-add-input"' in html
+    assert 'id="project-select"' in html
+    assert 'id="idea-form"' not in html
+
+
+def test_ideas_quick_add_uses_selected_project(client_with_admin):
+    """Simulating the quick-add flow: POST /api/ideas with project from select."""
+    client_with_admin.post("/api/ideas", json={"title": "Alpha idea", "project": "alpha"})
+    client_with_admin.post("/api/ideas", json={"title": "Beta idea", "project": "beta"})
+
+    response = client_with_admin.post("/api/ideas", json={"title": "Quick alpha", "project": "alpha"})
+    assert response.status_code == 201
+    idea = response.json()
+    assert idea["project"] == "alpha"
+    assert idea["author"] == "alice"
+
+    filtered = client_with_admin.get("/api/ideas?project=alpha")
+    assert filtered.status_code == 200
+    alpha_ideas = [item for item in filtered.json() if item["project"] == "alpha"]
+    assert len(alpha_ideas) == 2
 
 
 def test_board_includes_data_theme(html):

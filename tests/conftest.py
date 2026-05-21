@@ -27,6 +27,16 @@ def client(tmp_path):
 
 
 @pytest.fixture()
+def client_with_admin(tmp_path):
+    db_url = f"sqlite:///{tmp_path / 'flow-admin.sqlite'}"
+    app = create_app(db_url, trusted_headers=True, session_secret="test-secret-for-testing")
+    with TestClient(app) as test_client:
+        test_client.headers.update({"X-Axis-Admin": "1", "X-Axis-User": "alice"})
+        test_client.get("/")
+        yield test_client
+
+
+@pytest.fixture()
 def no_auth_client(tmp_path):
     db_url = f"sqlite:///{tmp_path / 'flow.sqlite'}"
     app = create_app(db_url)

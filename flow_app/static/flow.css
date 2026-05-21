@@ -501,6 +501,55 @@ body.is-human-filtered .task-card[data-human-required="false"] {
   width: min(100vw, 34rem);
 }
 
+.ideas-workspace {
+  position: fixed;
+  inset: 0;
+  z-index: 25;
+  overflow-y: auto;
+  background: var(--drawer-bg);
+}
+
+.ideas-workspace-panel {
+  min-height: 100vh;
+  padding: var(--space-4);
+}
+
+.ideas-workspace-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-3);
+  padding-bottom: var(--space-3);
+  margin-bottom: var(--space-3);
+  border-bottom: 1px solid var(--line);
+  background: var(--drawer-bg);
+}
+
+.ideas-workspace-actions,
+.ideas-quick-add {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.ideas-quick-add {
+  margin-bottom: var(--space-4);
+}
+
+.ideas-quick-add input {
+  flex: 1;
+  min-width: 12rem;
+}
+
+.ideas-workspace-body {
+  display: grid;
+  grid-template-columns: minmax(18rem, 0.75fr) minmax(0, 1fr);
+  gap: var(--space-4);
+}
+
 .drawer-header,
 .section-heading {
   justify-content: space-between;
@@ -564,13 +613,6 @@ body.is-human-filtered .task-card[data-human-required="false"] {
 .project-card.is-active {
   border-color: var(--line-strong);
   background: var(--panel-highlight);
-}
-
-.ideas-layout {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(18rem, 0.8fr);
-  gap: var(--space-3);
-  margin-bottom: var(--space-4);
 }
 
 .idea-project-group {
@@ -942,7 +984,14 @@ button:focus-visible {
     grid-template-columns: 1fr;
   }
 
-  .ideas-layout {
+  .ideas-workspace-header,
+  .ideas-workspace-actions,
+  .ideas-quick-add {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .ideas-workspace-body {
     grid-template-columns: 1fr;
   }
 

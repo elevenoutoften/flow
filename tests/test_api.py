@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from unittest.mock import patch
+import hashlib
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from flow_app.config import FLOW_VERSION
 from flow_app.main import create_app
 from flow_app.schemas import ApiKeyRole
 from flow_app.security import SESSION_COOKIE_NAME, Actor, Permission, ROLE_PERMISSIONS, sign_session
@@ -22,6 +25,16 @@ def create_task(client, **overrides):
     response = client.post("/api/tasks", json=payload)
     assert response.status_code == 201, response.text
     return response.json()
+
+
+def test_flow_version_is_static_content_hash():
+    static_dir = Path(__file__).resolve().parent.parent / "flow_app" / "static"
+    digest = hashlib.sha256()
+    for path in sorted(static_dir.rglob("*")):
+        if path.is_file():
+            digest.update(path.read_bytes())
+
+    assert FLOW_VERSION == digest.hexdigest()[:8]
 
 
 def test_create_list_and_patch_task(client):
@@ -272,6 +285,41 @@ class TestTrustedHeaderGating:
         assert board_response.status_code == 200
         assert SESSION_COOKIE_NAME in board_response.cookies
         assert api_response.status_code == 200
+
+    def test_board_reissues_cookie_for_session_cookie_actor(self, tmp_path):
+        app = create_app(
+            f"sqlite:///{tmp_path / 'refresh-session.sqlite'}",
+            trusted_headers=True,
+            session_secret="test-secret-for-testing",
+        )
+        with TestClient(app) as test_client:
+            initial_response = test_client.get("/", headers={"X-Axis-Admin": "1", "X-Axis-User": "alice"})
+            refreshed_response = test_client.get("/")
+
+        assert initial_response.status_code == 200
+        assert refreshed_response.status_code == 200
+        assert SESSION_COOKIE_NAME in test_client.cookies
+        assert test_client.cookies[SESSION_COOKIE_NAME] != ""
+        assert SESSION_COOKIE_NAME in refreshed_response.cookies
+        assert refreshed_response.cookies[SESSION_COOKIE_NAME] != ""
+        assert "set-cookie" in refreshed_response.headers
+
+    def test_healthz_config_reports_auth_settings(self, tmp_path):
+        app = create_app(
+            f"sqlite:///{tmp_path / 'healthz-config.sqlite'}",
+            trusted_headers=True,
+            session_secret="test-secret-for-testing",
+            session_cookie_secure=True,
+        )
+        with TestClient(app) as test_client:
+            response = test_client.get("/healthz/config")
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "trusted_headers": True,
+            "session_auth_enabled": True,
+            "session_cookie_secure": True,
+        }
 
     def test_session_cookie_not_issued_when_trusted_headers_disabled(self, tmp_path):
         app = create_app(

@@ -1,11 +1,24 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import os
 from pathlib import Path
 
 
-FLOW_VERSION = "0.1.0"
+STATIC_DIR = Path(__file__).parent / "static"
+
+
+def _compute_asset_version() -> str:
+    """Content hash of static files for cache busting."""
+    digest = hashlib.sha256()
+    for path in sorted(STATIC_DIR.rglob("*")):
+        if path.is_file():
+            digest.update(path.read_bytes())
+    return digest.hexdigest()[:8]
+
+
+FLOW_VERSION = _compute_asset_version()
 
 
 def _env(name: str, default: str) -> str:

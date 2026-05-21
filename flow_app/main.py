@@ -222,6 +222,15 @@ def create_app(
             return JSONResponse({"ok": False, "database": False}, status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
         return {"ok": True, "database": True}
 
+    @app.get("/healthz/config")
+    def healthz_config(request: Request):
+        settings = request.app.state.settings
+        return {
+            "trusted_headers": settings.trusted_headers,
+            "session_auth_enabled": bool(settings.session_secret),
+            "session_cookie_secure": settings.session_cookie_secure,
+        }
+
     @app.post("/mcp")
     async def mcp(
         request: Request,
@@ -313,7 +322,7 @@ def create_app(
         )
         if (
             actor is not None
-            and actor.source in {"admin_header", "browser"}
+            and actor.source in {"admin_header", "browser", "session_cookie"}
             and request.app.state.settings.session_secret
         ):
             response.set_cookie(

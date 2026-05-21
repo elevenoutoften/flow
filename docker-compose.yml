@@ -11,6 +11,9 @@ services:
       - FLOW_DEFAULT_PROJECT=default
       - FLOW_HOST=0.0.0.0
       - FLOW_PORT=8100
+      - FLOW_TRUSTED_HEADERS=true
+      - FLOW_SESSION_SECRET=change-me-generate-with-python-secrets-token-urlsafe
+      - FLOW_SESSION_COOKIE_SECURE=true
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8100/healthz')"]
       interval: 30s

@@ -20,7 +20,7 @@ def _reset_settings():
 @pytest.fixture()
 def client(tmp_path):
     db_url = f"sqlite:///{tmp_path / 'flow.sqlite'}"
-    app = create_app(db_url, trusted_headers=True)
+    app = create_app(db_url, trusted_headers=True, session_secret="test-secret-for-testing")
     with TestClient(app) as test_client:
         test_client.headers.update(ADMIN_HEADERS)
         yield test_client
@@ -37,7 +37,7 @@ def no_auth_client(tmp_path):
 @pytest.fixture()
 def shared_clients(tmp_path):
     db_url = f"sqlite:///{tmp_path / 'flow.sqlite'}"
-    app = create_app(db_url, trusted_headers=True)
+    app = create_app(db_url, trusted_headers=True, session_secret="test-secret-for-testing")
     auth = TestClient(app, raise_server_exceptions=False)
     auth.headers.update(ADMIN_HEADERS)
     unauth = TestClient(app, raise_server_exceptions=False)

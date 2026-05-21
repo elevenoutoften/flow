@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 from flow_app.main import create_app
 from flow_app.schemas import ApiKeyRole
-from flow_app.security import Permission, ROLE_PERMISSIONS
+from flow_app.security import SESSION_COOKIE_NAME, Actor, Permission, ROLE_PERMISSIONS, sign_session
 
 
 def create_task(client, **overrides):
@@ -210,6 +210,193 @@ class TestTrustedHeaderGating:
 
         assert response.status_code == 200
         assert "text/html" in response.headers["content-type"]
+
+    def test_session_cookie_not_issued_without_explicit_secret(self, tmp_path):
+        db_url = f"sqlite:///{tmp_path / 'no-secret.sqlite'}"
+        app = create_app(db_url, trusted_headers=True)
+        with TestClient(app) as test_client:
+            response = test_client.get("/", headers={"X-Axis-Admin": "1", "X-Axis-User": "alice"})
+
+        assert response.status_code == 200
+        assert "set-cookie" not in response.headers
+
+        secret_app = create_app(
+            f"sqlite:///{tmp_path / 'explicit-secret.sqlite'}",
+            trusted_headers=True,
+            session_secret="test-secret-for-testing",
+        )
+        with TestClient(secret_app) as secret_client:
+            cookie_response = secret_client.get("/", headers={"X-Axis-Admin": "1", "X-Axis-User": "alice"})
+            valid_cookie = cookie_response.cookies[SESSION_COOKIE_NAME]
+
+        disabled_session_app = create_app(db_url, trusted_headers=False)
+        with TestClient(disabled_session_app) as disabled_session_client:
+            forged_response = disabled_session_client.get(
+                "/api/tasks",
+                headers={"Cookie": f"{SESSION_COOKIE_NAME}={valid_cookie}"},
+            )
+
+        assert forged_response.status_code == 401
+
+    def test_session_cookie_with_wrong_secret_rejected(self, tmp_path):
+        app = create_app(
+            f"sqlite:///{tmp_path / 'wrong-secret.sqlite'}",
+            trusted_headers=False,
+            session_secret="correct-secret",
+        )
+        forged_cookie = sign_session(Actor(name="alice", role=ApiKeyRole.admin, source="admin_header"), "wrong-secret")
+        with TestClient(app) as test_client:
+            response = test_client.get("/api/tasks", headers={"Cookie": f"{SESSION_COOKIE_NAME}={forged_cookie}"})
+
+        assert response.status_code == 401
+
+    def test_default_sqlite_url_secret_rejected(self, tmp_path):
+        db_url = f"sqlite:///{tmp_path / 'default-url.sqlite'}"
+        app = create_app(db_url, trusted_headers=False)
+        forged_cookie = sign_session(Actor(name="alice", role=ApiKeyRole.admin, source="admin_header"), db_url)
+        with TestClient(app) as test_client:
+            response = test_client.get("/api/tasks", headers={"Cookie": f"{SESSION_COOKIE_NAME}={forged_cookie}"})
+
+        assert response.status_code == 401
+
+    def test_session_cookie_works_with_explicit_secret(self, tmp_path):
+        app = create_app(
+            f"sqlite:///{tmp_path / 'valid-session.sqlite'}",
+            trusted_headers=True,
+            session_secret="test-secret-for-testing",
+        )
+        with TestClient(app) as test_client:
+            board_response = test_client.get("/", headers={"X-Axis-Admin": "1", "X-Axis-User": "alice"})
+            api_response = test_client.get("/api/tasks")
+
+        assert board_response.status_code == 200
+        assert SESSION_COOKIE_NAME in board_response.cookies
+        assert api_response.status_code == 200
+
+    def test_session_cookie_not_issued_when_trusted_headers_disabled(self, tmp_path):
+        app = create_app(
+            f"sqlite:///{tmp_path / 'trusted-disabled-session.sqlite'}",
+            trusted_headers=False,
+            session_secret="test-secret-for-testing",
+        )
+        with TestClient(app) as test_client:
+            response = test_client.get("/", headers={"X-Axis-Admin": "1", "X-Axis-User": "alice"})
+
+        assert response.status_code == 200
+        assert "set-cookie" not in response.headers
+
+    def test_session_cookie_secure_flag_is_configurable(self, tmp_path):
+        app = create_app(
+            f"sqlite:///{tmp_path / 'secure-session.sqlite'}",
+            trusted_headers=True,
+            session_secret="test-secret-for-testing",
+            session_cookie_secure=True,
+        )
+        with TestClient(app) as test_client:
+            response = test_client.get("/", headers={"X-Axis-Admin": "1", "X-Axis-User": "alice"})
+
+        assert response.status_code == 200
+        assert "secure" in response.headers["set-cookie"].lower()
+
+    def test_valid_session_cookie_before_expiry(self, tmp_path):
+        """A freshly signed session cookie should authenticate successfully."""
+        app = create_app(
+            f"sqlite:///{tmp_path / 'valid-expiry.sqlite'}",
+            trusted_headers=False,
+            session_secret="test-secret-for-testing",
+        )
+        actor = Actor(name="alice", role=ApiKeyRole.admin, source="admin_header")
+        cookie = sign_session(actor, "test-secret-for-testing")
+        with TestClient(app) as test_client:
+            response = test_client.get("/api/tasks", headers={"Cookie": f"{SESSION_COOKIE_NAME}={cookie}"})
+
+        assert response.status_code == 200
+
+    def test_expired_session_cookie_rejected(self, tmp_path):
+        """An expired session cookie must be rejected server-side."""
+        app = create_app(
+            f"sqlite:///{tmp_path / 'expired.sqlite'}",
+            trusted_headers=False,
+            session_secret="test-secret-for-testing",
+        )
+        actor = Actor(name="alice", role=ApiKeyRole.admin, source="admin_header")
+        # Sign with max_age=0 so exp == iat (already expired)
+        expired_cookie = sign_session(actor, "test-secret-for-testing", max_age=0)
+        with TestClient(app) as test_client:
+            response = test_client.get("/api/tasks", headers={"Cookie": f"{SESSION_COOKIE_NAME}={expired_cookie}"})
+
+        assert response.status_code == 401
+
+    def test_future_iat_session_cookie_rejected(self, tmp_path):
+        """A cookie with iat in the future must be rejected."""
+        import json
+
+        from flow_app.security import _b64decode, _b64encode, _session_signature
+
+        app = create_app(
+            f"sqlite:///{tmp_path / 'future-iat.sqlite'}",
+            trusted_headers=False,
+            session_secret="test-secret-for-testing",
+        )
+        future_now = int(__import__("time").time()) + 3600
+        payload = {
+            "name": "alice",
+            "role": "admin",
+            "iat": future_now,
+            "exp": future_now + 43200,
+        }
+        encoded = _b64encode(json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8"))
+        signature = _session_signature(encoded, "test-secret-for-testing")
+        future_cookie = f"{encoded}.{signature}"
+        with TestClient(app) as test_client:
+            response = test_client.get("/api/tasks", headers={"Cookie": f"{SESSION_COOKIE_NAME}={future_cookie}"})
+
+        assert response.status_code == 401
+
+    def test_legacy_session_cookie_without_exp_rejected(self, tmp_path):
+        """A legacy cookie missing iat/exp fields must be rejected."""
+        import json
+
+        from flow_app.security import _b64encode, _session_signature
+
+        app = create_app(
+            f"sqlite:///{tmp_path / 'legacy-no-exp.sqlite'}",
+            trusted_headers=False,
+            session_secret="test-secret-for-testing",
+        )
+        # Manually craft a cookie without iat/exp (legacy shape)
+        payload = {"name": "alice", "role": "admin"}
+        encoded = _b64encode(json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8"))
+        signature = _session_signature(encoded, "test-secret-for-testing")
+        legacy_cookie = f"{encoded}.{signature}"
+        with TestClient(app) as test_client:
+            response = test_client.get("/api/tasks", headers={"Cookie": f"{SESSION_COOKIE_NAME}={legacy_cookie}"})
+
+        assert response.status_code == 401
+
+    def test_tampered_exp_in_session_cookie_rejected(self, tmp_path):
+        """A cookie with a tampered exp value must be rejected (signature mismatch)."""
+        import json
+
+        from flow_app.security import _b64decode, _b64encode
+
+        app = create_app(
+            f"sqlite:///{tmp_path / 'tampered-exp.sqlite'}",
+            trusted_headers=False,
+            session_secret="test-secret-for-testing",
+        )
+        actor = Actor(name="alice", role=ApiKeyRole.admin, source="admin_header")
+        valid_cookie = sign_session(actor, "test-secret-for-testing")
+        # Decode, tamper exp, re-encode (signature won't match)
+        encoded_payload = valid_cookie.partition(".")[0]
+        payload = json.loads(_b64decode(encoded_payload).decode("utf-8"))
+        payload["exp"] = payload["exp"] + 999999
+        tampered_encoded = _b64encode(json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8"))
+        tampered_cookie = f"{tampered_encoded}.{valid_cookie.partition('.')[2]}"
+        with TestClient(app) as test_client:
+            response = test_client.get("/api/tasks", headers={"Cookie": f"{SESSION_COOKIE_NAME}={tampered_cookie}"})
+
+        assert response.status_code == 401
 
 
 def test_missing_auth_rejected_for_api_endpoints(no_auth_client):

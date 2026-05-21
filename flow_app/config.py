@@ -40,6 +40,12 @@ class FlowSettings:
     cors_origins: list[str]
     theme: str
     trusted_headers: bool
+    session_secret: str
+    session_cookie_secure: bool
+
+    @property
+    def session_cookie_enabled(self) -> bool:
+        return bool(self.session_secret)
 
 
 _settings_cache: FlowSettings | None = None
@@ -64,6 +70,8 @@ def get_settings() -> FlowSettings:
         cors_origins=cors_origins,
         theme=_env("FLOW_THEME", "neutral"),
         trusted_headers=_env_bool("FLOW_TRUSTED_HEADERS", default=False),
+        session_secret=_env("FLOW_SESSION_SECRET", ""),
+        session_cookie_secure=_env_bool("FLOW_SESSION_COOKIE_SECURE", default=False),
     )
     return _settings_cache
 

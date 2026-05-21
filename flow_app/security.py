@@ -1,14 +1,23 @@
 from __future__ import annotations
 
+import base64
+import binascii
 from dataclasses import dataclass
 from enum import Enum
+import hashlib
+import hmac
+import json
+import time
 
-from fastapi import Header, HTTPException, Request, status
+from fastapi import Cookie, Header, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from .config import get_settings
 from .models import ApiKeyRole, Task
 from .repository import hash_api_key, lookup_api_key_by_hash
+
+SESSION_COOKIE_NAME = "flow_session"
+SESSION_MAX_AGE = 60 * 60 * 12
 
 
 @dataclass(frozen=True)
@@ -166,10 +175,17 @@ def resolve_actor(
     x_axis_user: str | None,
     x_axis_agent: str | None,
     trusted_headers: bool | None = None,
+    session_cookie: str | None = None,
+    session_secret: str | None = None,
 ) -> Actor | None:
     token = _extract_bearer_token(authorization)
     if token:
         return verify_bearer_token(db, token)
+
+    if session_cookie and session_secret:
+        actor = verify_session_cookie(session_cookie, session_secret)
+        if actor is not None:
+            return actor
 
     # Trusted headers are only accepted when explicitly enabled via config.
     # Deployments behind a reverse proxy that strips inbound identity headers
@@ -227,6 +243,7 @@ def require_permission(permission: Permission):
     def dependency(
         request: Request,
         authorization: str | None = Header(default=None),
+        session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
         # Header aliases can be changed here for deployments that do not use X-Axis-*.
         x_axis_admin: str | None = Header(default=None),
         x_axis_user: str | None = Header(default=None),
@@ -241,6 +258,8 @@ def require_permission(permission: Permission):
                 x_axis_user,
                 x_axis_agent,
                 trusted_headers=request.app.state.settings.trusted_headers,
+                session_cookie=session_cookie,
+                session_secret=request.app.state.settings.session_secret or None,
             )
 
         if actor is None:
@@ -266,6 +285,66 @@ def _first_present(*candidates: str | None) -> str | None:
         if candidate and candidate.strip():
             return candidate.strip()
     return None
+
+
+def sign_session(actor: Actor, session_secret: str, max_age: int = SESSION_MAX_AGE) -> str:
+    now = int(time.time())
+    payload = {
+        "name": actor.name,
+        "role": actor.role.value,
+        "iat": now,
+        "exp": now + max_age,
+    }
+    encoded_payload = _b64encode(json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8"))
+    signature = _session_signature(encoded_payload, session_secret)
+    return f"{encoded_payload}.{signature}"
+
+
+def verify_session_cookie(session_cookie: str, session_secret: str) -> Actor | None:
+    encoded_payload, separator, signature = session_cookie.partition(".")
+    if not separator or not encoded_payload or not signature:
+        return None
+
+    expected_signature = _session_signature(encoded_payload, session_secret)
+    if not hmac.compare_digest(signature, expected_signature):
+        return None
+
+    try:
+        payload = json.loads(_b64decode(encoded_payload).decode("utf-8"))
+        name = payload["name"]
+        role = ApiKeyRole(payload["role"])
+        iat = payload["iat"]
+        exp = payload["exp"]
+    except (binascii.Error, KeyError, TypeError, UnicodeDecodeError, ValueError, json.JSONDecodeError):
+        return None
+
+    if not isinstance(name, str) or not name.strip():
+        return None
+    if not isinstance(iat, int) or not isinstance(exp, int):
+        return None
+    if iat >= exp:
+        return None
+    now = int(time.time())
+    if now >= exp:
+        return None
+    if iat > now:
+        return None
+
+    return Actor(name=name.strip(), role=role, source="session_cookie")
+
+
+def _session_signature(encoded_payload: str, session_secret: str) -> str:
+    digest = hmac.new(session_secret.encode("utf-8"), encoded_payload.encode("utf-8"), hashlib.sha256).digest()
+    return _b64encode(digest)
+
+
+def _b64encode(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
+
+
+def _b64decode(value: str) -> bytes:
+    padding = "=" * (-len(value) % 4)
+    return base64.urlsafe_b64decode(f"{value}{padding}".encode("ascii"))
 
 
 HUMAN_REQUIRED_TASK_FIELDS = {"human_required", "blocker_reason"}

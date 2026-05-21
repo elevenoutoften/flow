@@ -44,6 +44,9 @@ Flow reads configuration from environment variables:
 | `FLOW_HOST` | `0.0.0.0` | Bind address |
 | `FLOW_PORT` | `8100` | Bind port |
 | `FLOW_DEBUG` | `false` | Debug mode |
+| `FLOW_TRUSTED_HEADERS` | `false` | Trust proxy-set X-Axis-* headers (enable only behind a stripping proxy) |
+| `FLOW_SESSION_SECRET` | *(empty)* | Secret key for browser session cookies; must be set to enable web UI login |
+| `FLOW_SESSION_COOKIE_SECURE` | `false` | Set to `true` in production (HTTPS) to mark session cookies as Secure |
 
 ### Run locally
 

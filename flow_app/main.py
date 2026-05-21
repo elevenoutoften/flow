@@ -142,7 +142,19 @@ from .schemas import (
     WorkspaceConfigResponse,
     WorkspaceConfigUpdate,
 )
-from .security import Actor, Permission, PermissionDenied, authorize_task_update, has_permission, is_valid_transition, require_permission, resolve_actor
+from .security import (
+    SESSION_COOKIE_NAME,
+    SESSION_MAX_AGE,
+    Actor,
+    Permission,
+    PermissionDenied,
+    authorize_task_update,
+    has_permission,
+    is_valid_transition,
+    require_permission,
+    resolve_actor,
+    sign_session,
+)
 from .webhooks import WEBHOOK_EVENTS, deliver_webhook
 from .workspace import cleanup_workspace, provision_workspace
 
@@ -155,10 +167,16 @@ def create_app(
     database_url: str | None = None,
     settings: FlowSettings | None = None,
     trusted_headers: bool | None = None,
+    session_secret: str | None = None,
+    session_cookie_secure: bool | None = None,
 ) -> FastAPI:
     settings = settings or get_settings()
     if trusted_headers is not None:
         settings = replace(settings, trusted_headers=trusted_headers)
+    if session_secret is not None:
+        settings = replace(settings, session_secret=session_secret)
+    if session_cookie_secure is not None:
+        settings = replace(settings, session_cookie_secure=session_cookie_secure)
     engine = build_engine(database_url or default_database_url())
     session_factory = build_session_factory(engine)
     set_session_factory(session_factory)
@@ -227,6 +245,8 @@ def create_app(
                 x_axis_user,
                 x_axis_agent,
                 trusted_headers=request.app.state.settings.trusted_headers,
+                session_cookie=request.cookies.get(SESSION_COOKIE_NAME),
+                session_secret=request.app.state.settings.session_secret or None,
             )
             response_payload = handle_mcp_message(db, payload, actor)
         except JsonRpcError as exc:
@@ -264,10 +284,12 @@ def create_app(
             x_axis_user,
             x_axis_agent,
             trusted_headers=request.app.state.settings.trusted_headers,
+            session_cookie=request.cookies.get(SESSION_COOKIE_NAME),
+            session_secret=request.app.state.settings.session_secret or None,
         )
         can_manage_api_keys = actor is not None and actor.role.value == "admin"
         can_set_human_required = actor is not None and has_permission(actor, Permission.TASKS_SET_HUMAN_REQUIRED)
-        return templates.TemplateResponse(
+        response = templates.TemplateResponse(
             request,
             "board.html",
             {
@@ -289,6 +311,20 @@ def create_app(
                 "asset_version": FLOW_VERSION,
             },
         )
+        if (
+            actor is not None
+            and actor.source in {"admin_header", "browser"}
+            and request.app.state.settings.session_secret
+        ):
+            response.set_cookie(
+                SESSION_COOKIE_NAME,
+                sign_session(actor, request.app.state.settings.session_secret),
+                max_age=SESSION_MAX_AGE,
+                httponly=True,
+                samesite="strict",
+                secure=request.app.state.settings.session_cookie_secure,
+            )
+        return response
 
     @app.get("/api/projects", response_model=list[ProjectResponse])
     def api_list_projects(

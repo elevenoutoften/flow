@@ -15,6 +15,7 @@ from .models import (
     AutomationRule,
     FlowCounter,
     Idea,
+    NotificationDelivery,
     Project,
     Task,
     TaskHandoff,
@@ -102,6 +103,10 @@ def generate_webhook_id(session: Session) -> str:
 
 def generate_delivery_id(session: Session) -> str:
     return generate_counter_id(session, "delivery", "delivery")
+
+
+def generate_notification_delivery_id(session: Session) -> str:
+    return generate_counter_id(session, "notification_delivery", "nd")
 
 
 def generate_handoff_id(session: Session) -> str:
@@ -668,6 +673,44 @@ def list_webhook_deliveries(session: Session, webhook_id: str, status: str | Non
 
 
 def update_webhook_delivery(session: Session, delivery: WebhookDelivery, **kwargs) -> WebhookDelivery:
+    for field, value in kwargs.items():
+        setattr(delivery, field, value)
+    delivery.updated_at = utcnow()
+    session.add(delivery)
+    session.flush()
+    return delivery
+
+
+def create_notification_delivery(
+    session: Session,
+    provider: str,
+    event: str,
+    task_id: str,
+    payload: str,
+    max_retries: int = 3,
+) -> NotificationDelivery:
+    now = utcnow()
+    delivery = NotificationDelivery(
+        id=generate_notification_delivery_id(session),
+        provider=provider,
+        event=event,
+        task_id=task_id,
+        payload=payload,
+        status="pending",
+        attempts=0,
+        max_retries=max_retries,
+        next_attempt_at=None,
+        last_response_code=None,
+        last_response_body=None,
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(delivery)
+    session.flush()
+    return delivery
+
+
+def update_notification_delivery(session: Session, delivery: NotificationDelivery, **kwargs) -> NotificationDelivery:
     for field, value in kwargs.items():
         setattr(delivery, field, value)
     delivery.updated_at = utcnow()

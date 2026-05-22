@@ -55,6 +55,8 @@ class FlowSettings:
     trusted_headers: bool
     session_secret: str
     session_cookie_secure: bool
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
 
     @property
     def session_cookie_enabled(self) -> bool:
@@ -85,6 +87,8 @@ def get_settings() -> FlowSettings:
         trusted_headers=_env_bool("FLOW_TRUSTED_HEADERS", default=False),
         session_secret=_env("FLOW_SESSION_SECRET", ""),
         session_cookie_secure=_env_bool("FLOW_SESSION_COOKIE_SECURE", default=False),
+        telegram_bot_token=_env("FLOW_TELEGRAM_BOT_TOKEN", ""),
+        telegram_chat_id=_env("FLOW_TELEGRAM_CHAT_ID", ""),
     )
     return _settings_cache
 

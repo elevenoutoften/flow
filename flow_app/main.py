@@ -156,11 +156,13 @@ from .security import (
     sign_session,
 )
 from .webhooks import WEBHOOK_EVENTS, deliver_webhook
+from .telegram import TelegramNotificationProvider
 from .workspace import cleanup_workspace, provision_workspace
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(PACKAGE_DIR / "templates"))
 _webhook_notifier = WebhookNotificationProvider()
+_telegram_notifier = TelegramNotificationProvider()
 
 
 def create_app(
@@ -782,6 +784,8 @@ def create_app(
         _commit(db)
         _webhook_notifier.send(db, "task_created", task)
         _commit(db)
+        _telegram_notifier.send(db, "task_created", task)
+        _commit(db)
         return serialize_task(task)
 
     @app.get("/api/tasks/{task_id}", response_model=TaskResponse)
@@ -920,6 +924,13 @@ def create_app(
                 {"human_required": True, "blocker_reason": task.blocker_reason},
             )
             _commit(db)
+            _telegram_notifier.send(
+                db,
+                "task_blocked",
+                task,
+                {"human_required": True, "blocker_reason": task.blocker_reason},
+            )
+            _commit(db)
         return serialize_task(task)
 
     @app.post("/api/tasks/{task_id}/claim", response_model=TaskResponse)
@@ -948,6 +959,13 @@ def create_app(
         emit_rule_event(db, "task_claimed", task_id=task_id, data={"assignee": assignee}, actor=actor)
         _commit(db)
         _webhook_notifier.send(
+            db,
+            "task_claimed",
+            task,
+            {"status": {"from": old_status, "to": task.status}, "assignee": task.assignee},
+        )
+        _commit(db)
+        _telegram_notifier.send(
             db,
             "task_claimed",
             task,
@@ -997,6 +1015,13 @@ def create_app(
         )
         _commit(db)
         _webhook_notifier.send(
+            db,
+            "task_moved",
+            task,
+            {"status": {"from": old_status, "to": task.status}},
+        )
+        _commit(db)
+        _telegram_notifier.send(
             db,
             "task_moved",
             task,
@@ -1058,6 +1083,13 @@ def create_app(
         emit_rule_event(db, "task_completed", task_id=task_id, actor=actor)
         _commit(db)
         _webhook_notifier.send(
+            db,
+            "task_completed",
+            task,
+            {"status": {"from": old_status, "to": "done"}},
+        )
+        _commit(db)
+        _telegram_notifier.send(
             db,
             "task_completed",
             task,
@@ -1485,8 +1517,35 @@ def ensure_compatible_schema(engine) -> None:
         connection.execute(
             text("CREATE INDEX IF NOT EXISTS ix_webhook_deliveries_webhook_id ON webhook_deliveries (webhook_id)")
         )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS notification_deliveries (
+                    id VARCHAR(32) NOT NULL PRIMARY KEY,
+                    provider VARCHAR(24) NOT NULL,
+                    event VARCHAR(64) NOT NULL,
+                    task_id VARCHAR(32) NOT NULL,
+                    payload TEXT NOT NULL,
+                    status VARCHAR(24) NOT NULL DEFAULT 'pending',
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    max_retries INTEGER NOT NULL DEFAULT 3,
+                    next_attempt_at DATETIME,
+                    last_response_code INTEGER,
+                    last_response_body TEXT,
+                    created_at DATETIME NOT NULL,
+                    updated_at DATETIME NOT NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_notification_deliveries_task_id ON notification_deliveries (task_id)")
+        )
         connection.execute(text("INSERT OR IGNORE INTO flow_counters (name, value) VALUES ('webhook', 0)"))
         connection.execute(text("INSERT OR IGNORE INTO flow_counters (name, value) VALUES ('delivery', 0)"))
+        connection.execute(
+            text("INSERT OR IGNORE INTO flow_counters (name, value) VALUES ('notification_delivery', 0)")
+        )
         connection.execute(text("INSERT OR IGNORE INTO flow_counters (name, value) VALUES ('handoff', 0)"))
 
     inspector = inspect(engine)

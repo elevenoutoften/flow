@@ -154,3 +154,25 @@ curl http://127.0.0.1:8100/healthz
 curl -s -X POST "http://127.0.0.1:8100/api/agents/<agent_id>/dispatch" \
   -H "Authorization: Bearer <admin-key>"
 ```
+
+## Telegram Notifications
+
+Set these environment variables to notify humans in Telegram when task events fire:
+
+| Variable | Description |
+| --- | --- |
+| `FLOW_TELEGRAM_BOT_TOKEN` | Bot token from @BotFather. |
+| `FLOW_TELEGRAM_CHAT_ID` | Chat ID for notifications, either a DM or group. |
+
+```bash
+export FLOW_TELEGRAM_BOT_TOKEN="123456:ABC-DEF..."
+export FLOW_TELEGRAM_CHAT_ID="-1001234567890"
+uvicorn flow_app.main:app --port 8100
+```
+
+Dogfood rule examples:
+
+| Rule | Trigger | Condition | Action |
+| --- | --- | --- | --- |
+| Notify on blocked task | `task_blocked` | Any task requiring human help | Auto, via Telegram provider |
+| Notify on review ready | `task_moved` | `to_status == "review"` | Auto, via Telegram provider |

@@ -58,13 +58,23 @@ Open `http://localhost:8100` in your browser.
 
 ## Docker Compose Quick Start
 
-A `docker-compose.yml` is included. Build and run:
+A `docker-compose.yml` is included.
+
+Start only the Flow web service:
 
 ```bash
 docker compose up -d
 ```
 
-The service will be available at `http://localhost:8100`. Data persists in the `data/` volume.
+Start the web service and the automation runner together:
+
+```bash
+docker compose --profile runner up -d
+```
+
+The web service is available at `http://localhost:8100`. The runner is opt-in and shares the same `flow-data` volume and `FLOW_DATABASE_URL` as the web service so both processes use the same SQLite database.
+
+Before enabling the runner, set `FLOW_API_KEY` in `docker-compose.yml` or an override file to a valid implementer-role key. Use `flow-bootstrap` or the web UI to create the key, then replace the placeholder value.
 
 ## Creating Your First API Key
 

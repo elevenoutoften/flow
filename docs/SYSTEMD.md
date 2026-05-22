@@ -53,6 +53,8 @@ FLOW_DATABASE_URL=sqlite:////var/lib/flow/flow.sqlite
 FLOW_DATA_DIR=/var/lib/flow
 ```
 
+In Compose, `docker compose up` starts only the web service by default. Use `docker compose --profile runner up` to start both the web service and `flow-runner`, and set `FLOW_API_KEY` to a valid implementer-role key before enabling the runner.
+
 ## Runner environment
 
 Set these values in `/etc/axis/flow.env` for the runner:

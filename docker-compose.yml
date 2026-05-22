@@ -22,6 +22,7 @@ services:
       start_period: 10s
 
   flow-runner:
+    profiles: [runner]
     build: .
     volumes:
       - flow-data:/data

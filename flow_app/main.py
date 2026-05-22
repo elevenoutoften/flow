@@ -1007,6 +1007,15 @@ def create_app(
                 status_code=403,
                 detail=f"Role '{actor.role.value}' cannot move task from {task.status} to {payload.status}.",
             )
+        if task.status == "review" and payload.status == "todo" and actor.role == ApiKeyRole.reviewer:
+            has_notes = len(task.notes) > 0
+            task_data = serialize_task(task).model_dump(mode="json")
+            has_handoff = task_data.get("latest_handoff") is not None
+            if not has_notes and not has_handoff:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Send-back requires at least one note or handoff on the task.",
+                )
         task.status = payload.status
         update_task(db, task, TaskUpdate())
         if payload.status == "done":

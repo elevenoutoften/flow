@@ -43,15 +43,15 @@ def _build_automation_rules(review_key_value: str, base_url: str = "http://local
             actions=json.dumps([{"type": "move", "status": "todo"}]),
         ),
         AutomationRuleCreate(
-            name="block-missing-handoff",
+            name="warn-missing-handoff",
             trigger="task_moved",
             conditions=json.dumps(
                 [
                     {"field": "status", "operator": "eq", "value": "review"},
-                    {"field": "latest_handoff", "operator": "exists"},
+                    {"field": "latest_handoff", "operator": "not_exists"},
                 ]
             ),
-            actions=json.dumps([{"type": "notify", "channel": "review", "message": "Review handoff present."}]),
+            actions=json.dumps([{"type": "notify", "channel": "review", "message": "Review task has no handoff."}]),
         ),
         AutomationRuleCreate(
             name="route-review-tasks",

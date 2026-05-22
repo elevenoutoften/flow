@@ -32,7 +32,7 @@ CONDITION_FIELDS = {
     "title",
     "latest_handoff",
 }
-CONDITION_OPERATORS = {"eq", "ne", "in", "not_in", "contains", "gt", "lt", "gte", "lte", "exists"}
+CONDITION_OPERATORS = {"eq", "ne", "in", "not_in", "contains", "gt", "lt", "gte", "lte", "exists", "not_exists"}
 TRIGGERS = {"task_created", "task_moved", "task_claimed", "task_completed", "task_blocked", "cron"}
 
 
@@ -93,6 +93,8 @@ def evaluate_conditions(conditions: list[dict], task_data: dict) -> bool:
         if operator == "lte" and (actual is None or actual > value):
             return False
         if operator == "exists" and actual is None:
+            return False
+        if operator == "not_exists" and actual is not None:
             return False
     return True
 

@@ -403,10 +403,10 @@ class TestDogfoodE2E:
             route_matches = match_rules(db, "task_moved", task_id=approve_task_id, data={"status": "review"})
             assert "route-review-tasks" in {match.rule_name for match in route_matches}
 
-            handoff_rule = db.scalars(select(AutomationRule).where(AutomationRule.name == "block-missing-handoff")).one()
-            assert {"field": "latest_handoff", "operator": "exists"} in json.loads(handoff_rule.conditions)
+            handoff_rule = db.scalars(select(AutomationRule).where(AutomationRule.name == "warn-missing-handoff")).one()
+            assert {"field": "latest_handoff", "operator": "not_exists"} in json.loads(handoff_rule.conditions)
             no_handoff_matches = match_rules(db, "task_moved", task_id=no_handoff_task_id)
-            assert "block-missing-handoff" not in {match.rule_name for match in no_handoff_matches}
+            assert "warn-missing-handoff" in {match.rule_name for match in no_handoff_matches}
 
 
 class _NoopThread:

@@ -149,10 +149,10 @@ def test_bootstrap_review_rules_include_dispatch_credentials_and_handoff_conditi
             }
         ]
 
-        handoff_rule = session.scalars(select(AutomationRule).where(AutomationRule.name == "block-missing-handoff")).one()
+        handoff_rule = session.scalars(select(AutomationRule).where(AutomationRule.name == "warn-missing-handoff")).one()
         assert json.loads(handoff_rule.conditions) == [
             {"field": "status", "operator": "eq", "value": "review"},
-            {"field": "latest_handoff", "operator": "exists"},
+            {"field": "latest_handoff", "operator": "not_exists"},
         ]
 
 

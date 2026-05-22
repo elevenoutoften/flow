@@ -553,6 +553,13 @@ def test_reviewer_can_approve_and_send_back(client, no_auth_client):
     assert approved.status_code == 200
     assert approved.json()["status"] == "done"
 
+    note = no_auth_client.post(
+        f"/api/tasks/{todo_task['id']}/note",
+        json={"note": "Needs follow-up before approval."},
+        headers=headers,
+    )
+    assert note.status_code == 200
+
     sent_to_todo = no_auth_client.post(f"/api/tasks/{todo_task['id']}/move", json={"status": "todo"}, headers=headers)
     assert sent_to_todo.status_code == 200
     assert sent_to_todo.json()["status"] == "todo"
@@ -560,6 +567,65 @@ def test_reviewer_can_approve_and_send_back(client, no_auth_client):
     sent_to_doing = no_auth_client.post(f"/api/tasks/{doing_task['id']}/move", json={"status": "doing"}, headers=headers)
     assert sent_to_doing.status_code == 200
     assert sent_to_doing.json()["status"] == "doing"
+
+
+def test_reviewer_sendback_requires_note_or_handoff(client, no_auth_client):
+    reviewer_headers = create_role_headers(client, "reviewer", "reviewer-sendback")
+    admin_headers = create_role_headers(client, "admin", "admin-sendback")
+
+    no_context_task = create_task(client, status="review")
+    denied = no_auth_client.post(
+        f"/api/tasks/{no_context_task['id']}/move",
+        json={"status": "todo"},
+        headers=reviewer_headers,
+    )
+    assert denied.status_code == 409
+    assert denied.json()["detail"] == "Send-back requires at least one note or handoff on the task."
+
+    note = no_auth_client.post(
+        f"/api/tasks/{no_context_task['id']}/note",
+        json={"note": "Please address the failing edge case."},
+        headers=reviewer_headers,
+    )
+    assert note.status_code == 200
+
+    allowed_with_note = no_auth_client.post(
+        f"/api/tasks/{no_context_task['id']}/move",
+        json={"status": "todo"},
+        headers=reviewer_headers,
+    )
+    assert allowed_with_note.status_code == 200
+    assert allowed_with_note.json()["status"] == "todo"
+
+    handoff_task = create_task(client, status="review")
+    handoff = no_auth_client.post(
+        f"/api/tasks/{handoff_task['id']}/handoffs",
+        json={
+            "summary": "Reviewer handoff with required changes.",
+            "changed_files": ["flow_app/main.py"],
+            "tests_run": ["tests/test_api.py"],
+            "outcome": "partial",
+        },
+        headers=reviewer_headers,
+    )
+    assert handoff.status_code == 201, handoff.text
+
+    allowed_with_handoff = no_auth_client.post(
+        f"/api/tasks/{handoff_task['id']}/move",
+        json={"status": "todo"},
+        headers=reviewer_headers,
+    )
+    assert allowed_with_handoff.status_code == 200
+    assert allowed_with_handoff.json()["status"] == "todo"
+
+    admin_task = create_task(client, status="review")
+    admin_sendback = no_auth_client.post(
+        f"/api/tasks/{admin_task['id']}/move",
+        json={"status": "todo"},
+        headers=admin_headers,
+    )
+    assert admin_sendback.status_code == 200
+    assert admin_sendback.json()["status"] == "todo"
 
 
 def test_admin_can_do_any_transition(client, no_auth_client):

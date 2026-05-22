@@ -6,6 +6,7 @@ import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
@@ -20,6 +21,7 @@ from flow_app.repository import (
     update_webhook_delivery,
 )
 from flow_app.schemas import TaskCreate
+from flow_app.ssrf import SSRF_ERROR_MSG, validate_webhook_url
 from flow_app.webhooks import deliver_webhook, sign_payload
 
 
@@ -78,6 +80,42 @@ def assert_single_delivery(client, webhook_id: str, event: str, task_id: str):
     assert payload["event"] == event
     assert payload["task_id"] == task_id
     return deliveries[0]
+
+
+def test_validate_webhook_url_accepts_valid_public_url():
+    url = "https://example.com/webhook"
+
+    assert validate_webhook_url(url) == url
+
+
+def test_validate_webhook_url_rejects_invalid_scheme():
+    with pytest.raises(ValueError, match="http or https"):
+        validate_webhook_url("ftp://example.com")
+
+
+@pytest.mark.parametrize("url", ["http://localhost/test", "http://127.0.0.1/test"])
+def test_validate_webhook_url_rejects_localhost(url):
+    with pytest.raises(ValueError, match=SSRF_ERROR_MSG):
+        validate_webhook_url(url)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://10.0.0.1/test",
+        "http://172.16.0.1/test",
+        "http://192.168.1.1/test",
+        "http://169.254.169.254/test",
+    ],
+)
+def test_validate_webhook_url_rejects_private_ips(url):
+    with pytest.raises(ValueError, match=SSRF_ERROR_MSG):
+        validate_webhook_url(url)
+
+
+def test_validate_webhook_url_rejects_ipv6_loopback():
+    with pytest.raises(ValueError, match=SSRF_ERROR_MSG):
+        validate_webhook_url("http://[::1]/test")
 
 
 def test_webhook_config_create(client):
@@ -163,6 +201,23 @@ def test_webhook_config_create_invalid_events(client):
         "/api/webhooks",
         json={"name": "Bad", "url": "https://example.com/webhook", "events": ["task_renamed"]},
     )
+
+    assert response.status_code == 422
+
+
+def test_webhook_config_create_rejects_unsafe_url(client):
+    response = client.post(
+        "/api/webhooks",
+        json={"name": "Bad", "url": "http://127.0.0.1/", "events": ["task_created"]},
+    )
+
+    assert response.status_code == 422
+
+
+def test_webhook_config_update_rejects_unsafe_url(client):
+    config = create_webhook(client)
+
+    response = client.patch(f"/api/webhooks/{config['id']}", json={"url": "http://127.0.0.1/"})
 
     assert response.status_code == 422
 
@@ -463,3 +518,24 @@ def test_deliver_webhook_failure_retries(client):
         assert saved.next_attempt_at > utcnow()
         assert saved.last_response_code == 500
         assert saved.last_response_body == "nope"
+
+
+def test_deliver_webhook_skips_unsafe_url(client):
+    config_data = create_webhook(client, max_retries=1)
+    with client.app.state.SessionLocal() as db:
+        config = get_webhook_config(db, config_data["id"])
+        config.url = "http://127.0.0.1/webhook"
+        delivery = create_webhook_delivery(db, config.id, "task_created", '{"ok":false}')
+        db.commit()
+        delivery_id = delivery.id
+
+        with patch("flow_app.webhooks.httpx.post") as post:
+            deliver_webhook(db, delivery, config)
+            db.commit()
+
+        saved = get_webhook_delivery(db, delivery_id)
+        assert saved.status == "failed"
+        assert saved.attempts == 1
+        assert saved.last_response_code is None
+        assert saved.last_response_body == "Webhook URL targets unacceptable address."
+        post.assert_not_called()

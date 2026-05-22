@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from .config import default_project
 from .models import ApiKeyRole
+from .ssrf import validate_webhook_url
 
 TaskStatus = Literal["backlog", "todo", "doing", "review", "done"]
 STATUSES: tuple[str, ...] = ("backlog", "todo", "doing", "review", "done")
@@ -470,6 +471,11 @@ class WebhookConfigCreate(BaseModel):
     max_retries: int = 3
     retry_backoff_seconds: int = 60
 
+    @field_validator("url")
+    @classmethod
+    def validate_url_safe(cls, value: str) -> str:
+        return validate_webhook_url(value)
+
 
 class WebhookConfigUpdate(BaseModel):
     name: str | None = None
@@ -479,6 +485,13 @@ class WebhookConfigUpdate(BaseModel):
     max_retries: int | None = None
     retry_backoff_seconds: int | None = None
     project: str | None = None
+
+    @field_validator("url")
+    @classmethod
+    def validate_url_safe(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return validate_webhook_url(value)
 
 
 class WebhookConfigResponse(BaseModel):

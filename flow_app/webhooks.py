@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from .models import Task, WebhookConfig, WebhookDelivery, utcnow
 from .repository import create_webhook_delivery, update_webhook_delivery
+from .ssrf import is_safe_webhook_target
 
 WEBHOOK_EVENTS = [
     "task_created",
@@ -53,6 +54,10 @@ def emit_event(db: Session, event_name: str, task: Task, changes: dict | None = 
 
 
 def deliver_webhook(db: Session, delivery: WebhookDelivery, config: WebhookConfig) -> None:
+    if not is_safe_webhook_target(config.url):
+        _record_failure(db, delivery, config, None, "Webhook URL targets unacceptable address.")
+        return
+
     payload_bytes = delivery.payload.encode("utf-8")
     headers = {
         "Content-Type": "application/json",

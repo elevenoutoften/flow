@@ -8,7 +8,9 @@ from flow_app.bootstrap import main as bootstrap_main
 from flow_app.database import build_engine, build_session_factory
 from flow_app.main import create_app
 from flow_app.models import Agent, AgentApiKey, AutomationRule, Project, WorkspaceConfig
-from flow_app.repository import hash_api_key
+from flow_app.repository import create_task, get_task, hash_api_key
+from flow_app.rules_engine import emit_event
+from flow_app.schemas import TaskCreate
 
 
 def _db_url(tmp_path, name: str = "flow.sqlite") -> str:
@@ -126,3 +128,27 @@ def test_project_flag_creates_custom_project_slug(tmp_path):
     with _session_factory(db_url)() as session:
         assert session.get(Project, "custom-project") is not None
         assert session.get(Project, "default") is None
+
+
+def test_bootstrap_automation_rules_execute_correctly(tmp_path):
+    db_url = _db_url(tmp_path)
+
+    assert bootstrap_main(["--database-url", db_url]) == 0
+
+    with _session_factory(db_url)() as session:
+        task = create_task(session, TaskCreate(title="Promote me", status="backlog", project="default"))
+        created_matches = emit_event(session, "task_created", task_id=task.id)
+        session.commit()
+
+        assert [match["rule_name"] for match in created_matches] == ["Auto-promote backlog tasks"]
+        assert created_matches[0]["action_results"][0]["success"] is True
+        assert created_matches[0]["action_results"][0]["details"] == {"from": "backlog", "to": "todo"}
+
+        promoted = get_task(session, task.id)
+        assert promoted is not None
+        assert promoted.status == "todo"
+
+        completed_matches = emit_event(session, "task_completed", task_id=task.id)
+        session.commit()
+
+        assert [match["rule_name"] for match in completed_matches] == ["Notify on task completion"]

@@ -34,8 +34,8 @@ AUTOMATION_RULES = (
     AutomationRuleCreate(
         name="Auto-promote backlog tasks",
         trigger="task_created",
-        conditions=json.dumps([{"field": "status", "op": "eq", "value": "backlog"}]),
-        actions=json.dumps([{"type": "move", "target": "todo"}]),
+        conditions=json.dumps([{"field": "status", "operator": "eq", "value": "backlog"}]),
+        actions=json.dumps([{"type": "move", "status": "todo"}]),
     ),
 )
 

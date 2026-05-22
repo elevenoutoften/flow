@@ -67,7 +67,14 @@ def test_rule_crud_create_list_get_update_enable_disable(client):
 
 
 def test_condition_evaluation_operators():
-    data = {"status": "todo", "project": "default", "priority": 80, "title": "Ship API", "assignee": None}
+    data = {
+        "status": "todo",
+        "project": "default",
+        "priority": 80,
+        "title": "Ship API",
+        "assignee": None,
+        "latest_handoff": {"id": "handoff_000001"},
+    }
 
     assert evaluate_conditions([{"field": "status", "operator": "eq", "value": "todo"}], data)
     assert evaluate_conditions([{"field": "status", "operator": "ne", "value": "done"}], data)
@@ -77,7 +84,8 @@ def test_condition_evaluation_operators():
     assert evaluate_conditions([{"field": "priority", "operator": "lt", "value": 90}], data)
     assert evaluate_conditions([{"field": "priority", "operator": "gte", "value": 80}], data)
     assert evaluate_conditions([{"field": "priority", "operator": "lte", "value": 80}], data)
-    assert evaluate_conditions([{"field": "assignee", "operator": "exists", "value": False}], data)
+    assert evaluate_conditions([{"field": "latest_handoff", "operator": "exists"}], data)
+    assert not evaluate_conditions([{"field": "assignee", "operator": "exists"}], data)
     assert not evaluate_conditions([{"field": "unknown", "operator": "eq", "value": "todo"}], data)
     assert not evaluate_conditions([{"field": "status", "operator": "unknown", "value": "todo"}], data)
 

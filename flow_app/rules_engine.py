@@ -22,7 +22,16 @@ from .repository import (
 from .schemas import STATUSES, TaskUpdate
 from .security import Actor, is_valid_transition
 
-CONDITION_FIELDS = {"status", "project", "priority", "assignee", "assignee_type", "human_required", "title"}
+CONDITION_FIELDS = {
+    "status",
+    "project",
+    "priority",
+    "assignee",
+    "assignee_type",
+    "human_required",
+    "title",
+    "latest_handoff",
+}
 CONDITION_OPERATORS = {"eq", "ne", "in", "not_in", "contains", "gt", "lt", "gte", "lte", "exists"}
 TRIGGERS = {"task_created", "task_moved", "task_claimed", "task_completed", "task_blocked", "cron"}
 
@@ -83,11 +92,8 @@ def evaluate_conditions(conditions: list[dict], task_data: dict) -> bool:
             return False
         if operator == "lte" and (actual is None or actual > value):
             return False
-        if operator == "exists":
-            if value and actual is None:
-                return False
-            if not value and actual is not None:
-                return False
+        if operator == "exists" and actual is None:
+            return False
     return True
 
 
@@ -281,6 +287,10 @@ def _execute_spawn(session: Session, task: Task | None, action: dict) -> ActionR
         return ActionResult("spawn", False, "Agent is required and must be registered.")
     if not agent.enabled:
         return ActionResult("spawn", False, f"Agent is disabled: {agent.name}.")
+    if task.status == "review" and task.assignee and task.assignee != agent.name:
+        task.assignee = None
+        task.claimer_key_id = None
+        update_task(session, task, TaskUpdate())
 
     from .dispatcher import DispatchError, dispatch_one
 

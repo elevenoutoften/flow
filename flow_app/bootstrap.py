@@ -27,17 +27,48 @@ from .schemas import AgentApiKeyCreate, AgentCreate, AutomationRuleCreate, Works
 
 ADMIN_KEY_NAME = "admin-key"
 IMPLEMENTER_KEY_NAME = "impl-key"
+REVIEWER_KEY_NAME = "reviewer-key"
 AGENT_NAME = "smoke-test"
+REVIEWER_AGENT_NAME = "reviewer-agent"
 WORKSPACE_CONFIG_NAME = "default"
-AUTOMATION_RULES = (
-    AutomationRuleCreate(name="Notify on task completion", trigger="task_completed"),
-    AutomationRuleCreate(
-        name="Auto-promote backlog tasks",
-        trigger="task_created",
-        conditions=json.dumps([{"field": "status", "operator": "eq", "value": "backlog"}]),
-        actions=json.dumps([{"type": "move", "status": "todo"}]),
-    ),
-)
+
+
+def _build_automation_rules(review_key_value: str, base_url: str = "http://localhost:8100") -> list[AutomationRuleCreate]:
+    return [
+        AutomationRuleCreate(name="Notify on task completion", trigger="task_completed"),
+        AutomationRuleCreate(
+            name="Auto-promote backlog tasks",
+            trigger="task_created",
+            conditions=json.dumps([{"field": "status", "operator": "eq", "value": "backlog"}]),
+            actions=json.dumps([{"type": "move", "status": "todo"}]),
+        ),
+        AutomationRuleCreate(
+            name="block-missing-handoff",
+            trigger="task_moved",
+            conditions=json.dumps(
+                [
+                    {"field": "status", "operator": "eq", "value": "review"},
+                    {"field": "latest_handoff", "operator": "exists"},
+                ]
+            ),
+            actions=json.dumps([{"type": "notify", "channel": "review", "message": "Review handoff present."}]),
+        ),
+        AutomationRuleCreate(
+            name="route-review-tasks",
+            trigger="task_moved",
+            conditions=json.dumps([{"field": "status", "operator": "eq", "value": "review"}]),
+            actions=json.dumps(
+                [
+                    {
+                        "type": "dispatch",
+                        "agent_name": REVIEWER_AGENT_NAME,
+                        "api_key": review_key_value,
+                        "base_url": base_url,
+                    }
+                ]
+            ),
+        ),
+    ]
 
 
 @dataclass(frozen=True)
@@ -79,6 +110,7 @@ def _database_has_tables(engine) -> bool:
 
 def _collect_dry_run_lines(engine, project_slug: str) -> list[BootstrapLine]:
     if not _database_has_tables(engine):
+        review_key_value = generate_api_key_secret()
         return [
             BootstrapLine("Project", project_slug, "would create"),
             BootstrapLine("API key", ADMIN_KEY_NAME, "would create", f"({ApiKeyRole.admin.value}) - {generate_api_key_secret()}"),
@@ -88,9 +120,16 @@ def _collect_dry_run_lines(engine, project_slug: str) -> list[BootstrapLine]:
                 "would create",
                 f"({ApiKeyRole.implementer.value}) - {generate_api_key_secret()}",
             ),
+            BootstrapLine(
+                "API key",
+                REVIEWER_KEY_NAME,
+                "would create",
+                f"({ApiKeyRole.reviewer.value}) - {review_key_value}",
+            ),
             BootstrapLine("Agent", AGENT_NAME, "would create"),
+            BootstrapLine("Agent", REVIEWER_AGENT_NAME, "would create"),
             BootstrapLine("Workspace config", WORKSPACE_CONFIG_NAME, "would create"),
-            *[BootstrapLine("Automation rule", rule.name, "would create") for rule in AUTOMATION_RULES],
+            *[BootstrapLine("Automation rule", rule.name, "would create") for rule in _build_automation_rules(review_key_value)],
         ]
 
     session_factory = build_session_factory(engine)
@@ -108,7 +147,9 @@ def _collect_lines(session: Session, project_slug: str, *, dry_run: bool) -> lis
     key_specs = (
         (ADMIN_KEY_NAME, ApiKeyRole.admin),
         (IMPLEMENTER_KEY_NAME, ApiKeyRole.implementer),
+        (REVIEWER_KEY_NAME, ApiKeyRole.reviewer),
     )
+    raw_keys: dict[str, str] = {}
     for name, role in key_specs:
         existing = _active_api_key_by_name(session, name)
         if existing is not None:
@@ -120,21 +161,32 @@ def _collect_lines(session: Session, project_slug: str, *, dry_run: bool) -> lis
         else:
             _, raw_key = create_agent_api_key(session, AgentApiKeyCreate(name=name, role=role))
             status = "created"
+        raw_keys[name] = raw_key
         lines.append(BootstrapLine("API key", name, status, f"({role.value}) - {raw_key}"))
 
-    agent_exists = get_agent_by_name(session, AGENT_NAME) is not None
-    if not dry_run and not agent_exists:
-        create_agent(
-            session,
-            AgentCreate(
-                name=AGENT_NAME,
-                agent_type="cli",
-                command="echo smoke-test",
-                dispatch_statuses="todo",
-                max_concurrency=1,
-            ),
+    agent_specs = (
+        AgentCreate(
+            name=AGENT_NAME,
+            agent_type="cli",
+            command="echo smoke-test",
+            dispatch_statuses="todo",
+            max_concurrency=1,
+        ),
+        AgentCreate(
+            name=REVIEWER_AGENT_NAME,
+            agent_type="cli",
+            command="echo reviewer-agent",
+            dispatch_statuses="review",
+            max_concurrency=1,
+        ),
+    )
+    for agent_spec in agent_specs:
+        agent_exists = get_agent_by_name(session, agent_spec.name) is not None
+        if not dry_run and not agent_exists:
+            create_agent(session, agent_spec)
+        lines.append(
+            BootstrapLine("Agent", agent_spec.name, "already exists" if agent_exists else _create_status(dry_run))
         )
-    lines.append(BootstrapLine("Agent", AGENT_NAME, "already exists" if agent_exists else _create_status(dry_run)))
 
     workspace_exists = get_workspace_config_by_name(session, WORKSPACE_CONFIG_NAME) is not None
     if not dry_run and not workspace_exists:
@@ -150,7 +202,8 @@ def _collect_lines(session: Session, project_slug: str, *, dry_run: bool) -> lis
         )
     )
 
-    for rule in AUTOMATION_RULES:
+    automation_rules = _build_automation_rules(raw_keys.get(REVIEWER_KEY_NAME, ""))
+    for rule in automation_rules:
         rule_exists = _automation_rule_by_name(session, rule.name) is not None
         if not dry_run and not rule_exists:
             create_automation_rule(session, rule)

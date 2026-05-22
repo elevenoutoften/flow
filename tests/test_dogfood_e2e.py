@@ -12,10 +12,18 @@ Test plan:
 """
 from __future__ import annotations
 
+import json
+import re
+from types import SimpleNamespace
+
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
+from flow_app.bootstrap import main as bootstrap_main
 from flow_app.main import create_app
+from flow_app.models import AutomationRule
+from flow_app.rules_engine import match_rules
 
 ADMIN_HEADERS = {"X-Axis-Admin": "1", "X-Axis-User": "test-admin"}
 
@@ -42,6 +50,29 @@ def _create_agent(client: TestClient, name: str, dispatch_statuses: str) -> dict
     }, headers=ADMIN_HEADERS)
     assert r.status_code == 201, f"Failed to create agent {name}: {r.text}"
     return r.json()
+
+
+def _bootstrap_key(output: str, name: str) -> str:
+    match = re.search(rf"API key: {re.escape(name)} .* - (flow_[A-Za-z0-9_-]+)", output)
+    assert match is not None, f"Missing printed key for {name}: {output}"
+    return match.group(1)
+
+
+def _add_handoff(client: TestClient, task_id: str, headers: dict[str, str], author: str) -> None:
+    handoff_r = client.post(f"/api/tasks/{task_id}/handoff", json={
+        "author": author,
+        "summary": "Implementation complete and ready for review.",
+        "changed_files": ["flow_app/bootstrap.py"],
+        "commands_run": ["pytest tests/test_dogfood_e2e.py"],
+        "tests_run": ["tests/test_dogfood_e2e.py"],
+        "artifacts": [],
+        "attempted_but_failed": [],
+        "remaining_work": "",
+        "outcome": "success",
+        "next_recommended_agent": "reviewer-agent",
+        "capabilities": ["review"],
+    }, headers=headers)
+    assert handoff_r.status_code == 201, handoff_r.text
 
 
 class TestDogfoodE2E:
@@ -238,6 +269,144 @@ class TestDogfoodE2E:
             # Cleanup: revoke test keys
             client.post(f"/api/api-keys/{impl_key_id}/revoke", headers=ADMIN_HEADERS)
             client.post(f"/api/api-keys/{rev_key_id}/revoke", headers=ADMIN_HEADERS)
+
+    def test_review_loop_approve_and_sendback(self, tmp_path, capsys, monkeypatch):
+        """REVIEW-02: Bootstrap review rules support approve and send-back paths."""
+        dispatch_calls = []
+
+        def fake_dispatch_one(db, agent_model, task_model, api_key, base_url):
+            dispatch_calls.append(
+                {
+                    "agent": agent_model.name,
+                    "task_id": task_model.id,
+                    "api_key": api_key,
+                    "base_url": base_url,
+                }
+            )
+            return SimpleNamespace(id=f"run_review_{len(dispatch_calls)}")
+
+        monkeypatch.setattr("flow_app.dispatcher.dispatch_one", fake_dispatch_one)
+
+        db_url = f"sqlite:///{tmp_path / 'flow.sqlite'}"
+        app = create_app(db_url, trusted_headers=True, session_secret="test-secret-for-testing")
+        assert bootstrap_main(["--database-url", db_url]) == 0
+        output = capsys.readouterr().out
+        impl_key = _bootstrap_key(output, "impl-key")
+        reviewer_key = _bootstrap_key(output, "reviewer-key")
+        impl_headers = {"Authorization": f"Bearer {impl_key}"}
+        rev_headers = {"Authorization": f"Bearer {reviewer_key}"}
+
+        with TestClient(app) as client:
+            approve_task = client.post("/api/tasks", json={
+                "title": "Approve review-loop task",
+                "status": "todo",
+                "priority": 50,
+                "project": "test-project",
+            }, headers=ADMIN_HEADERS)
+            assert approve_task.status_code == 201, approve_task.text
+            approve_task_id = approve_task.json()["id"]
+
+            claim_r = client.post(
+                f"/api/tasks/{approve_task_id}/claim",
+                json={"agent_name": "test-impl"},
+                headers=impl_headers,
+            )
+            assert claim_r.status_code == 200, claim_r.text
+            note_r = client.post(
+                f"/api/tasks/{approve_task_id}/note",
+                json={"note": "Implementation complete.", "author": "test-impl"},
+                headers=impl_headers,
+            )
+            assert note_r.status_code == 200, note_r.text
+            _add_handoff(client, approve_task_id, impl_headers, "test-impl")
+            review_r = client.post(f"/api/tasks/{approve_task_id}/move", json={"status": "review"}, headers=impl_headers)
+            assert review_r.status_code == 200, review_r.text
+
+            reviewer_claim_r = client.post(
+                f"/api/tasks/{approve_task_id}/claim",
+                json={"agent_name": "reviewer-agent"},
+                headers=rev_headers,
+            )
+            assert reviewer_claim_r.status_code == 200, reviewer_claim_r.text
+            reviewer_note_r = client.post(
+                f"/api/tasks/{approve_task_id}/note",
+                json={"note": "Approved after review.", "author": "test-reviewer"},
+                headers=rev_headers,
+            )
+            assert reviewer_note_r.status_code == 200, reviewer_note_r.text
+            done_r = client.post(
+                f"/api/tasks/{approve_task_id}/done",
+                json={"summary": "Approved.", "author": "test-reviewer"},
+                headers=rev_headers,
+            )
+            assert done_r.status_code == 200, done_r.text
+            assert done_r.json()["status"] == "done"
+
+            sendback_task = client.post("/api/tasks", json={
+                "title": "Send back review-loop task",
+                "status": "todo",
+                "priority": 50,
+                "project": "test-project",
+            }, headers=ADMIN_HEADERS)
+            assert sendback_task.status_code == 201, sendback_task.text
+            sendback_task_id = sendback_task.json()["id"]
+
+            claim_r = client.post(
+                f"/api/tasks/{sendback_task_id}/claim",
+                json={"agent_name": "test-impl"},
+                headers=impl_headers,
+            )
+            assert claim_r.status_code == 200, claim_r.text
+            note_r = client.post(
+                f"/api/tasks/{sendback_task_id}/note",
+                json={"note": "Second implementation complete.", "author": "test-impl"},
+                headers=impl_headers,
+            )
+            assert note_r.status_code == 200, note_r.text
+            _add_handoff(client, sendback_task_id, impl_headers, "test-impl")
+            review_r = client.post(f"/api/tasks/{sendback_task_id}/move", json={"status": "review"}, headers=impl_headers)
+            assert review_r.status_code == 200, review_r.text
+
+            reviewer_claim_r = client.post(
+                f"/api/tasks/{sendback_task_id}/claim",
+                json={"agent_name": "reviewer-agent"},
+                headers=rev_headers,
+            )
+            assert reviewer_claim_r.status_code == 200, reviewer_claim_r.text
+            reviewer_note_r = client.post(
+                f"/api/tasks/{sendback_task_id}/note",
+                json={"note": "Please address the rejection feedback.", "author": "test-reviewer"},
+                headers=rev_headers,
+            )
+            assert reviewer_note_r.status_code == 200, reviewer_note_r.text
+            todo_r = client.post(f"/api/tasks/{sendback_task_id}/move", json={"status": "todo"}, headers=rev_headers)
+            assert todo_r.status_code == 200, todo_r.text
+            assert todo_r.json()["status"] == "todo"
+
+            no_handoff_task = client.post("/api/tasks", json={
+                "title": "Review task without handoff",
+                "status": "review",
+                "priority": 10,
+                "project": "test-project",
+            }, headers=ADMIN_HEADERS)
+            assert no_handoff_task.status_code == 201, no_handoff_task.text
+            no_handoff_task_id = no_handoff_task.json()["id"]
+
+        assert len(dispatch_calls) == 2
+        assert {call["agent"] for call in dispatch_calls} == {"reviewer-agent"}
+        assert {call["api_key"] for call in dispatch_calls} == {reviewer_key}
+        assert {call["base_url"] for call in dispatch_calls} == {"http://localhost:8100"}
+
+        with app.state.SessionLocal() as db:
+            route_rule = db.scalars(select(AutomationRule).where(AutomationRule.name == "route-review-tasks")).one()
+            assert json.loads(route_rule.actions)[0]["api_key"] == reviewer_key
+            route_matches = match_rules(db, "task_moved", task_id=approve_task_id, data={"status": "review"})
+            assert "route-review-tasks" in {match.rule_name for match in route_matches}
+
+            handoff_rule = db.scalars(select(AutomationRule).where(AutomationRule.name == "block-missing-handoff")).one()
+            assert {"field": "latest_handoff", "operator": "exists"} in json.loads(handoff_rule.conditions)
+            no_handoff_matches = match_rules(db, "task_moved", task_id=no_handoff_task_id)
+            assert "block-missing-handoff" not in {match.rule_name for match in no_handoff_matches}
 
 
 class _NoopThread:

@@ -30,12 +30,45 @@ IMPLEMENTER_KEY_NAME = "impl-key"
 AGENT_NAME = "smoke-test"
 WORKSPACE_CONFIG_NAME = "default"
 AUTOMATION_RULES = (
-    AutomationRuleCreate(name="Notify on task completion", trigger="task_completed"),
+    # ── Review loop ──
+    AutomationRuleCreate(
+        name="Route review tasks to reviewer",
+        description="When a task moves to review, dispatch the reviewer agent.",
+        trigger="task_moved",
+        conditions=json.dumps([{"field": "status", "operator": "eq", "value": "review"}]),
+        actions=json.dumps([{"type": "dispatch", "agent_name": "reviewer-agent"}]),
+        priority=90,
+    ),
+    AutomationRuleCreate(
+        name="Block tasks missing handoff in review",
+        description="If a task reaches review without a handoff note, flag it for human review.",
+        trigger="task_moved",
+        conditions=json.dumps(
+            [
+                {"field": "status", "operator": "eq", "value": "review"},
+                {"field": "human_required", "operator": "eq", "value": False},
+            ]
+        ),
+        actions=json.dumps(
+            [{"type": "add_note", "text": "⚠️ No handoff provided — manual review required.", "author": "automation"}]
+        ),
+        priority=80,
+    ),
+    # ── Notifications ──
+    AutomationRuleCreate(
+        name="Notify on task completion",
+        description="Trigger notification pipeline when a task is marked done.",
+        trigger="task_completed",
+        priority=50,
+    ),
+    # ── Backlog promotion ──
     AutomationRuleCreate(
         name="Auto-promote backlog tasks",
+        description="Move newly created backlog tasks to todo.",
         trigger="task_created",
-        conditions=json.dumps([{"field": "status", "op": "eq", "value": "backlog"}]),
-        actions=json.dumps([{"type": "move", "target": "todo"}]),
+        conditions=json.dumps([{"field": "status", "operator": "eq", "value": "backlog"}]),
+        actions=json.dumps([{"type": "move", "status": "todo"}]),
+        priority=10,
     ),
 )
 

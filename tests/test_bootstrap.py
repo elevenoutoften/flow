@@ -39,7 +39,7 @@ def test_fresh_bootstrap_creates_default_records(tmp_path):
         assert len(_all(session, AgentApiKey)) == 2
         assert len(_all(session, Agent)) == 1
         assert len(_all(session, WorkspaceConfig)) == 1
-        assert len(_all(session, AutomationRule)) == 2
+        assert len(_all(session, AutomationRule)) == 4
 
         agent = session.scalars(select(Agent).where(Agent.name == "smoke-test")).one()
         assert agent.agent_type == "cli"
@@ -68,9 +68,9 @@ def test_bootstrap_is_idempotent(tmp_path, capsys):
         assert len(_all(session, AgentApiKey)) == 2
         assert len(_all(session, Agent)) == 1
         assert len(_all(session, WorkspaceConfig)) == 1
-        assert len(_all(session, AutomationRule)) == 2
+        assert len(_all(session, AutomationRule)) == 4
         assert len({key.name for key in _all(session, AgentApiKey)}) == 2
-        assert len({rule.name for rule in _all(session, AutomationRule)}) == 2
+        assert len({rule.name for rule in _all(session, AutomationRule)}) == 4
 
 
 def test_dry_run_prints_prefix_and_does_not_write_to_db(tmp_path, capsys):

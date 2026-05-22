@@ -176,3 +176,13 @@ Dogfood rule examples:
 | --- | --- | --- | --- |
 | Notify on blocked task | `task_blocked` | Any task requiring human help | Auto, via Telegram provider |
 | Notify on review ready | `task_moved` | `to_status == "review"` | Auto, via Telegram provider |
+
+## Review Loop
+
+Flow includes production-ready review-loop automation rules out of the box. See [Review Loop](REVIEW_LOOP.md) for full documentation.
+
+Quick summary:
+- Tasks reaching `review` automatically dispatch the `reviewer-agent`
+- Tasks arriving in `review` without a handoff get an automated warning
+- Reviewer can approve (`→ done`) or reject (`→ todo` with `human_required`)
+- New tasks in `backlog` are auto-promoted to `todo`

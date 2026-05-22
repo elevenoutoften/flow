@@ -220,6 +220,9 @@ def can_note_task(actor: Actor, task: Task) -> bool:
     if actor.role in {ApiKeyRole.admin, ApiKeyRole.architect}:
         return True
     if actor.role == ApiKeyRole.implementer:
+        # Prefer key identity for claimed tasks; fall back to assignee name for legacy rows.
+        if actor.key_id and task.claimer_key_id:
+            return task.claimer_key_id == actor.key_id
         return task.assignee == actor.name
     if actor.role == ApiKeyRole.reviewer:
         return task.status == "review"

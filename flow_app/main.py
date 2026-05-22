@@ -949,6 +949,7 @@ def create_app(
         if task.assignee and task.assignee != assignee:
             raise HTTPException(status_code=409, detail=f"Task is already claimed by {task.assignee}.")
         task.assignee = assignee
+        task.claimer_key_id = actor.key_id
         if task.status in {"backlog", "todo"}:
             if not is_valid_transition(actor, task.status, "doing"):
                 raise HTTPException(
@@ -983,6 +984,7 @@ def create_app(
     ):
         task = _require_task(db, task_id)
         task.assignee = None
+        task.claimer_key_id = None
         if task.status == "doing":
             task.status = "todo"
         update_task(db, task, TaskUpdate())
@@ -1573,6 +1575,7 @@ def ensure_compatible_schema(engine) -> None:
         "source_line": "INTEGER",
         "import_batch_id": "VARCHAR(64)",
         "source_title": "VARCHAR(240)",
+        "claimer_key_id": "VARCHAR(64)",
         "human_required": "INTEGER NOT NULL DEFAULT 0",
         "assignee_type": "VARCHAR(24) NOT NULL DEFAULT 'agent'",
         "blocker_reason": "TEXT NOT NULL DEFAULT ''",

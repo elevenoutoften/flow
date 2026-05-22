@@ -689,6 +689,52 @@ class TestScopedNotePermissions:
         assert response.status_code == 403
         assert client.get(f"/api/tasks/{task['id']}").json()["notes"] == []
 
+    def test_scoped_note_permission_with_key_claim(self, client, no_auth_client):
+        implementer_headers = create_role_headers(client, "implementer", "claim-key-implementer")
+        task = create_task(client, status="todo")
+
+        claimed = no_auth_client.post(
+            f"/api/tasks/{task['id']}/claim",
+            json={"agent_name": "different-agent"},
+            headers=implementer_headers,
+        )
+        assert claimed.status_code == 200, claimed.text
+        assert claimed.json()["assignee"] == "different-agent"
+
+        note = no_auth_client.post(
+            f"/api/tasks/{task['id']}/note",
+            json={"note": "Key-owned claim note."},
+            headers=implementer_headers,
+        )
+        assert note.status_code == 200, note.text
+        assert note.json()["notes"][-1]["body"] == "Key-owned claim note."
+
+        other_implementer_headers = create_role_headers(client, "implementer", "other-claim-key-implementer")
+        other_note = no_auth_client.post(
+            f"/api/tasks/{task['id']}/note",
+            json={"note": "Denied."},
+            headers=other_implementer_headers,
+        )
+        assert other_note.status_code == 403
+
+        read_only_headers = create_role_headers(client, "read_only", "claim-note-reader")
+        read_only_note = no_auth_client.post(
+            f"/api/tasks/{task['id']}/note",
+            json={"note": "Denied."},
+            headers=read_only_headers,
+        )
+        assert read_only_note.status_code == 403
+
+        reviewer_headers = create_role_headers(client, "reviewer", "claim-note-reviewer")
+        review_task = create_task(client, status="review")
+        reviewer_note = no_auth_client.post(
+            f"/api/tasks/{review_task['id']}/note",
+            json={"note": "Review note."},
+            headers=reviewer_headers,
+        )
+        assert reviewer_note.status_code == 200, reviewer_note.text
+        assert reviewer_note.json()["notes"][-1]["body"] == "Review note."
+
     def test_reviewer_can_note_task_in_review_status(self, client, no_auth_client):
         headers = create_role_headers(client, "reviewer", "note-reviewer")
         task = create_task(client, status="review")

@@ -66,6 +66,7 @@ class Task(Base):
     priority: Mapped[int] = mapped_column(Integer, nullable=False, default=50, index=True)
     project: Mapped[str] = mapped_column(String(120), nullable=False, default="default", index=True)
     assignee: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    claimer_key_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
     human_required: Mapped[bool] = mapped_column(Integer, nullable=False, default=0)
     assignee_type: Mapped[str] = mapped_column(String(24), nullable=False, default="agent")
     blocker_reason: Mapped[str] = mapped_column(Text, nullable=False, default="")

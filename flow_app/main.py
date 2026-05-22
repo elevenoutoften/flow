@@ -156,6 +156,16 @@ from .security import (
     resolve_actor,
     sign_session,
 )
+from .services.task import (
+    InvalidTransitionError,
+    MissingAssigneeError,
+    NotePermissionError,
+    SendbackContractError,
+    TaskAlreadyClaimedError,
+    TaskClaimKeyConflictError,
+    TaskNotFoundError,
+    TaskService,
+)
 from .webhooks import WEBHOOK_EVENTS, deliver_webhook
 from .telegram import TelegramNotificationProvider
 from .workspace import cleanup_workspace, provision_workspace
@@ -215,6 +225,15 @@ def create_app(
             yield db
         finally:
             db.close()
+
+    def _make_task_service(db: Session) -> TaskService:
+        return TaskService(
+            db=db,
+            commit_fn=_commit,
+            webhook_notifier=_webhook_notifier,
+            telegram_notifier=_telegram_notifier,
+            rule_emitter=emit_rule_event,
+        )
 
     @app.get("/healthz")
     def healthz(request: Request):
@@ -780,13 +799,7 @@ def create_app(
         db: Session = Depends(get_db),
         actor: Actor = Depends(require_permission(Permission.TASKS_CREATE)),
     ):
-        task = create_task(db, payload)
-        emit_rule_event(db, "task_created", task_id=task.id, actor=actor)
-        _commit(db)
-        _webhook_notifier.send(db, "task_created", task)
-        _commit(db)
-        _telegram_notifier.send(db, "task_created", task)
-        _commit(db)
+        task = _make_task_service(db).create_task(payload, actor)
         return serialize_task(task)
 
     @app.get("/api/tasks/{task_id}", response_model=TaskResponse)
@@ -911,27 +924,7 @@ def create_app(
             authorize_task_update(actor, task, payload)
         except PermissionDenied as exc:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=exc.detail)
-        if payload.human_required is False:
-            payload = payload.model_copy(update={"blocker_reason": ""})
-        was_human_required = bool(task.human_required)
-        task = update_task(db, task, payload)
-        _commit(db)
-        if not was_human_required and bool(task.human_required):
-            emit_rule_event(db, "task_blocked", task_id=task.id, actor=actor)
-            _webhook_notifier.send(
-                db,
-                "task_blocked",
-                task,
-                {"human_required": True, "blocker_reason": task.blocker_reason},
-            )
-            _commit(db)
-            _telegram_notifier.send(
-                db,
-                "task_blocked",
-                task,
-                {"human_required": True, "blocker_reason": task.blocker_reason},
-            )
-            _commit(db)
+        task = _make_task_service(db).update_task(task_id, payload, actor)
         return serialize_task(task)
 
     @app.post("/api/tasks/{task_id}/claim", response_model=TaskResponse)
@@ -941,41 +934,16 @@ def create_app(
         db: Session = Depends(get_db),
         actor: Actor = Depends(require_permission(Permission.TASKS_CLAIM)),
     ):
-        task = _require_task(db, task_id)
-        old_status = task.status
-        assignee = payload.agent_name or actor.name
-        if not assignee:
-            raise HTTPException(status_code=400, detail="agent_name is required.")
-        if task.assignee and task.assignee != assignee:
-            raise HTTPException(status_code=409, detail=f"Task is already claimed by {task.assignee}.")
-        if task.claimer_key_id and task.claimer_key_id != actor.key_id:
-            raise HTTPException(status_code=409, detail="Task is already claimed by a different key.")
-        task.assignee = assignee
-        task.claimer_key_id = actor.key_id
-        if task.status in {"backlog", "todo"}:
-            if not is_valid_transition(actor, task.status, "doing"):
-                raise HTTPException(
-                    status_code=403,
-                    detail=f"Role '{actor.role.value}' cannot move task from {task.status} to doing.",
-                )
-            task.status = "doing"
-        update_task(db, task, TaskUpdate())
-        emit_rule_event(db, "task_claimed", task_id=task_id, data={"assignee": assignee}, actor=actor)
-        _commit(db)
-        _webhook_notifier.send(
-            db,
-            "task_claimed",
-            task,
-            {"status": {"from": old_status, "to": task.status}, "assignee": task.assignee},
-        )
-        _commit(db)
-        _telegram_notifier.send(
-            db,
-            "task_claimed",
-            task,
-            {"status": {"from": old_status, "to": task.status}, "assignee": task.assignee},
-        )
-        _commit(db)
+        try:
+            task = _make_task_service(db).claim_task(task_id, actor, agent_name=payload.agent_name)
+        except TaskNotFoundError:
+            raise HTTPException(status_code=404, detail="Task not found.")
+        except (TaskAlreadyClaimedError, TaskClaimKeyConflictError) as exc:
+            raise HTTPException(status_code=409, detail=exc.message)
+        except InvalidTransitionError as exc:
+            raise HTTPException(status_code=403, detail=exc.message)
+        except MissingAssigneeError as exc:
+            raise HTTPException(status_code=400, detail=exc.message)
         return serialize_task(task)
 
     @app.post("/api/tasks/{task_id}/release", response_model=TaskResponse)
@@ -984,13 +952,10 @@ def create_app(
         db: Session = Depends(get_db),
         _actor: Actor = Depends(require_permission(Permission.TASKS_CLAIM)),
     ):
-        task = _require_task(db, task_id)
-        task.assignee = None
-        task.claimer_key_id = None
-        if task.status == "doing":
-            task.status = "todo"
-        update_task(db, task, TaskUpdate())
-        _commit(db)
+        try:
+            task = _make_task_service(db).release_task(task_id)
+        except TaskNotFoundError:
+            raise HTTPException(status_code=404, detail="Task not found.")
         return serialize_task(task)
 
     @app.post("/api/tasks/{task_id}/move", response_model=TaskResponse)
@@ -1000,48 +965,14 @@ def create_app(
         db: Session = Depends(get_db),
         actor: Actor = Depends(require_permission(Permission.TASKS_MOVE)),
     ):
-        task = _require_task(db, task_id)
-        old_status = task.status
-        if not is_valid_transition(actor, task.status, payload.status):
-            raise HTTPException(
-                status_code=403,
-                detail=f"Role '{actor.role.value}' cannot move task from {task.status} to {payload.status}.",
-            )
-        if task.status == "review" and payload.status == "todo" and actor.role == ApiKeyRole.reviewer:
-            has_notes = len(task.notes) > 0
-            task_data = serialize_task(task).model_dump(mode="json")
-            has_handoff = task_data.get("latest_handoff") is not None
-            if not has_notes and not has_handoff:
-                raise HTTPException(
-                    status_code=409,
-                    detail="Send-back requires at least one note or handoff on the task.",
-                )
-        task.status = payload.status
-        update_task(db, task, TaskUpdate())
-        if payload.status == "done":
-            auto_promote_unblocked_children(db, task.id)
-        emit_rule_event(
-            db,
-            "task_moved",
-            task_id=task_id,
-            data={"from_status": old_status, "to_status": payload.status},
-            actor=actor,
-        )
-        _commit(db)
-        _webhook_notifier.send(
-            db,
-            "task_moved",
-            task,
-            {"status": {"from": old_status, "to": task.status}},
-        )
-        _commit(db)
-        _telegram_notifier.send(
-            db,
-            "task_moved",
-            task,
-            {"status": {"from": old_status, "to": task.status}},
-        )
-        _commit(db)
+        try:
+            task = _make_task_service(db).move_task(task_id, payload.status, actor)
+        except TaskNotFoundError:
+            raise HTTPException(status_code=404, detail="Task not found.")
+        except InvalidTransitionError as exc:
+            raise HTTPException(status_code=403, detail=exc.message)
+        except SendbackContractError as exc:
+            raise HTTPException(status_code=409, detail=exc.message)
         return serialize_task(task)
 
     @app.post("/api/tasks/{task_id}/note", response_model=TaskResponse)
@@ -1051,16 +982,12 @@ def create_app(
         db: Session = Depends(get_db),
         actor: Actor = Depends(require_permission(Permission.TASKS_NOTE)),
     ):
-        task = _require_task(db, task_id)
-        if not can_note_task(actor, task):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Insufficient permission to note this task.",
-            )
-        author = payload.author or actor.name
-        add_note(db, task, payload.note, author=author)
-        _commit(db)
-        task = _require_task(db, task_id)
+        try:
+            task = _make_task_service(db).add_note(task_id, payload.note, actor, author=payload.author)
+        except TaskNotFoundError:
+            raise HTTPException(status_code=404, detail="Task not found.")
+        except NotePermissionError as exc:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=exc.message)
         return serialize_task(task)
 
     @app.post("/api/tasks/{task_id}/done", response_model=TaskResponse)
@@ -1070,52 +997,18 @@ def create_app(
         db: Session = Depends(get_db),
         actor: Actor = Depends(require_permission(Permission.TASKS_DONE)),
     ):
-        task = _require_task(db, task_id)
-        old_status = task.status
-        if not is_valid_transition(actor, task.status, "done"):
-            raise HTTPException(
-                status_code=403,
-                detail=f"Role '{actor.role.value}' cannot mark task as done from {task.status}.",
+        try:
+            task = _make_task_service(db).done_task(
+                task_id,
+                actor,
+                payload.summary,
+                author=payload.author,
+                handoff=payload.handoff,
             )
-        task.status = "done"
-        author = payload.author or actor.name
-        if payload.handoff is not None:
-            handoff_author = payload.handoff.author or author
-            create_task_handoff(
-                db,
-                task.id,
-                handoff_author,
-                payload.handoff.summary,
-                payload.handoff.changed_files,
-                payload.handoff.commands_run,
-                payload.handoff.tests_run,
-                payload.handoff.artifacts,
-                payload.handoff.attempted_but_failed,
-                payload.handoff.remaining_work,
-                payload.handoff.outcome,
-                payload.handoff.next_recommended_agent,
-                payload.handoff.capabilities,
-            )
-        add_note(db, task, payload.summary, author=author)
-        update_task(db, task, TaskUpdate())
-        auto_promote_unblocked_children(db, task.id)
-        emit_rule_event(db, "task_completed", task_id=task_id, actor=actor)
-        _commit(db)
-        _webhook_notifier.send(
-            db,
-            "task_completed",
-            task,
-            {"status": {"from": old_status, "to": "done"}},
-        )
-        _commit(db)
-        _telegram_notifier.send(
-            db,
-            "task_completed",
-            task,
-            {"status": {"from": old_status, "to": "done"}},
-        )
-        _commit(db)
-        task = _require_task(db, task_id)
+        except TaskNotFoundError:
+            raise HTTPException(status_code=404, detail="Task not found.")
+        except InvalidTransitionError as exc:
+            raise HTTPException(status_code=403, detail=exc.message)
         return serialize_task(task)
 
     @app.get("/api/ideas", response_model=list[IdeaResponse])

@@ -1,0 +1,264 @@
+"""Task service layer: shared business logic for REST and MCP transports."""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+
+from sqlalchemy.orm import Session
+
+from flow_app.models import ApiKeyRole, Task
+from flow_app.repository import (
+    add_note,
+    auto_promote_unblocked_children,
+    create_task,
+    create_task_handoff,
+    get_task,
+    serialize_task,
+    update_task,
+)
+from flow_app.schemas import HandoffRequest, TaskCreate, TaskUpdate
+from flow_app.security import Actor, can_note_task, is_valid_transition
+
+
+class TaskError(Exception):
+    """Base exception for task service errors."""
+
+    def __init__(self, message: str, error_type: str = "task_error"):
+        self.message = message
+        self.error_type = error_type
+        super().__init__(message)
+
+
+class TaskNotFoundError(TaskError):
+    def __init__(self, task_id: str):
+        super().__init__(f"Task not found: {task_id}", "not_found")
+
+
+class TaskAlreadyClaimedError(TaskError):
+    def __init__(self, assignee: str):
+        super().__init__(f"Task is already claimed by {assignee}.", "already_claimed")
+
+
+class TaskClaimKeyConflictError(TaskError):
+    def __init__(self):
+        super().__init__("Task is already claimed by a different key.", "claim_key_conflict")
+
+
+class InvalidTransitionError(TaskError):
+    def __init__(self, role: str, from_status: str, to_status: str, *, action: str = "move task"):
+        if action == "mark task as done":
+            message = f"Role '{role}' cannot mark task as done from {from_status}."
+        else:
+            message = f"Role '{role}' cannot move task from {from_status} to {to_status}."
+        super().__init__(message, "invalid_transition")
+
+
+class SendbackContractError(TaskError):
+    def __init__(self):
+        super().__init__(
+            "Send-back requires at least one note or handoff on the task.",
+            "sendback_contract",
+        )
+
+
+class NotePermissionError(TaskError):
+    def __init__(self):
+        super().__init__("Insufficient permission to note this task.", "note_permission")
+
+
+class MissingAssigneeError(TaskError):
+    def __init__(self):
+        super().__init__("agent_name is required.", "missing_assignee")
+
+
+class TaskService:
+    """Shared task mutation service.
+
+    Transport adapters call these methods and translate TaskError subclasses
+    into HTTP or JSON-RPC specific responses.
+    """
+
+    def __init__(self, db: Session, commit_fn: Callable[[Session], None], webhook_notifier, telegram_notifier, rule_emitter):
+        self.db = db
+        self._commit = commit_fn
+        self._webhook = webhook_notifier
+        self._telegram = telegram_notifier
+        self._emit_rule = rule_emitter
+
+    def create_task(self, payload: TaskCreate, actor: Actor | None = None) -> Task:
+        task = create_task(self.db, payload)
+        self._emit_rule(self.db, "task_created", task_id=task.id, actor=actor)
+        self._commit(self.db)
+        self._webhook.send(self.db, "task_created", task)
+        self._commit(self.db)
+        self._telegram.send(self.db, "task_created", task)
+        self._commit(self.db)
+        return task
+
+    def update_task(self, task_id: str, payload: TaskUpdate, actor: Actor) -> Task:
+        task = self._require_task(task_id)
+        was_human_required = bool(task.human_required)
+        if payload.human_required is False:
+            payload = payload.model_copy(update={"blocker_reason": ""})
+        task = update_task(self.db, task, payload)
+        self._commit(self.db)
+        if not was_human_required and bool(task.human_required):
+            self._emit_rule(self.db, "task_blocked", task_id=task.id, actor=actor)
+            self._webhook.send(
+                self.db,
+                "task_blocked",
+                task,
+                {"human_required": True, "blocker_reason": task.blocker_reason},
+            )
+            self._commit(self.db)
+            self._telegram.send(
+                self.db,
+                "task_blocked",
+                task,
+                {"human_required": True, "blocker_reason": task.blocker_reason},
+            )
+            self._commit(self.db)
+        return task
+
+    def claim_task(self, task_id: str, actor: Actor, agent_name: str | None = None) -> Task:
+        task = self._require_task(task_id)
+        old_status = task.status
+        assignee = agent_name or actor.name
+        if not assignee:
+            raise MissingAssigneeError()
+        if task.assignee and task.assignee != assignee:
+            raise TaskAlreadyClaimedError(task.assignee)
+        if task.claimer_key_id and task.claimer_key_id != actor.key_id:
+            raise TaskClaimKeyConflictError()
+        task.assignee = assignee
+        task.claimer_key_id = actor.key_id
+        if task.status in {"backlog", "todo"}:
+            if not is_valid_transition(actor, task.status, "doing"):
+                raise InvalidTransitionError(actor.role.value, task.status, "doing")
+            task.status = "doing"
+        update_task(self.db, task, TaskUpdate())
+        self._emit_rule(self.db, "task_claimed", task_id=task_id, data={"assignee": assignee}, actor=actor)
+        self._commit(self.db)
+        data = {"status": {"from": old_status, "to": task.status}, "assignee": task.assignee}
+        self._webhook.send(self.db, "task_claimed", task, data)
+        self._commit(self.db)
+        self._telegram.send(self.db, "task_claimed", task, data)
+        self._commit(self.db)
+        return task
+
+    def release_task(self, task_id: str) -> Task:
+        task = self._require_task(task_id)
+        task.assignee = None
+        task.claimer_key_id = None
+        if task.status == "doing":
+            task.status = "todo"
+        update_task(self.db, task, TaskUpdate())
+        self._commit(self.db)
+        return task
+
+    def move_task(self, task_id: str, target_status: str, actor: Actor) -> Task:
+        task = self._require_task(task_id)
+        old_status = task.status
+        if not is_valid_transition(actor, task.status, target_status):
+            raise InvalidTransitionError(actor.role.value, task.status, target_status)
+        if task.status == "review" and target_status == "todo" and actor.role == ApiKeyRole.reviewer:
+            has_notes = len(task.notes) > 0
+            task_data = serialize_task(task).model_dump(mode="json")
+            has_handoff = task_data.get("latest_handoff") is not None
+            if not has_notes and not has_handoff:
+                raise SendbackContractError()
+        task.status = target_status
+        update_task(self.db, task, TaskUpdate())
+        if target_status == "done":
+            auto_promote_unblocked_children(self.db, task.id)
+        self._emit_rule(
+            self.db,
+            "task_moved",
+            task_id=task_id,
+            data={"from_status": old_status, "to_status": target_status},
+            actor=actor,
+        )
+        self._commit(self.db)
+        data = {"status": {"from": old_status, "to": task.status}}
+        self._webhook.send(self.db, "task_moved", task, data)
+        self._commit(self.db)
+        self._telegram.send(self.db, "task_moved", task, data)
+        self._commit(self.db)
+        return task
+
+    def add_note(self, task_id: str, note_text: str, actor: Actor, author: str | None = None) -> Task:
+        task = self._require_task(task_id)
+        if not can_note_task(actor, task):
+            raise NotePermissionError()
+        add_note(self.db, task, note_text, author=author or actor.name)
+        self._commit(self.db)
+        return self._require_task(task_id)
+
+    def done_task(
+        self,
+        task_id: str,
+        actor: Actor,
+        summary: str,
+        author: str | None = None,
+        handoff: HandoffRequest | None = None,
+    ) -> Task:
+        task = self._require_task(task_id)
+        old_status = task.status
+        if not is_valid_transition(actor, task.status, "done"):
+            raise InvalidTransitionError(actor.role.value, task.status, "done", action="mark task as done")
+        task.status = "done"
+        effective_author = author or actor.name
+        if handoff is not None:
+            create_task_handoff(
+                self.db,
+                task.id,
+                handoff.author or effective_author,
+                handoff.summary,
+                handoff.changed_files,
+                handoff.commands_run,
+                handoff.tests_run,
+                handoff.artifacts,
+                handoff.attempted_but_failed,
+                handoff.remaining_work,
+                handoff.outcome,
+                handoff.next_recommended_agent,
+                handoff.capabilities,
+            )
+        add_note(self.db, task, summary, author=effective_author)
+        update_task(self.db, task, TaskUpdate())
+        auto_promote_unblocked_children(self.db, task.id)
+        self._emit_rule(self.db, "task_completed", task_id=task_id, actor=actor)
+        self._commit(self.db)
+        data = {"status": {"from": old_status, "to": "done"}}
+        self._webhook.send(self.db, "task_completed", task, data)
+        self._commit(self.db)
+        self._telegram.send(self.db, "task_completed", task, data)
+        self._commit(self.db)
+        return self._require_task(task_id)
+
+    def set_human_required(
+        self,
+        task_id: str,
+        human_required: bool,
+        actor: Actor,
+        blocker_reason: str | None = None,
+        assignee_type: str | None = None,
+    ) -> Task:
+        task = self._require_task(task_id)
+        changes: dict[str, object] = {"human_required": human_required}
+        if human_required:
+            if blocker_reason is not None:
+                changes["blocker_reason"] = blocker_reason
+            if assignee_type is not None:
+                changes["assignee_type"] = assignee_type
+        else:
+            changes["blocker_reason"] = ""
+        task = update_task(self.db, task, TaskUpdate(**changes))
+        self._commit(self.db)
+        return task
+
+    def _require_task(self, task_id: str) -> Task:
+        task = get_task(self.db, task_id)
+        if task is None:
+            raise TaskNotFoundError(task_id)
+        return task

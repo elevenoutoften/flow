@@ -4,6 +4,7 @@ from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
 from pydantic import ValidationError
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..config import default_project
@@ -81,6 +82,15 @@ from ..schemas import (
     WebhookConfigUpdate,
 )
 from ..security import Actor, Permission, PermissionDenied, authorize_task_update as _authorize_task_update, has_permission, is_valid_transition
+from ..notifications import WebhookNotificationProvider
+from ..rules_engine import emit_event as emit_rule_event
+from ..services.task import (
+    InvalidTransitionError,
+    SendbackContractError,
+    TaskNotFoundError,
+    TaskService,
+)
+from ..telegram import TelegramNotificationProvider
 from ..webhooks import WEBHOOK_EVENTS
 from ..workspace import cleanup_workspace, provision_workspace
 
@@ -99,6 +109,29 @@ AGENT_UPDATE_FIELDS = set(AgentUpdate.model_fields)
 RULE_UPDATE_FIELDS = set(AutomationRuleUpdate.model_fields)
 WORKSPACE_CONFIG_UPDATE_FIELDS = set(WorkspaceConfigUpdate.model_fields)
 WEBHOOK_UPDATE_FIELDS = {"url", "events", "active", "project"}
+_webhook_notifier = WebhookNotificationProvider()
+_telegram_notifier = TelegramNotificationProvider()
+
+
+def _commit(db: Session) -> None:
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise JsonRpcError(-32603, f"Database conflict: {exc.orig}") from exc
+    except Exception as exc:
+        db.rollback()
+        raise JsonRpcError(-32603, "Internal server error.") from exc
+
+
+def _make_task_service(db: Session) -> TaskService:
+    return TaskService(
+        db=db,
+        commit_fn=_commit,
+        webhook_notifier=_webhook_notifier,
+        telegram_notifier=_telegram_notifier,
+        rule_emitter=emit_rule_event,
+    )
 
 TOOLS: list[dict[str, Any]] = [
     {
@@ -863,7 +896,7 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
         return tool_result({"task": payload}, f"Found Flow task {payload['id']}: {payload['title']}")
 
     if name == "flow_create_task":
-        require_tool_permission(actor, Permission.TASKS_CREATE)
+        actor = require_tool_permission(actor, Permission.TASKS_CREATE)
         try:
             payload = TaskCreate(
                 title=arguments.get("title"),
@@ -875,8 +908,7 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
             )
         except ValidationError as exc:
             raise JsonRpcError(-32602, "Invalid task payload.", exc.errors()) from exc
-        task = create_task(db, payload)
-        db.commit()
+        task = _make_task_service(db).create_task(payload, actor)
         data = task_to_json(task)
         return tool_result({"task": data}, f"Created Flow task {data['id']}: {data['title']}")
 
@@ -888,10 +920,10 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
         except ValidationError as exc:
             raise JsonRpcError(-32602, "Invalid task payload.", exc.errors()) from exc
         _authorize_task_update_mcp(actor, task, payload)
-        if payload.human_required is False:
-            payload = payload.model_copy(update={"blocker_reason": ""})
-        task = update_task(db, task, payload)
-        db.commit()
+        try:
+            task = _make_task_service(db).update_task(task_id, payload, actor)
+        except TaskNotFoundError as exc:
+            raise JsonRpcError(-32602, exc.message) from exc
         data = task_to_json(task)
         return tool_result({"task": data}, f"Updated Flow task {data['id']}: {data['title']}")
 
@@ -901,13 +933,12 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
         status = require_string(arguments.get("status"), "status")
         if status not in STATUSES:
             raise JsonRpcError(-32602, "Invalid task status.")
-        task = require_task(db, task_id)
-        if not is_valid_transition(actor, task.status, status):
-            raise JsonRpcError(-32603, f"Role '{actor.role.value}' cannot move task from {task.status} to {status}.")
-        task = update_task(db, task, TaskUpdate(status=status))
-        if status == "done":
-            auto_promote_unblocked_children(db, task.id)
-        db.commit()
+        try:
+            task = _make_task_service(db).move_task(task_id, status, actor)
+        except TaskNotFoundError as exc:
+            raise JsonRpcError(-32602, exc.message) from exc
+        except (InvalidTransitionError, SendbackContractError) as exc:
+            raise JsonRpcError(-32603, exc.message) from exc
         data = task_to_json(task)
         return tool_result({"task": data}, f"Moved Flow task {data['id']} to {data['status']}.")
 
@@ -1029,8 +1060,16 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
         except ValidationError as exc:
             raise JsonRpcError(-32602, "Invalid task payload.", exc.errors()) from exc
         _authorize_task_update_mcp(actor, task, payload)
-        task = update_task(db, task, payload)
-        db.commit()
+        try:
+            task = _make_task_service(db).set_human_required(
+                task_id,
+                arguments["human_required"],
+                actor,
+                blocker_reason=arguments.get("blocker_reason"),
+                assignee_type=arguments.get("assignee_type"),
+            )
+        except TaskNotFoundError as exc:
+            raise JsonRpcError(-32602, exc.message) from exc
         data = task_to_json(task)
         state = "set" if data["human_required"] else "cleared"
         return tool_result({"task": data}, f"Human-required state {state} for Flow task {data['id']}.")

@@ -51,6 +51,7 @@ from .schemas import (
     ProjectResponse,
     ProjectUpdate,
     TaskCreate,
+    TaskListResponse,
     TaskLinkCreate,
     TaskLinkResponse,
     TaskNoteResponse,
@@ -808,6 +809,27 @@ def serialize_task_summary(task: Task) -> TaskSummary:
     )
 
 
+def serialize_task_list(task: Task) -> TaskListResponse:
+    return TaskListResponse(
+        id=task.id,
+        title=task.title,
+        status=task.status,
+        priority=task.priority,
+        project=task.project,
+        assignee=task.assignee,
+        human_required=bool(task.human_required),
+        assignee_type=task.assignee_type,
+        blocker_reason=task.blocker_reason,
+        complexity=task.complexity,
+        impact=task.impact,
+        effort=task.effort,
+        risk=task.risk,
+        description=task.description,
+        created_at=_ensure_datetime(task.created_at),
+        updated_at=_ensure_datetime(task.updated_at),
+    )
+
+
 def get_dependency_summary(session: Session, task_id: str) -> DependencySummary:
     require_task(session, task_id)
     parents = list_task_links(session, child_id=task_id)
@@ -832,6 +854,64 @@ def get_dependency_summary(session: Session, task_id: str) -> DependencySummary:
         blocked_by_tasks=blocked_by_tasks,
         blocking_tasks=blocking_tasks,
     )
+
+
+def batch_dependency_summaries(session: Session, task_ids: list[str]) -> dict[str, DependencySummary]:
+    if not task_ids:
+        return {}
+
+    links = list(
+        session.scalars(
+            select(TaskLink).where((TaskLink.parent_id.in_(task_ids)) | (TaskLink.child_id.in_(task_ids)))
+        ).all()
+    )
+    links.sort(key=lambda link: (_ensure_datetime(link.created_at), link.id))
+
+    related_task_ids = {link.parent_id for link in links} | {link.child_id for link in links}
+    tasks_by_id = {}
+    if related_task_ids:
+        tasks_by_id = {
+            task.id: task
+            for task in session.scalars(select(Task).where(Task.id.in_(related_task_ids))).all()
+        }
+
+    summaries: dict[str, DependencySummary] = {}
+    for task_id in task_ids:
+        parents = [link for link in links if link.child_id == task_id]
+        children = [link for link in links if link.parent_id == task_id]
+        blocked_by = [link for link in parents if link.link_type in BLOCKING_TASK_LINK_TYPES]
+        blocking = [link for link in children if link.link_type in BLOCKING_TASK_LINK_TYPES]
+        parent_tasks = [
+            serialize_task_summary(task)
+            for link in parents
+            if (task := tasks_by_id.get(link.parent_id))
+        ]
+        child_tasks = [
+            serialize_task_summary(task)
+            for link in children
+            if (task := tasks_by_id.get(link.child_id))
+        ]
+        blocked_by_tasks = [
+            serialize_task_summary(task)
+            for link in blocked_by
+            if (task := tasks_by_id.get(link.parent_id))
+        ]
+        blocking_tasks = [
+            serialize_task_summary(task)
+            for link in blocking
+            if (task := tasks_by_id.get(link.child_id))
+        ]
+        summaries[task_id] = DependencySummary(
+            parents=[serialize_task_link(link) for link in parents],
+            children=[serialize_task_link(link) for link in children],
+            blocked_by=[serialize_task_link(link) for link in blocked_by],
+            blocking=[serialize_task_link(link) for link in blocking],
+            parent_tasks=parent_tasks,
+            child_tasks=child_tasks,
+            blocked_by_tasks=blocked_by_tasks,
+            blocking_tasks=blocking_tasks,
+        )
+    return summaries
 
 
 def has_cycle(session: Session, parent_id: str, child_id: str) -> bool:
@@ -977,7 +1057,7 @@ def list_tasks(
     assignee: str | None = None,
     unclaimed: bool = False,
 ) -> list[Task]:
-    stmt = task_query()
+    stmt = select(Task)
     if project:
         stmt = stmt.where(Task.project == project)
     if status:
@@ -987,7 +1067,7 @@ def list_tasks(
     if unclaimed:
         stmt = stmt.where(Task.assignee.is_(None))
 
-    items = list(session.scalars(stmt).unique().all())
+    items = list(session.scalars(stmt).all())
     status_order = {name: index for index, name in enumerate(STATUSES)}
     items.sort(key=lambda task: (status_order.get(task.status, 99), -task.priority, task.created_at, task.id))
     return items
@@ -1114,6 +1194,22 @@ def list_task_handoffs(session: Session, task_id: str) -> list[TaskHandoff]:
     handoffs = list(session.scalars(select(TaskHandoff).where(TaskHandoff.task_id == task_id)).all())
     handoffs.sort(key=lambda handoff: (-_ensure_datetime(handoff.created_at).timestamp(), handoff.id))
     return handoffs
+
+
+def batch_latest_handoffs(session: Session, task_ids: list[str]) -> dict[str, TaskHandoff | None]:
+    if not task_ids:
+        return {}
+
+    handoffs = list(
+        session.scalars(
+            select(TaskHandoff).where(TaskHandoff.task_id.in_(task_ids)).order_by(TaskHandoff.created_at.desc())
+        ).all()
+    )
+    latest: dict[str, TaskHandoff] = {}
+    for handoff in handoffs:
+        if handoff.task_id not in latest:
+            latest[handoff.task_id] = handoff
+    return {task_id: latest.get(task_id) for task_id in task_ids}
 
 
 def serialize_task_handoff(handoff: TaskHandoff) -> HandoffResponse:

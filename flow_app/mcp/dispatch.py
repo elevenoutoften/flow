@@ -51,6 +51,7 @@ from ..repository import (
     serialize_task_link,
     serialize_task_handoff,
     serialize_task,
+    serialize_task_list,
     serialize_webhook_config,
     serialize_webhook_delivery,
     serialize_workspace_config,
@@ -880,7 +881,7 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
         status = optional_string(arguments.get("status"))
         if status and status not in STATUSES:
             raise JsonRpcError(-32602, "Invalid task status.")
-        tasks = [task_to_json(task) for task in list_tasks(db, project=project, status=status)]
+        tasks = [task_list_to_json(task) for task in list_tasks(db, project=project, status=status)]
         return tool_result(
             {"tasks": tasks, "count": len(tasks)},
             f"Found {len(tasks)} Flow task{'s' if len(tasks) != 1 else ''}.",
@@ -1077,7 +1078,7 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
     if name == "flow_board_summary":
         require_tool_permission(actor, Permission.TASKS_READ)
         project = optional_string(arguments.get("project"))
-        tasks = [task_to_json(task) for task in list_tasks(db, project=project)]
+        tasks = [task_list_to_json(task) for task in list_tasks(db, project=project)]
         counts = {status: 0 for status in STATUSES}
         for task in tasks:
             counts[task["status"]] += 1
@@ -1586,6 +1587,10 @@ def require_webhook_config(db: Session, webhook_id: str):
 
 def task_to_json(task: Task) -> dict[str, Any]:
     return serialize_task(task).model_dump(mode="json")
+
+
+def task_list_to_json(task: Task) -> dict[str, Any]:
+    return serialize_task_list(task).model_dump(mode="json")
 
 
 def task_link_to_json(link) -> dict[str, Any]:

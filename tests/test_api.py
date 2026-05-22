@@ -5,6 +5,7 @@ import hashlib
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+from sqlalchemy import event
 
 from flow_app.config import FLOW_VERSION
 from flow_app.main import create_app
@@ -56,6 +57,54 @@ def test_create_list_and_patch_task(client):
     assert patched["title"] == "Expose Flow"
     assert patched["priority"] == 95
     assert patched["assignee"] == "codex"
+
+
+def test_list_tasks_uses_lightweight_response_without_detail_fields(client):
+    task = create_task(client)
+    note = client.post(f"/api/tasks/{task['id']}/note", json={"note": "Implementation note."})
+    assert note.status_code == 200, note.text
+    handoff = client.post(
+        f"/api/tasks/{task['id']}/handoff",
+        json={"summary": "Ready for review.", "tests_run": ["python -m pytest tests/ -v"]},
+    )
+    assert handoff.status_code == 201, handoff.text
+
+    listed = client.get("/api/tasks")
+    assert listed.status_code == 200
+    list_item = listed.json()[0]
+    assert "notes" not in list_item
+    assert "latest_handoff" not in list_item
+
+    detail = client.get(f"/api/tasks/{task['id']}")
+    assert detail.status_code == 200
+    detail_item = detail.json()
+    assert detail_item["notes"][0]["body"] == "Implementation note."
+    assert detail_item["latest_handoff"]["summary"] == "Ready for review."
+
+
+def test_list_tasks_query_count_does_not_scale_with_notes_or_handoffs(client):
+    for index in range(5):
+        task = create_task(client, title=f"List query task {index}")
+        note = client.post(f"/api/tasks/{task['id']}/note", json={"note": f"Note {index}."})
+        assert note.status_code == 200, note.text
+        handoff = client.post(f"/api/tasks/{task['id']}/handoff", json={"summary": f"Handoff {index}."})
+        assert handoff.status_code == 201, handoff.text
+
+    statements = []
+
+    def count_statement(_conn, _cursor, statement, _parameters, _context, _executemany):
+        if statement.lstrip().upper().startswith("SELECT"):
+            statements.append(statement)
+
+    event.listen(client.app.state.engine, "before_cursor_execute", count_statement)
+    try:
+        response = client.get("/api/tasks")
+    finally:
+        event.remove(client.app.state.engine, "before_cursor_execute", count_statement)
+
+    assert response.status_code == 200
+    assert len(response.json()) == 5
+    assert len(statements) <= 3
 
 
 def test_api_key_create_list_and_revoke(client):

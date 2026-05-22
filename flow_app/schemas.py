@@ -310,6 +310,25 @@ class TaskResponse(BaseModel):
     updated_at: datetime
 
 
+class TaskListResponse(BaseModel):
+    id: str
+    title: str
+    status: str
+    priority: int
+    project: str
+    assignee: str | None
+    human_required: bool
+    assignee_type: str
+    blocker_reason: str
+    complexity: str
+    impact: str
+    effort: str
+    risk: str
+    description: str
+    created_at: datetime
+    updated_at: datetime
+
+
 class TaskLinkCreate(BaseModel):
     parent_id: str
     child_id: str

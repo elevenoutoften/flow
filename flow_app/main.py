@@ -25,6 +25,7 @@ from .repository import (
     add_note,
     archive_idea,
     auto_promote_unblocked_children,
+    batch_dependency_summaries,
     create_agent,
     create_agent_api_key,
     create_automation_rule,
@@ -76,6 +77,7 @@ from .repository import (
     serialize_idea,
     serialize_project,
     serialize_task,
+    serialize_task_list,
     serialize_task_handoff,
     serialize_task_link,
     serialize_webhook_config,
@@ -126,6 +128,7 @@ from .schemas import (
     HandoffRequest,
     HandoffResponse,
     TaskCreate,
+    TaskListResponse,
     TaskLinkCreate,
     TaskLinkResponse,
     TaskResponse,
@@ -307,7 +310,7 @@ def create_app(
         tasks_by_status = {status_name: [] for status_name in STATUSES}
         for task in tasks:
             tasks_by_status.setdefault(task.status, []).append(task)
-        dependencies_by_task = {task.id: get_dependency_summary(db, task.id) for task in tasks}
+        dependencies_by_task = batch_dependency_summaries(db, [task.id for task in tasks])
         actor = resolve_actor(
             db,
             authorization,
@@ -771,7 +774,7 @@ def create_app(
             raise HTTPException(status_code=404, detail="No unclaimed task is available.")
         return serialize_task(task)
 
-    @app.get("/api/tasks", response_model=list[TaskResponse])
+    @app.get("/api/tasks", response_model=list[TaskListResponse])
     def api_list_tasks(
         db: Session = Depends(get_db),
         project: str | None = Query(default=None),
@@ -783,7 +786,7 @@ def create_app(
         if status_filter and status_filter not in STATUSES:
             raise HTTPException(status_code=422, detail="Invalid task status.")
         return [
-            serialize_task(task)
+            serialize_task_list(task)
             for task in list_tasks(
                 db,
                 project=project,

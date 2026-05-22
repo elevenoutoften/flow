@@ -611,7 +611,135 @@ def test_read_only_cannot_claim_release_done_or_note_tasks(client, no_auth_clien
 
     assert no_auth_client.post(f"/api/tasks/{task['id']}/claim", json={"agent_name": "strict-reader"}, headers=headers).status_code == 403
     assert no_auth_client.post(f"/api/tasks/{task['id']}/release", json={}, headers=headers).status_code == 403
+    assert no_auth_client.post(f"/api/tasks/{task['id']}/note", json={"note": "Denied."}, headers=headers).status_code == 403
     assert no_auth_client.patch(f"/api/tasks/{task['id']}", json={"title": "Forbidden"}, headers=headers).status_code == 403
+
+
+class TestScopedNotePermissions:
+    def test_admin_can_note_any_task(self, client, no_auth_client):
+        headers = create_role_headers(client, "admin", "note-admin")
+
+        for index, task in enumerate(
+            [
+                create_task(client, title="Admin note todo", status="todo"),
+                create_task(client, title="Admin note review", status="review", assignee="other-agent"),
+            ],
+        ):
+            response = no_auth_client.post(
+                f"/api/tasks/{task['id']}/note",
+                json={"note": f"Admin note {index}."},
+                headers=headers,
+            )
+            assert response.status_code == 200, response.text
+            assert response.json()["notes"][-1]["body"] == f"Admin note {index}."
+
+    def test_architect_can_note_any_task(self, client, no_auth_client):
+        headers = create_role_headers(client, "architect", "note-architect")
+
+        for index, task in enumerate(
+            [
+                create_task(client, title="Architect note doing", status="doing"),
+                create_task(client, title="Architect note backlog", status="backlog", assignee="other-agent"),
+            ],
+        ):
+            response = no_auth_client.post(
+                f"/api/tasks/{task['id']}/note",
+                json={"note": f"Architect note {index}."},
+                headers=headers,
+            )
+            assert response.status_code == 200, response.text
+            assert response.json()["notes"][-1]["body"] == f"Architect note {index}."
+
+    def test_implementer_can_note_their_own_assigned_task(self, client, no_auth_client):
+        headers = create_role_headers(client, "implementer", "note-implementer")
+        task = create_task(client, status="doing", assignee="note-implementer")
+
+        response = no_auth_client.post(
+            f"/api/tasks/{task['id']}/note",
+            json={"note": "Implementation note."},
+            headers=headers,
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["notes"][-1]["body"] == "Implementation note."
+
+    def test_implementer_cannot_note_unassigned_task(self, client, no_auth_client):
+        headers = create_role_headers(client, "implementer", "note-implementer")
+        task = create_task(client, status="todo")
+
+        response = no_auth_client.post(
+            f"/api/tasks/{task['id']}/note",
+            json={"note": "Denied."},
+            headers=headers,
+        )
+
+        assert response.status_code == 403
+        assert client.get(f"/api/tasks/{task['id']}").json()["notes"] == []
+
+    def test_implementer_cannot_note_task_assigned_to_someone_else(self, client, no_auth_client):
+        headers = create_role_headers(client, "implementer", "note-implementer")
+        task = create_task(client, status="doing", assignee="other-implementer")
+
+        response = no_auth_client.post(
+            f"/api/tasks/{task['id']}/note",
+            json={"note": "Denied."},
+            headers=headers,
+        )
+
+        assert response.status_code == 403
+        assert client.get(f"/api/tasks/{task['id']}").json()["notes"] == []
+
+    def test_reviewer_can_note_task_in_review_status(self, client, no_auth_client):
+        headers = create_role_headers(client, "reviewer", "note-reviewer")
+        task = create_task(client, status="review")
+
+        response = no_auth_client.post(
+            f"/api/tasks/{task['id']}/note",
+            json={"note": "Review note."},
+            headers=headers,
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["notes"][-1]["body"] == "Review note."
+
+    def test_reviewer_cannot_note_task_in_todo_status(self, client, no_auth_client):
+        headers = create_role_headers(client, "reviewer", "note-reviewer")
+        task = create_task(client, status="todo")
+
+        response = no_auth_client.post(
+            f"/api/tasks/{task['id']}/note",
+            json={"note": "Denied."},
+            headers=headers,
+        )
+
+        assert response.status_code == 403
+        assert client.get(f"/api/tasks/{task['id']}").json()["notes"] == []
+
+    def test_reviewer_cannot_note_task_in_doing_status(self, client, no_auth_client):
+        headers = create_role_headers(client, "reviewer", "note-reviewer")
+        task = create_task(client, status="doing")
+
+        response = no_auth_client.post(
+            f"/api/tasks/{task['id']}/note",
+            json={"note": "Denied."},
+            headers=headers,
+        )
+
+        assert response.status_code == 403
+        assert client.get(f"/api/tasks/{task['id']}").json()["notes"] == []
+
+    def test_read_only_cannot_note_any_task(self, client, no_auth_client):
+        headers = create_role_headers(client, "read_only", "note-reader")
+        task = create_task(client, status="review")
+
+        response = no_auth_client.post(
+            f"/api/tasks/{task['id']}/note",
+            json={"note": "Denied."},
+            headers=headers,
+        )
+
+        assert response.status_code == 403
+        assert client.get(f"/api/tasks/{task['id']}").json()["notes"] == []
 
 
 def test_done_cannot_be_reopened_by_implementer_or_reviewer(client, no_auth_client):

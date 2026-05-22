@@ -213,6 +213,19 @@ def has_permission(actor: Actor, permission: Permission) -> bool:
     return permission in ROLE_PERMISSIONS.get(actor.role, set())
 
 
+def can_note_task(actor: Actor, task: Task) -> bool:
+    """Check if an actor can add a note to a task based on role and task state."""
+    if not has_permission(actor, Permission.TASKS_NOTE):
+        return False
+    if actor.role in {ApiKeyRole.admin, ApiKeyRole.architect}:
+        return True
+    if actor.role == ApiKeyRole.implementer:
+        return task.assignee == actor.name
+    if actor.role == ApiKeyRole.reviewer:
+        return task.status == "review"
+    return False
+
+
 def is_valid_transition(actor: Actor, current_status: str, target_status: str) -> bool:
     if actor.role in {ApiKeyRole.admin, ApiKeyRole.architect}:
         return True

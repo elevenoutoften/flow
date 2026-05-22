@@ -21,12 +21,13 @@ Flow uses role-scoped API keys to control access. Every key has one of five role
 | `tasks:edit` | ✅ | ✅ | ❌ | ❌ | ❌ |
 | `tasks:claim` | ✅ | ✅ | ✅ | ✅ | ❌ |
 | `tasks:move` | ✅ | ✅ | ✅ | ✅ | ❌ |
+| `tasks:note` | ✅ | ✅ | ⚠️ | ⚠️ | ❌ |
 | `tasks:done` | ✅ | ✅ | ❌ | ✅ | ❌ |
 | `tasks:set_human_required` | ✅ | ✅ | ⚠️ | ⚠️ | ❌ |
 | `key:manage` | ✅ | ❌ | ❌ | ❌ | ❌ |
 | `board:view` | ✅ | ✅ | ✅ | ✅ | ✅ |
 
-⚠️ = restricted access, see Human-Required Permissions below.
+⚠️ = restricted access, see Note Permissions and Human-Required Permissions below.
 
 ## Task Status Transitions by Role
 
@@ -48,6 +49,18 @@ Flow uses role-scoped API keys to control access. Every key has one of five role
 - `backlog` is protected — only admin and architect can move tasks to/from backlog
 - Implementers work within `todo` → `doing` → `review`
 - Reviewers control `review` → `done` and can send tasks back
+
+## Note Permissions
+
+Adding task notes is scoped by role:
+
+| Role | Can note | Condition |
+|------|----------|-----------|
+| `admin` | Any task | - |
+| `architect` | Any task | - |
+| `implementer` | Own tasks only | `task.assignee == actor.name` |
+| `reviewer` | Review tasks only | `task.status == "review"` |
+| `read_only` | None | - |
 
 ## Human-Required Field Permissions
 

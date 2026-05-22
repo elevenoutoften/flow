@@ -149,6 +149,7 @@ from .security import (
     Permission,
     PermissionDenied,
     authorize_task_update,
+    can_note_task,
     has_permission,
     is_valid_transition,
     require_permission,
@@ -1038,6 +1039,11 @@ def create_app(
         actor: Actor = Depends(require_permission(Permission.TASKS_NOTE)),
     ):
         task = _require_task(db, task_id)
+        if not can_note_task(actor, task):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Insufficient permission to note this task.",
+            )
         author = payload.author or actor.name
         add_note(db, task, payload.note, author=author)
         _commit(db)

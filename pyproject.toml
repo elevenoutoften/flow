@@ -25,6 +25,9 @@ test = [
   "pytest>=8.0,<9.0"
 ]
 
+[project.scripts]
+flow-runner = "flow_app.runner:main"
+
 [project.urls]
 Repository = "https://github.com/elevenoutoften/flow"
 

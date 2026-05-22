@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from flow_app.config import FLOW_VERSION
 from flow_app.main import create_app
+from flow_app.models import Task
 from flow_app.schemas import ApiKeyRole
 from flow_app.security import SESSION_COOKIE_NAME, Actor, Permission, ROLE_PERMISSIONS, sign_session
 
@@ -734,6 +735,105 @@ class TestScopedNotePermissions:
         )
         assert reviewer_note.status_code == 200, reviewer_note.text
         assert reviewer_note.json()["notes"][-1]["body"] == "Review note."
+
+    def test_claim_key_takeover_prevented(self, client, no_auth_client):
+        key_a_headers = create_role_headers(client, "implementer", "claim-key-a")
+        key_b_headers = create_role_headers(client, "implementer", "claim-key-b")
+        task = create_task(client, status="todo")
+
+        first_claim = no_auth_client.post(
+            f"/api/tasks/{task['id']}/claim",
+            json={"agent_name": "test-impl"},
+            headers=key_a_headers,
+        )
+        assert first_claim.status_code == 200, first_claim.text
+        assert first_claim.json()["assignee"] == "test-impl"
+
+        takeover_attempt = no_auth_client.post(
+            f"/api/tasks/{task['id']}/claim",
+            json={"agent_name": "test-impl"},
+            headers=key_b_headers,
+        )
+        assert takeover_attempt.status_code == 409
+        assert takeover_attempt.json()["detail"] == "Task is already claimed by a different key."
+
+        repeat_claim = no_auth_client.post(
+            f"/api/tasks/{task['id']}/claim",
+            json={"agent_name": "test-impl"},
+            headers=key_a_headers,
+        )
+        assert repeat_claim.status_code == 200, repeat_claim.text
+
+        key_a_note = no_auth_client.post(
+            f"/api/tasks/{task['id']}/note",
+            json={"note": "Original claimer note."},
+            headers=key_a_headers,
+        )
+        assert key_a_note.status_code == 200, key_a_note.text
+
+        key_b_note = no_auth_client.post(
+            f"/api/tasks/{task['id']}/note",
+            json={"note": "Denied."},
+            headers=key_b_headers,
+        )
+        assert key_b_note.status_code == 403
+
+        released = no_auth_client.post(f"/api/tasks/{task['id']}/release", json={}, headers=key_a_headers)
+        assert released.status_code == 200, released.text
+        assert released.json()["assignee"] is None
+
+        key_b_claim_after_release = no_auth_client.post(
+            f"/api/tasks/{task['id']}/claim",
+            json={"agent_name": "test-impl"},
+            headers=key_b_headers,
+        )
+        assert key_b_claim_after_release.status_code == 200, key_b_claim_after_release.text
+        assert key_b_claim_after_release.json()["assignee"] == "test-impl"
+
+    def test_legacy_claim_without_claimer_key_id_uses_assignee_fallback(self, client, no_auth_client):
+        key_a_headers = create_role_headers(client, "implementer", "legacy-impl")
+        key_b_headers = create_role_headers(client, "implementer", "legacy-impl")
+        task = create_task(client, status="doing", assignee="legacy-impl")
+
+        key_a_note = no_auth_client.post(
+            f"/api/tasks/{task['id']}/note",
+            json={"note": "Legacy fallback note A."},
+            headers=key_a_headers,
+        )
+        assert key_a_note.status_code == 200, key_a_note.text
+
+        with client.app.state.SessionLocal() as db:
+            db_task = db.get(Task, task["id"])
+            assert db_task is not None
+            db_task.assignee = "legacy-impl"
+            db_task.status = "doing"
+            db_task.claimer_key_id = None
+            db.commit()
+
+        key_b_reclaim = no_auth_client.post(
+            f"/api/tasks/{task['id']}/claim",
+            json={"agent_name": "legacy-impl"},
+            headers=key_b_headers,
+        )
+        assert key_b_reclaim.status_code == 200, key_b_reclaim.text
+
+        released = no_auth_client.post(f"/api/tasks/{task['id']}/release", json={}, headers=key_b_headers)
+        assert released.status_code == 200, released.text
+
+        with client.app.state.SessionLocal() as db:
+            db_task = db.get(Task, task["id"])
+            assert db_task is not None
+            db_task.assignee = "legacy-impl"
+            db_task.status = "doing"
+            db_task.claimer_key_id = None
+            db.commit()
+
+        key_b_note = no_auth_client.post(
+            f"/api/tasks/{task['id']}/note",
+            json={"note": "Legacy fallback note B."},
+            headers=key_b_headers,
+        )
+        assert key_b_note.status_code == 200, key_b_note.text
 
     def test_reviewer_can_note_task_in_review_status(self, client, no_auth_client):
         headers = create_role_headers(client, "reviewer", "note-reviewer")

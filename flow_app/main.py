@@ -948,6 +948,8 @@ def create_app(
             raise HTTPException(status_code=400, detail="agent_name is required.")
         if task.assignee and task.assignee != assignee:
             raise HTTPException(status_code=409, detail=f"Task is already claimed by {task.assignee}.")
+        if task.claimer_key_id and task.claimer_key_id != actor.key_id:
+            raise HTTPException(status_code=409, detail="Task is already claimed by a different key.")
         task.assignee = assignee
         task.claimer_key_id = actor.key_id
         if task.status in {"backlog", "todo"}:

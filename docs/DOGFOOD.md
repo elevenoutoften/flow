@@ -131,3 +131,26 @@ If Hermes is not on `PATH`, set `HERMES_COMMAND` in the dispatcher environment o
 ## Security Notes
 
 Use a dedicated API key for Hermes and rotate it regularly. Store the key only in the dispatcher runtime environment or secret manager, not in the agent command string. Prefer the least role that can claim tasks, edit task notes, move tasks to review, create handoffs, heartbeat runs, and complete runs. Keep `max_concurrency` conservative until Hermes runs are predictable, and set `working_directory` deliberately so the agent only edits intended repositories.
+
+## Fresh Install Bootstrap
+
+```bash
+# Clone and install
+git clone https://github.com/elevenoutoften/flow.git
+cd flow
+pip install -e .
+
+# Bootstrap (creates project, keys, agent, workspace, rules)
+flow-bootstrap
+
+# Save the printed API keys - they are shown only once.
+# Start the server
+uvicorn flow_app.main:app --port 8100
+
+# Verify health
+curl http://127.0.0.1:8100/healthz
+
+# Dispatch the smoke-test agent
+curl -s -X POST "http://127.0.0.1:8100/api/agents/<agent_id>/dispatch" \
+  -H "Authorization: Bearer <admin-key>"
+```

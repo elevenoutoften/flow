@@ -1094,7 +1094,6 @@ def create_app(
         if idea is None:
             raise HTTPException(status_code=404, detail="Idea not found.")
         tasks, idea = promote_tasks(db, idea, payload)
-        _commit(db)
         for task in tasks:
             _webhook_notifier.send(db, "idea_promoted", task, {"idea_id": idea.id})
         _commit(db)

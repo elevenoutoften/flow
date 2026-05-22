@@ -6,7 +6,11 @@ import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from flow_app.models import utcnow
+from fastapi.testclient import TestClient
+from sqlalchemy import select
+
+from flow_app import main as main_module
+from flow_app.models import Task, WebhookDelivery, utcnow
 from flow_app.notifications import WebhookNotificationProvider
 from flow_app.repository import (
     create_task as repo_create_task,
@@ -227,6 +231,66 @@ def test_webhook_emits_on_task_completed(client):
 
     assert response.status_code == 200, response.text
     assert_single_delivery(client, config["id"], "task_completed", task["id"])
+
+
+def test_task_mutations_commit_with_webhook_outbox_rows(client):
+    create_webhook(
+        client,
+        events=["task_created", "task_claimed", "task_moved", "task_completed"],
+    )
+
+    task = create_task(client)
+    claim_response = client.post(f"/api/tasks/{task['id']}/claim", json={"agent_name": "codex"})
+    move_response = client.post(f"/api/tasks/{task['id']}/move", json={"status": "review"})
+    done_response = client.post(f"/api/tasks/{task['id']}/done", json={"summary": "Finished"})
+
+    assert claim_response.status_code == 200, claim_response.text
+    assert move_response.status_code == 200, move_response.text
+    assert done_response.status_code == 200, done_response.text
+
+    with client.app.state.SessionLocal() as db:
+        saved_task = db.get(Task, task["id"])
+        deliveries = list(
+            db.scalars(
+                select(WebhookDelivery)
+                .where(WebhookDelivery.webhook_id == "webhook_000001")
+                .order_by(WebhookDelivery.id)
+            ).all()
+        )
+
+    assert saved_task is not None
+    assert saved_task.status == "done"
+    assert [delivery.event for delivery in deliveries] == [
+        "task_created",
+        "task_claimed",
+        "task_moved",
+        "task_completed",
+    ]
+
+
+def test_task_create_rolls_back_when_webhook_outbox_write_fails(client):
+    create_webhook(client, events=["task_created"])
+
+    with patch.object(main_module._webhook_notifier, "send", side_effect=RuntimeError("outbox write failed")):
+        with TestClient(client.app, raise_server_exceptions=False) as failing_client:
+            failing_client.headers.update(client.headers)
+            response = failing_client.post(
+                "/api/tasks",
+                json={
+                    "title": "Rollback task",
+                    "status": "todo",
+                    "priority": 50,
+                    "project": "default",
+                },
+            )
+
+    assert response.status_code == 500
+    with client.app.state.SessionLocal() as db:
+        task_count = len(db.scalars(select(Task).where(Task.title == "Rollback task")).all())
+        delivery_count = len(db.scalars(select(WebhookDelivery)).all())
+
+    assert task_count == 0
+    assert delivery_count == 0
 
 
 def test_webhook_emits_on_task_blocked(client):

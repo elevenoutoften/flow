@@ -76,6 +76,10 @@ class TaskService:
 
     Transport adapters call these methods and translate TaskError subclasses
     into HTTP or JSON-RPC specific responses.
+
+    Mutation methods keep business state, rule events, webhook outbox rows, and
+    notification delivery rows in one transaction. A visible task mutation must
+    not be committed unless its associated delivery rows are committed too.
     """
 
     def __init__(self, db: Session, commit_fn: Callable[[Session], None], webhook_notifier, telegram_notifier, rule_emitter):
@@ -88,9 +92,7 @@ class TaskService:
     def create_task(self, payload: TaskCreate, actor: Actor | None = None) -> Task:
         task = create_task(self.db, payload)
         self._emit_rule(self.db, "task_created", task_id=task.id, actor=actor)
-        self._commit(self.db)
         self._webhook.send(self.db, "task_created", task)
-        self._commit(self.db)
         self._telegram.send(self.db, "task_created", task)
         self._commit(self.db)
         return task
@@ -101,7 +103,6 @@ class TaskService:
         if payload.human_required is False:
             payload = payload.model_copy(update={"blocker_reason": ""})
         task = update_task(self.db, task, payload)
-        self._commit(self.db)
         if not was_human_required and bool(task.human_required):
             self._emit_rule(self.db, "task_blocked", task_id=task.id, actor=actor)
             self._webhook.send(
@@ -110,14 +111,13 @@ class TaskService:
                 task,
                 {"human_required": True, "blocker_reason": task.blocker_reason},
             )
-            self._commit(self.db)
             self._telegram.send(
                 self.db,
                 "task_blocked",
                 task,
                 {"human_required": True, "blocker_reason": task.blocker_reason},
             )
-            self._commit(self.db)
+        self._commit(self.db)
         return task
 
     def claim_task(self, task_id: str, actor: Actor, agent_name: str | None = None) -> Task:
@@ -138,10 +138,8 @@ class TaskService:
             task.status = "doing"
         update_task(self.db, task, TaskUpdate())
         self._emit_rule(self.db, "task_claimed", task_id=task_id, data={"assignee": assignee}, actor=actor)
-        self._commit(self.db)
         data = {"status": {"from": old_status, "to": task.status}, "assignee": task.assignee}
         self._webhook.send(self.db, "task_claimed", task, data)
-        self._commit(self.db)
         self._telegram.send(self.db, "task_claimed", task, data)
         self._commit(self.db)
         return task
@@ -178,10 +176,8 @@ class TaskService:
             data={"from_status": old_status, "to_status": target_status},
             actor=actor,
         )
-        self._commit(self.db)
         data = {"status": {"from": old_status, "to": task.status}}
         self._webhook.send(self.db, "task_moved", task, data)
-        self._commit(self.db)
         self._telegram.send(self.db, "task_moved", task, data)
         self._commit(self.db)
         return task
@@ -228,10 +224,8 @@ class TaskService:
         update_task(self.db, task, TaskUpdate())
         auto_promote_unblocked_children(self.db, task.id)
         self._emit_rule(self.db, "task_completed", task_id=task_id, actor=actor)
-        self._commit(self.db)
         data = {"status": {"from": old_status, "to": "done"}}
         self._webhook.send(self.db, "task_completed", task, data)
-        self._commit(self.db)
         self._telegram.send(self.db, "task_completed", task, data)
         self._commit(self.db)
         return self._require_task(task_id)

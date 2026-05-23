@@ -542,13 +542,14 @@ def create_app(
         db: Session = Depends(get_db),
         _actor: Actor = Depends(require_permission(Permission.WORKSPACE_MANAGE)),
     ):
-        if get_workspace_config(db, config_id) is None:
+        config = get_workspace_config(db, config_id)
+        if config is None:
             raise HTTPException(status_code=404, detail="Workspace config not found.")
         return {
             "workspace_id": config_id,
             "strategy": payload.strategy,
             "path": payload.path,
-            "cleaned": cleanup_workspace(config_id, payload.strategy, payload.path),
+            "cleaned": cleanup_workspace(config_id, payload.strategy, payload.path, config),
         }
 
     @app.get("/api/automation-rules", response_model=list[AutomationRuleResponse])

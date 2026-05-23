@@ -3,11 +3,13 @@ from __future__ import annotations
 import ntpath
 from types import SimpleNamespace
 
+import pytest
+
 from flow_app.database import build_engine, build_session_factory
 from flow_app.main import ensure_compatible_schema
 from flow_app.repository import create_agent, create_agent_run, create_task, get_task_workspace, save_run_workspace_state
-from flow_app.schemas import AgentCreate, TaskCreate
-from flow_app.workspace import WorkspaceResult
+from flow_app.schemas import AgentCreate, TaskCreate, WorkspaceConfigCreate
+from flow_app.workspace import WorkspaceResult, cleanup_workspace, provision_workspace, validate_containment, validate_task_id
 
 
 def bearer_headers(api_key: str) -> dict[str, str]:
@@ -43,6 +45,73 @@ def rpc(client, name: str, arguments: dict, headers: dict | None = None):
         json={"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": name, "arguments": arguments}},
         headers=headers or {},
     )
+
+
+def test_validate_task_id_accepts_safe_ids():
+    for task_id in ("flow_000001", "idea_000003", "ws_000005"):
+        assert validate_task_id(task_id) == task_id
+
+
+def test_validate_task_id_rejects_unsafe_ids():
+    for task_id in ("../etc", "foo/bar", r".\..\..", "", "/tmp/flow_000001", "flow_000001/extra"):
+        with pytest.raises(ValueError):
+            validate_task_id(task_id)
+
+
+def test_validate_containment_rejects_sibling_directory(tmp_path):
+    root = tmp_path / "root"
+    sibling = tmp_path / "root2" / "flow_000001"
+    root.mkdir()
+    sibling.parent.mkdir()
+
+    with pytest.raises(ValueError):
+        validate_containment(str(sibling), str(root))
+
+
+def test_validate_containment_rejects_symlink_escaping_root(tmp_path):
+    root = tmp_path / "root"
+    outside = tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    link = root / "flow_000001"
+    link.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError):
+        validate_containment(str(link), str(root))
+
+
+def test_provision_workspace_with_traversal_task_id_returns_error(tmp_path):
+    config = WorkspaceConfigCreate(name="scratch", strategy="scratch_dir", scratch_root=str(tmp_path / "scratch"))
+
+    result = provision_workspace(config, "../../etc")
+
+    assert result.ready is False
+    assert "Invalid task ID format" in str(result.error)
+    assert not (tmp_path / "scratch").exists()
+
+
+def test_cleanup_workspace_rejects_escaping_path(tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    keep = outside / "keep.txt"
+    keep.write_text("keep", encoding="utf-8")
+    config = SimpleNamespace(strategy="shared_dir", root_dir=str(root), scratch_root=str(tmp_path / "scratch"))
+
+    assert cleanup_workspace("ws-flow_000001", "shared_dir", str(outside), config) is False
+    assert keep.exists()
+
+
+def test_cleanup_workspace_valid_path_succeeds(tmp_path):
+    root = tmp_path / "root"
+    workspace_dir = root / "flow_000001"
+    workspace_dir.mkdir(parents=True)
+    (workspace_dir / "artifact.txt").write_text("remove", encoding="utf-8")
+    config = SimpleNamespace(strategy="shared_dir", root_dir=str(root), scratch_root=str(tmp_path / "scratch"))
+
+    assert cleanup_workspace("ws-flow_000001", "shared_dir", str(workspace_dir), config) is True
+    assert not workspace_dir.exists()
 
 
 def test_workspace_config_crud_create_list_get_update_enable_disable(client):
@@ -272,7 +341,12 @@ def test_mcp_workspace_tools(client, tmp_path, monkeypatch):
     cleaned = rpc(
         client,
         "flow_cleanup_workspace",
-        {"workspace_id": provisioned["workspace_id"], "strategy": "git_worktree", "path": provisioned["path"]},
+        {
+            "config_id": created["id"],
+            "workspace_id": provisioned["workspace_id"],
+            "strategy": "git_worktree",
+            "path": provisioned["path"],
+        },
     ).json()["result"]["structuredContent"]
     assert cleaned["cleaned"] is True
 

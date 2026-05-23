@@ -32,6 +32,7 @@ from .repository import (
     find_capable_agents,
     get_agent_by_name,
     get_project,
+    get_task,
     list_agent_runs,
     list_tasks,
     list_workspace_configs,
@@ -274,7 +275,9 @@ def _cleanup_run_workspace(session: Session, run: AgentRun) -> bool | None:
     path = state.get("path")
     if not workspace_id or not strategy or not path:
         return None
-    cleaned = cleanup_workspace(str(workspace_id), str(strategy), str(path))
+    task = get_task(session, run.task_id)
+    config = _workspace_config_for_task(session, task) if task is not None else None
+    cleaned = cleanup_workspace(str(workspace_id), str(strategy), str(path), config)
     mark_run_workspace_cleaned(session, run, cleaned=cleaned)
     return cleaned
 

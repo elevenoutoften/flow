@@ -671,6 +671,7 @@ TOOLS: list[dict[str, Any]] = [
         "inputSchema": {
             "type": "object",
             "properties": {
+                "config_id": {"type": "string"},
                 "workspace_id": {"type": "string"},
                 "strategy": {"type": "string", "enum": list(WORKSPACE_STRATEGIES)},
                 "path": {"type": "string"},
@@ -1404,7 +1405,9 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
         workspace_id = require_string(arguments.get("workspace_id"), "workspace_id")
         strategy = require_string(arguments.get("strategy"), "strategy")
         path = require_string(arguments.get("path"), "path")
-        cleaned = cleanup_workspace(workspace_id, strategy, path)
+        config_id = optional_string(arguments.get("config_id"))
+        config = require_workspace_config(db, config_id) if config_id else None
+        cleaned = cleanup_workspace(workspace_id, strategy, path, config)
         return tool_result(
             {"workspace_id": workspace_id, "strategy": strategy, "path": path, "cleaned": cleaned},
             f"Cleaned Flow workspace {workspace_id}.",

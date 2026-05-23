@@ -166,6 +166,7 @@ from .services.task import (
     SendbackContractError,
     TaskAlreadyClaimedError,
     TaskClaimKeyConflictError,
+    TaskConcurrentModificationError,
     TaskNotFoundError,
     TaskService,
 )
@@ -927,7 +928,10 @@ def create_app(
             authorize_task_update(actor, task, payload)
         except PermissionDenied as exc:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=exc.detail)
-        task = _make_task_service(db).update_task(task_id, payload, actor)
+        try:
+            task = _make_task_service(db).update_task(task_id, payload, actor)
+        except TaskConcurrentModificationError as exc:
+            raise HTTPException(status_code=409, detail=exc.message)
         return serialize_task(task)
 
     @app.post("/api/tasks/{task_id}/claim", response_model=TaskResponse)
@@ -942,6 +946,8 @@ def create_app(
         except TaskNotFoundError:
             raise HTTPException(status_code=404, detail="Task not found.")
         except (TaskAlreadyClaimedError, TaskClaimKeyConflictError) as exc:
+            raise HTTPException(status_code=409, detail=exc.message)
+        except TaskConcurrentModificationError as exc:
             raise HTTPException(status_code=409, detail=exc.message)
         except InvalidTransitionError as exc:
             raise HTTPException(status_code=403, detail=exc.message)
@@ -959,6 +965,8 @@ def create_app(
             task = _make_task_service(db).release_task(task_id)
         except TaskNotFoundError:
             raise HTTPException(status_code=404, detail="Task not found.")
+        except TaskConcurrentModificationError as exc:
+            raise HTTPException(status_code=409, detail=exc.message)
         return serialize_task(task)
 
     @app.post("/api/tasks/{task_id}/move", response_model=TaskResponse)
@@ -975,6 +983,8 @@ def create_app(
         except InvalidTransitionError as exc:
             raise HTTPException(status_code=403, detail=exc.message)
         except SendbackContractError as exc:
+            raise HTTPException(status_code=409, detail=exc.message)
+        except TaskConcurrentModificationError as exc:
             raise HTTPException(status_code=409, detail=exc.message)
         return serialize_task(task)
 
@@ -1012,6 +1022,8 @@ def create_app(
             raise HTTPException(status_code=404, detail="Task not found.")
         except InvalidTransitionError as exc:
             raise HTTPException(status_code=403, detail=exc.message)
+        except TaskConcurrentModificationError as exc:
+            raise HTTPException(status_code=409, detail=exc.message)
         return serialize_task(task)
 
     @app.get("/api/ideas", response_model=list[IdeaResponse])
@@ -1482,6 +1494,7 @@ def ensure_compatible_schema(engine) -> None:
         "import_batch_id": "VARCHAR(64)",
         "source_title": "VARCHAR(240)",
         "claimer_key_id": "VARCHAR(64)",
+        "version": "INTEGER NOT NULL DEFAULT 1",
         "human_required": "INTEGER NOT NULL DEFAULT 0",
         "assignee_type": "VARCHAR(24) NOT NULL DEFAULT 'agent'",
         "blocker_reason": "TEXT NOT NULL DEFAULT ''",

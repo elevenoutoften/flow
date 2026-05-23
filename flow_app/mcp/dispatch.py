@@ -88,6 +88,7 @@ from ..rules_engine import emit_event as emit_rule_event
 from ..services.task import (
     InvalidTransitionError,
     SendbackContractError,
+    TaskConcurrentModificationError,
     TaskNotFoundError,
     TaskService,
 )
@@ -925,6 +926,8 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
             task = _make_task_service(db).update_task(task_id, payload, actor)
         except TaskNotFoundError as exc:
             raise JsonRpcError(-32602, exc.message) from exc
+        except TaskConcurrentModificationError as exc:
+            raise JsonRpcError(-32603, exc.message) from exc
         data = task_to_json(task)
         return tool_result({"task": data}, f"Updated Flow task {data['id']}: {data['title']}")
 
@@ -939,6 +942,8 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
         except TaskNotFoundError as exc:
             raise JsonRpcError(-32602, exc.message) from exc
         except (InvalidTransitionError, SendbackContractError) as exc:
+            raise JsonRpcError(-32603, exc.message) from exc
+        except TaskConcurrentModificationError as exc:
             raise JsonRpcError(-32603, exc.message) from exc
         data = task_to_json(task)
         return tool_result({"task": data}, f"Moved Flow task {data['id']} to {data['status']}.")
@@ -1071,6 +1076,8 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
             )
         except TaskNotFoundError as exc:
             raise JsonRpcError(-32602, exc.message) from exc
+        except TaskConcurrentModificationError as exc:
+            raise JsonRpcError(-32603, exc.message) from exc
         data = task_to_json(task)
         state = "set" if data["human_required"] else "cleared"
         return tool_result({"task": data}, f"Human-required state {state} for Flow task {data['id']}.")

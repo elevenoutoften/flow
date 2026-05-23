@@ -5,7 +5,8 @@ import hashlib
 import json
 import secrets
 
-from sqlalchemy import Select, delete, select
+from sqlalchemy import Select, delete, select, update as sqlalchemy_update
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session, object_session, selectinload
 
 from .models import (
@@ -115,14 +116,16 @@ def generate_handoff_id(session: Session) -> str:
 
 
 def generate_counter_id(session: Session, name: str, prefix: str) -> str:
-    counter = session.get(FlowCounter, name)
-    if counter is None:
-        counter = FlowCounter(name=name, value=0)
-        session.add(counter)
-        session.flush()
-    counter.value += 1
+    stmt = sqlite_insert(FlowCounter).values(name=name, value=1)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["name"],
+        set_={"value": FlowCounter.value + 1},
+    )
+    session.execute(stmt)
     session.flush()
-    return f"{prefix}_{counter.value:06d}"
+
+    value = session.execute(select(FlowCounter.value).where(FlowCounter.name == name)).scalar_one()
+    return f"{prefix}_{value:06d}"
 
 
 def hash_api_key(api_key: str) -> str:
@@ -952,8 +955,9 @@ def auto_promote_unblocked_children(session: Session, parent_task_id: str) -> li
         ]
         parent_tasks = [get_task(session, link.parent_id) for link in parent_links]
         if parent_tasks and all(parent is not None and parent.status == "done" for parent in parent_tasks):
-            child.status = "todo"
-            update_task(session, child, TaskUpdate())
+            if not cas_update_task(session, child.id, child.version, {"status": "todo"}):
+                continue
+            child = require_task(session, child.id)
             add_note(
                 session,
                 child,
@@ -1105,6 +1109,18 @@ def create_task(session: Session, payload: TaskCreate) -> Task:
 
 
 def update_task(session: Session, task: Task, payload: TaskUpdate) -> Task:
+    changes = task_update_changes(payload)
+    for field, value in changes.items():
+        setattr(task, field, value)
+    if "project" in changes:
+        ensure_project(session, task.project)
+    task.updated_at = utcnow()
+    session.add(task)
+    session.flush()
+    return task
+
+
+def task_update_changes(payload: TaskUpdate) -> dict[str, object]:
     changes = payload.model_dump(exclude_unset=True)
     # Convert schema types to DB column types
     if "human_required" in changes:
@@ -1114,14 +1130,23 @@ def update_task(session: Session, task: Task, payload: TaskUpdate) -> Task:
     for enum_field in ("complexity", "impact", "effort", "risk"):
         if enum_field in changes and hasattr(changes[enum_field], "value"):
             changes[enum_field] = changes[enum_field].value
-    for field, value in changes.items():
-        setattr(task, field, value)
+    return changes
+
+
+def cas_update_task(session: Session, task_id: str, expected_version: int, updates: dict[str, object]) -> bool:
+    changes = dict(updates)
     if "project" in changes:
-        ensure_project(session, task.project)
-    task.updated_at = utcnow()
-    session.add(task)
+        ensure_project(session, str(changes["project"]))
+    changes["updated_at"] = utcnow()
+    changes["version"] = expected_version + 1
+    result = session.execute(
+        sqlalchemy_update(Task)
+        .where(Task.id == task_id, Task.version == expected_version)
+        .values(**changes)
+    )
     session.flush()
-    return task
+    session.expire_all()
+    return (result.rowcount or 0) > 0
 
 
 def next_task(session: Session, *, project: str | None = None) -> Task | None:

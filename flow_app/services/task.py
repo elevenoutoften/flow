@@ -10,11 +10,12 @@ from flow_app.models import ApiKeyRole, Task
 from flow_app.repository import (
     add_note,
     auto_promote_unblocked_children,
+    cas_update_task,
     create_task,
     create_task_handoff,
     get_task,
     serialize_task,
-    update_task,
+    task_update_changes,
 )
 from flow_app.schemas import HandoffRequest, TaskCreate, TaskUpdate
 from flow_app.security import Actor, can_note_task, is_valid_transition
@@ -42,6 +43,14 @@ class TaskAlreadyClaimedError(TaskError):
 class TaskClaimKeyConflictError(TaskError):
     def __init__(self):
         super().__init__("Task is already claimed by a different key.", "claim_key_conflict")
+
+
+class TaskConcurrentModificationError(TaskError):
+    def __init__(self, task_id: str):
+        super().__init__(
+            f"Task {task_id} was modified by another request. Please retry.",
+            "concurrent_modification",
+        )
 
 
 class InvalidTransitionError(TaskError):
@@ -99,10 +108,15 @@ class TaskService:
 
     def update_task(self, task_id: str, payload: TaskUpdate, actor: Actor) -> Task:
         task = self._require_task(task_id)
+        expected_version = task.version
         was_human_required = bool(task.human_required)
         if payload.human_required is False:
             payload = payload.model_copy(update={"blocker_reason": ""})
-        task = update_task(self.db, task, payload)
+        changes = task_update_changes(payload)
+        if changes and not cas_update_task(self.db, task_id, expected_version, changes):
+            self.db.rollback()
+            raise TaskConcurrentModificationError(task_id)
+        task = self._require_task(task_id)
         if not was_human_required and bool(task.human_required):
             self._emit_rule(self.db, "task_blocked", task_id=task.id, actor=actor)
             self._webhook.send(
@@ -122,6 +136,7 @@ class TaskService:
 
     def claim_task(self, task_id: str, actor: Actor, agent_name: str | None = None) -> Task:
         task = self._require_task(task_id)
+        expected_version = task.version
         old_status = task.status
         assignee = agent_name or actor.name
         if not assignee:
@@ -130,13 +145,20 @@ class TaskService:
             raise TaskAlreadyClaimedError(task.assignee)
         if task.claimer_key_id and task.claimer_key_id != actor.key_id:
             raise TaskClaimKeyConflictError()
-        task.assignee = assignee
-        task.claimer_key_id = actor.key_id
+        target_status = task.status
         if task.status in {"backlog", "todo"}:
             if not is_valid_transition(actor, task.status, "doing"):
                 raise InvalidTransitionError(actor.role.value, task.status, "doing")
-            task.status = "doing"
-        update_task(self.db, task, TaskUpdate())
+            target_status = "doing"
+        if not cas_update_task(
+            self.db,
+            task_id,
+            expected_version,
+            {"assignee": assignee, "claimer_key_id": actor.key_id, "status": target_status},
+        ):
+            self.db.rollback()
+            raise TaskConcurrentModificationError(task_id)
+        task = self._require_task(task_id)
         self._emit_rule(self.db, "task_claimed", task_id=task_id, data={"assignee": assignee}, actor=actor)
         data = {"status": {"from": old_status, "to": task.status}, "assignee": task.assignee}
         self._webhook.send(self.db, "task_claimed", task, data)
@@ -146,16 +168,25 @@ class TaskService:
 
     def release_task(self, task_id: str) -> Task:
         task = self._require_task(task_id)
-        task.assignee = None
-        task.claimer_key_id = None
+        expected_version = task.version
+        target_status = task.status
         if task.status == "doing":
-            task.status = "todo"
-        update_task(self.db, task, TaskUpdate())
+            target_status = "todo"
+        if not cas_update_task(
+            self.db,
+            task_id,
+            expected_version,
+            {"assignee": None, "claimer_key_id": None, "status": target_status},
+        ):
+            self.db.rollback()
+            raise TaskConcurrentModificationError(task_id)
+        task = self._require_task(task_id)
         self._commit(self.db)
         return task
 
     def move_task(self, task_id: str, target_status: str, actor: Actor) -> Task:
         task = self._require_task(task_id)
+        expected_version = task.version
         old_status = task.status
         if not is_valid_transition(actor, task.status, target_status):
             raise InvalidTransitionError(actor.role.value, task.status, target_status)
@@ -165,8 +196,10 @@ class TaskService:
             has_handoff = task_data.get("latest_handoff") is not None
             if not has_notes and not has_handoff:
                 raise SendbackContractError()
-        task.status = target_status
-        update_task(self.db, task, TaskUpdate())
+        if not cas_update_task(self.db, task_id, expected_version, {"status": target_status}):
+            self.db.rollback()
+            raise TaskConcurrentModificationError(task_id)
+        task = self._require_task(task_id)
         if target_status == "done":
             auto_promote_unblocked_children(self.db, task.id)
         self._emit_rule(
@@ -199,10 +232,14 @@ class TaskService:
         handoff: HandoffRequest | None = None,
     ) -> Task:
         task = self._require_task(task_id)
+        expected_version = task.version
         old_status = task.status
         if not is_valid_transition(actor, task.status, "done"):
             raise InvalidTransitionError(actor.role.value, task.status, "done", action="mark task as done")
-        task.status = "done"
+        if not cas_update_task(self.db, task_id, expected_version, {"status": "done"}):
+            self.db.rollback()
+            raise TaskConcurrentModificationError(task_id)
+        task = self._require_task(task_id)
         effective_author = author or actor.name
         if handoff is not None:
             create_task_handoff(
@@ -221,7 +258,6 @@ class TaskService:
                 handoff.capabilities,
             )
         add_note(self.db, task, summary, author=effective_author)
-        update_task(self.db, task, TaskUpdate())
         auto_promote_unblocked_children(self.db, task.id)
         self._emit_rule(self.db, "task_completed", task_id=task_id, actor=actor)
         data = {"status": {"from": old_status, "to": "done"}}
@@ -239,6 +275,7 @@ class TaskService:
         assignee_type: str | None = None,
     ) -> Task:
         task = self._require_task(task_id)
+        expected_version = task.version
         changes: dict[str, object] = {"human_required": human_required}
         if human_required:
             if blocker_reason is not None:
@@ -247,7 +284,11 @@ class TaskService:
                 changes["assignee_type"] = assignee_type
         else:
             changes["blocker_reason"] = ""
-        task = update_task(self.db, task, TaskUpdate(**changes))
+        changes = task_update_changes(TaskUpdate(**changes))
+        if not cas_update_task(self.db, task_id, expected_version, changes):
+            self.db.rollback()
+            raise TaskConcurrentModificationError(task_id)
+        task = self._require_task(task_id)
         self._commit(self.db)
         return task
 

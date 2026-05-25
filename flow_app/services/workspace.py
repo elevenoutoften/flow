@@ -59,7 +59,7 @@ class WorkspaceService:
         config_id: str,
         strategy: str,
         path: str,
-        config: WorkspaceConfig | None = None,
+        config: WorkspaceConfig,
     ) -> bool:
         cleaned = cleanup_workspace(config_id, strategy, path, config)
         self._commit()

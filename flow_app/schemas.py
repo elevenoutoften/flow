@@ -381,7 +381,7 @@ class WorkspaceConfigCreate(BaseModel):
     name: str
     strategy: str = "git_worktree"
     base_branch: str = "main"
-    branch_prefix: str = "task/"
+    branch_prefix: str = "task-"
     root_dir: str = ""
     scratch_root: str = "/tmp/flow-scratch"
     description: str = ""

@@ -206,7 +206,7 @@ class WorkspaceConfig(Base):
     name: Mapped[str] = mapped_column(String(180), nullable=False, unique=True)
     strategy: Mapped[str] = mapped_column(String(24), nullable=False, default="git_worktree")
     base_branch: Mapped[str] = mapped_column(String(240), nullable=False, default="main")
-    branch_prefix: Mapped[str] = mapped_column(String(120), nullable=False, default="task/")
+    branch_prefix: Mapped[str] = mapped_column(String(120), nullable=False, default="task-")
     root_dir: Mapped[str] = mapped_column(String(500), nullable=False, default="")
     scratch_root: Mapped[str] = mapped_column(String(500), nullable=False, default="/tmp/flow-scratch")
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")

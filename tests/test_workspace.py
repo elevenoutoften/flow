@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ntpath
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -9,7 +10,14 @@ from flow_app.database import build_engine, build_session_factory
 from flow_app.main import ensure_compatible_schema
 from flow_app.repository import create_agent, create_agent_run, create_task, get_task_workspace, save_run_workspace_state
 from flow_app.schemas import AgentCreate, TaskCreate, WorkspaceConfigCreate
-from flow_app.workspace import WorkspaceResult, cleanup_workspace, provision_workspace, validate_containment, validate_task_id
+from flow_app.workspace import (
+    WorkspaceResult,
+    cleanup_workspace,
+    provision_workspace,
+    validate_branch_component,
+    validate_containment,
+    validate_task_id,
+)
 
 
 def bearer_headers(api_key: str) -> dict[str, str]:
@@ -27,7 +35,7 @@ def create_workspace_config(client, **overrides):
         "name": "Default worktrees",
         "strategy": "git_worktree",
         "base_branch": "main",
-        "branch_prefix": "task/",
+        "branch_prefix": "task-",
         "root_dir": "",
         "scratch_root": "/tmp/flow-scratch",
         "description": "",
@@ -68,6 +76,7 @@ def test_validate_containment_rejects_sibling_directory(tmp_path):
         validate_containment(str(sibling), str(root))
 
 
+@pytest.mark.skipif(os.name == "nt" or not hasattr(os, "symlink"), reason="symlinks not available")
 def test_validate_containment_rejects_symlink_escaping_root(tmp_path):
     root = tmp_path / "root"
     outside = tmp_path / "outside"
@@ -101,6 +110,16 @@ def test_cleanup_workspace_rejects_escaping_path(tmp_path):
 
     assert cleanup_workspace("ws-flow_000001", "shared_dir", str(outside), config) is False
     assert keep.exists()
+
+
+def test_cleanup_workspace_requires_config(tmp_path):
+    workspace_dir = tmp_path / "flow_000001"
+    workspace_dir.mkdir()
+
+    with pytest.raises(TypeError):
+        cleanup_workspace("ws-flow_000001", "shared_dir", str(workspace_dir))
+
+    assert workspace_dir.exists()
 
 
 def test_cleanup_workspace_valid_path_succeeds(tmp_path):
@@ -149,6 +168,36 @@ def test_workspace_invalid_strategy_rejected(client):
     assert updated.status_code == 422
 
 
+def test_validate_branch_component_rejects_unsafe_values():
+    for value in ("../main", "feature/test", r"feature\test", "-main"):
+        with pytest.raises(ValueError):
+            validate_branch_component(value, "Branch")
+
+
+def test_git_worktree_provision_rejects_repo_outside_root(tmp_path):
+    root = tmp_path / "root"
+    repo = tmp_path / "repo"
+    root.mkdir()
+    repo.mkdir()
+    config = SimpleNamespace(strategy="git_worktree", branch_prefix="task-", base_branch="main", root_dir=str(root))
+
+    result = provision_workspace(config, "flow_000123", str(repo))
+
+    assert result.ready is False
+    assert "escapes workspace root" in str(result.error)
+    assert not (repo / ".worktrees").exists()
+
+
+def test_git_worktree_provision_rejects_unsafe_branch_config(tmp_path):
+    config = SimpleNamespace(strategy="git_worktree", branch_prefix="agent/", base_branch="main", root_dir="")
+
+    result = provision_workspace(config, "flow_000123", str(tmp_path))
+
+    assert result.ready is False
+    assert "Branch prefix contains unsafe characters" in str(result.error)
+    assert not (tmp_path / ".worktrees").exists()
+
+
 def test_git_worktree_provision_and_cleanup_use_subprocess(client, tmp_path, monkeypatch):
     calls = []
 
@@ -157,7 +206,7 @@ def test_git_worktree_provision_and_cleanup_use_subprocess(client, tmp_path, mon
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr("flow_app.workspace.subprocess.run", fake_run)
-    config = create_workspace_config(client, branch_prefix="agent/", base_branch="develop")
+    config = create_workspace_config(client, branch_prefix="agent-", base_branch="develop")
 
     provisioned = client.post(
         f"/api/workspace-configs/{config['id']}/provision",
@@ -168,7 +217,7 @@ def test_git_worktree_provision_and_cleanup_use_subprocess(client, tmp_path, mon
     data = provisioned.json()
     assert data["workspace_id"] == "ws-flow_000123"
     assert data["strategy"] == "git_worktree"
-    assert data["branch"] == "agent/flow_000123"
+    assert data["branch"] == "agent-flow_000123"
     assert data["ready"] is True
     assert data["path"] == str(tmp_path / ".worktrees" / "flow_000123")
     assert calls[0][0] == [
@@ -176,7 +225,7 @@ def test_git_worktree_provision_and_cleanup_use_subprocess(client, tmp_path, mon
         "worktree",
         "add",
         "-b",
-        "agent/flow_000123",
+        "agent-flow_000123",
         str(tmp_path / ".worktrees" / "flow_000123"),
         "develop",
     ]
@@ -278,7 +327,7 @@ def test_git_worktree_path_uses_native_separators(monkeypatch):
     monkeypatch.setattr(workspace.subprocess, "run", fake_run)
     monkeypatch.setattr(workspace.os, "path", ntpath)
     monkeypatch.setattr(workspace.os, "makedirs", lambda *args, **kwargs: None)
-    config = SimpleNamespace(strategy="git_worktree", branch_prefix="task/", base_branch="main")
+    config = SimpleNamespace(strategy="git_worktree", branch_prefix="task-", base_branch="main")
 
     result = workspace.provision_workspace(config, "flow_000123", r"C:\repo")
 
@@ -317,7 +366,7 @@ def test_mcp_workspace_tools(client, tmp_path, monkeypatch):
             "name": "MCP worktrees",
             "strategy": "git_worktree",
             "base_branch": "main",
-            "branch_prefix": "mcp/",
+            "branch_prefix": "mcp-",
         },
     ).json()["result"]["structuredContent"]["workspace_config"]
 
@@ -336,7 +385,7 @@ def test_mcp_workspace_tools(client, tmp_path, monkeypatch):
         {"config_id": created["id"], "task_id": "flow_000004", "repo_path": str(tmp_path)},
     ).json()["result"]["structuredContent"]["workspace"]
     assert provisioned["ready"] is True
-    assert provisioned["branch"] == "mcp/flow_000004"
+    assert provisioned["branch"] == "mcp-flow_000004"
 
     cleaned = rpc(
         client,
@@ -349,6 +398,17 @@ def test_mcp_workspace_tools(client, tmp_path, monkeypatch):
         },
     ).json()["result"]["structuredContent"]
     assert cleaned["cleaned"] is True
+
+
+def test_mcp_cleanup_workspace_requires_config_id(client, tmp_path):
+    response = rpc(
+        client,
+        "flow_cleanup_workspace",
+        {"workspace_id": "ws-flow_000004", "strategy": "shared_dir", "path": str(tmp_path)},
+    ).json()
+
+    assert response["error"]["code"] == -32602
+    assert response["error"]["message"] == "config_id is required."
 
 
 def test_mcp_workspace_permission_denied_for_read_only(client, no_auth_client):

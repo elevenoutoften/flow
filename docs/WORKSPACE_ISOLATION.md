@@ -24,7 +24,7 @@ Create payload:
   "name": "default worktrees",
   "strategy": "git_worktree",
   "base_branch": "main",
-  "branch_prefix": "task/",
+  "branch_prefix": "task-",
   "root_dir": "",
   "scratch_root": "/tmp/flow-scratch",
   "description": "Worktree isolation for parallel agents",

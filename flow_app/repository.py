@@ -500,7 +500,7 @@ def create_workspace_config(session: Session, payload: WorkspaceConfigCreate) ->
         name=payload.name,
         strategy=payload.strategy,
         base_branch=payload.base_branch or "main",
-        branch_prefix=payload.branch_prefix or "task/",
+        branch_prefix=payload.branch_prefix or "task-",
         root_dir=payload.root_dir,
         scratch_root=payload.scratch_root or "/tmp/flow-scratch",
         description=payload.description,
@@ -543,7 +543,7 @@ def update_workspace_config(
     if not config.base_branch:
         config.base_branch = "main"
     if not config.branch_prefix:
-        config.branch_prefix = "task/"
+        config.branch_prefix = "task-"
     if not config.scratch_root:
         config.scratch_root = "/tmp/flow-scratch"
     config.updated_at = utcnow()

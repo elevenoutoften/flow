@@ -38,6 +38,13 @@ def validate_task_id(task_id: str) -> str:
     return task_id
 
 
+def validate_branch_component(value: str, name: str) -> str:
+    """Validate branch config used as a git command argument."""
+    if ".." in value or "/" in value or "\\" in value or value.startswith("-"):
+        raise ValueError(f"{name} contains unsafe characters: {value!r}")
+    return value
+
+
 def validate_containment(candidate_path: str, root_path: str) -> str:
     """Validate that a resolved path is contained within the root path."""
     candidate = os.path.realpath(candidate_path)
@@ -69,14 +76,11 @@ def provision_workspace(config: WorkspaceConfig, task_id: str, repo_path: str | 
     )
 
 
-def cleanup_workspace(workspace_id: str, strategy: str, path: str, config: WorkspaceConfig | None = None) -> bool:
+def cleanup_workspace(workspace_id: str, strategy: str, path: str, config: WorkspaceConfig) -> bool:
     """Clean up a workspace after task completion."""
     del workspace_id
     try:
-        if config is None:
-            logger.warning("Cleaning workspace path without configured root validation.")
-        else:
-            validate_containment(path, _cleanup_root_for_strategy(strategy, path, config))
+        validate_containment(path, _cleanup_root_for_strategy(strategy, path, config))
         if strategy == "git_worktree":
             return _cleanup_git_worktree(path)
         if strategy in ("shared_dir", "scratch_dir"):
@@ -93,8 +97,13 @@ def _provision_git_worktree(config: WorkspaceConfig, task_id: str, repo_path: st
     ws_id = f"ws-{task_id}"
     try:
         validate_task_id(task_id)
+        validate_branch_component(config.branch_prefix, "Branch prefix")
+        validate_branch_component(config.base_branch, "Base branch")
         branch_name = f"{config.branch_prefix}{task_id}"
         repo_path = _normalize_path(repo_path)
+        root_dir = getattr(config, "root_dir", "")
+        if root_dir:
+            validate_containment(repo_path, root_dir)
         worktree_path = _normalize_path(os.path.join(repo_path, ".worktrees", task_id))
         validate_containment(worktree_path, repo_path)
         os.makedirs(os.path.dirname(worktree_path), exist_ok=True)

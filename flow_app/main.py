@@ -1406,7 +1406,7 @@ def ensure_compatible_schema(engine) -> None:
                     name VARCHAR(180) NOT NULL UNIQUE,
                     strategy VARCHAR(24) NOT NULL DEFAULT 'git_worktree',
                     base_branch VARCHAR(240) NOT NULL DEFAULT 'main',
-                    branch_prefix VARCHAR(120) NOT NULL DEFAULT 'task/',
+                    branch_prefix VARCHAR(120) NOT NULL DEFAULT 'task-',
                     root_dir VARCHAR(500) NOT NULL DEFAULT '',
                     scratch_root VARCHAR(500) NOT NULL DEFAULT '/tmp/flow-scratch',
                     description TEXT NOT NULL DEFAULT '',

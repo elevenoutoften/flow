@@ -625,7 +625,7 @@ TOOLS: list[dict[str, Any]] = [
                 "name": {"type": "string"},
                 "strategy": {"type": "string", "enum": list(WORKSPACE_STRATEGIES), "default": "git_worktree"},
                 "base_branch": {"type": "string", "default": "main"},
-                "branch_prefix": {"type": "string", "default": "task/"},
+                "branch_prefix": {"type": "string", "default": "task-"},
                 "root_dir": {"type": "string", "default": ""},
                 "scratch_root": {"type": "string", "default": "/tmp/flow-scratch"},
                 "description": {"type": "string", "default": ""},
@@ -680,7 +680,7 @@ TOOLS: list[dict[str, Any]] = [
                 "strategy": {"type": "string", "enum": list(WORKSPACE_STRATEGIES)},
                 "path": {"type": "string"},
             },
-            "required": ["workspace_id", "strategy", "path"],
+            "required": ["config_id", "workspace_id", "strategy", "path"],
         },
     },
     {
@@ -1394,7 +1394,7 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
                 name=arguments.get("name"),
                 strategy=arguments.get("strategy", "git_worktree"),
                 base_branch=arguments.get("base_branch", "main"),
-                branch_prefix=arguments.get("branch_prefix", "task/"),
+                branch_prefix=arguments.get("branch_prefix", "task-"),
                 root_dir=arguments.get("root_dir", ""),
                 scratch_root=arguments.get("scratch_root", "/tmp/flow-scratch"),
                 description=arguments.get("description", ""),
@@ -1444,10 +1444,10 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
         workspace_id = require_string(arguments.get("workspace_id"), "workspace_id")
         strategy = require_string(arguments.get("strategy"), "strategy")
         path = require_string(arguments.get("path"), "path")
-        config_id = optional_string(arguments.get("config_id"))
+        config_id = require_string(arguments.get("config_id"), "config_id")
         svc = WorkspaceService(db)
         try:
-            config = svc.get_config(config_id) if config_id else None
+            config = svc.get_config(config_id)
         except WorkspaceConfigNotFoundError as exc:
             raise JsonRpcError(-32602, exc.message) from exc
         cleaned = svc.cleanup(workspace_id, strategy, path, config)

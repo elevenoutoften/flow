@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 import json
+import logging
 import os
 import platform
 import shlex
@@ -42,6 +43,8 @@ from .repository import (
 from .schemas import TaskUpdate
 from .repository import update_task
 from .workspace import cleanup_workspace, provision_workspace
+
+logger = logging.getLogger(__name__)
 
 
 class DispatchError(Exception):
@@ -276,7 +279,13 @@ def _cleanup_run_workspace(session: Session, run: AgentRun) -> bool | None:
     if not workspace_id or not strategy or not path:
         return None
     task = get_task(session, run.task_id)
-    config = _workspace_config_for_task(session, task) if task is not None else None
+    if task is None:
+        logger.warning("Skipping workspace cleanup for run %s: task %s not found.", run.id, run.task_id)
+        return None
+    config = _workspace_config_for_task(session, task)
+    if config is None:
+        logger.warning("Skipping workspace cleanup for run %s: no workspace config available.", run.id)
+        return None
     cleaned = cleanup_workspace(str(workspace_id), str(strategy), str(path), config)
     mark_run_workspace_cleaned(session, run, cleaned=cleaned)
     return cleaned

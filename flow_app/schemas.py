@@ -69,7 +69,9 @@ def _clean_text(value: str | None) -> str:
 
 def _clean_dispatch_statuses(value: str | None) -> str:
     cleaned = _clean_text(value)
-    statuses = [status.strip() for status in cleaned.split(",") if status.strip()]
+    from .repository import _split_comma_list
+
+    statuses = _split_comma_list(cleaned)
     invalid = [status for status in statuses if status not in STATUSES]
     if invalid:
         raise ValueError(f"Invalid dispatch status: {invalid[0]}.")

@@ -17,6 +17,7 @@ from .database import build_engine, build_session_factory, default_database_url
 from .dispatcher import DispatchError, _next_capable_task, complete_run, dispatch_one, stale_recovery
 from .main import ensure_compatible_schema
 from .models import Agent, AutomationRule, utcnow
+from .repository import _split_comma_list
 from .rules_engine import emit_event
 from .webhook_cli import run_deliveries
 
@@ -273,7 +274,7 @@ def _log_pass_summary(result: PassResult) -> None:
 
 
 def _parse_profiles(raw: str | None) -> list[str]:
-    return [item.strip() for item in (raw or "").split(",") if item.strip()]
+    return _split_comma_list(raw)
 
 
 def _env(name: str, default: str) -> str:

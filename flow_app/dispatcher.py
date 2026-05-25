@@ -39,6 +39,7 @@ from .repository import (
     list_workspace_configs,
     mark_run_workspace_cleaned,
     save_run_workspace_state,
+    _split_comma_list,
 )
 from .schemas import TaskUpdate
 from .repository import update_task
@@ -83,7 +84,7 @@ def dispatch_one(
     preview_run = AgentRun(id="run_preview", agent_id=agent.id, task_id=task.id)
     command = _substitute_command(command_template, agent=agent, task=task, run=preview_run)
     if agent.command_allowlist:
-        allowed = [prefix.strip() for prefix in agent.command_allowlist.split(",") if prefix.strip()]
+        allowed = _split_comma_list(agent.command_allowlist)
         if not any(command.strip().startswith(prefix) for prefix in allowed):
             raise DispatchError(f"Command not in allowlist for agent {agent.name}: {command.strip()[:80]}")
 
@@ -218,7 +219,7 @@ def dispatch_loop(
 
 def _next_capable_task(session: Session, agent: Agent) -> Task | None:
     agent_statuses = (
-        {status.strip() for status in agent.dispatch_statuses.split(",") if status.strip()}
+        set(_split_comma_list(agent.dispatch_statuses))
         if agent.dispatch_statuses
         else {"backlog", "todo"}
     )
@@ -234,7 +235,7 @@ def _next_capable_task(session: Session, agent: Agent) -> Task | None:
 
 def _build_env(agent: Agent, task: Task, run: AgentRun, *, api_key: str, base_url: str) -> dict[str, str]:
     env = {}
-    for name in [item.strip() for item in agent.env_allowlist.split(",") if item.strip()]:
+    for name in _split_comma_list(agent.env_allowlist):
         if name in os.environ:
             env[name] = os.environ[name]
     env.update(

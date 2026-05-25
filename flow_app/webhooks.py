@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .models import Task, WebhookConfig, WebhookDelivery, utcnow
-from .repository import create_webhook_delivery, get_webhook_secret, update_webhook_delivery
+from .repository import _split_comma_list, create_webhook_delivery, get_webhook_secret, update_webhook_delivery
 from .ssrf import resolve_webhook_target
 
 WEBHOOK_EVENTS = [
@@ -170,4 +170,4 @@ def _record_failure(
 
 
 def _config_events(config: WebhookConfig) -> set[str]:
-    return {event.strip() for event in config.events.split(",") if event.strip()}
+    return set(_split_comma_list(config.events))

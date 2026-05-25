@@ -18,6 +18,7 @@ from flow_app import main as main_module
 from flow_app.config import reset_settings_cache
 from flow_app.models import Task, WebhookConfig, WebhookDelivery, utcnow
 from flow_app.notifications import WebhookNotificationProvider
+from flow_app.routes import dependencies as routes_dependencies
 from flow_app.repository import (
     cleanup_webhook_deliveries,
     create_task as repo_create_task,
@@ -493,7 +494,7 @@ def test_task_mutations_commit_with_webhook_outbox_rows(client):
 def test_task_create_rolls_back_when_webhook_outbox_write_fails(client):
     create_webhook(client, events=["task_created"])
 
-    with patch.object(main_module._webhook_notifier, "send", side_effect=RuntimeError("outbox write failed")):
+    with patch.object(routes_dependencies._webhook_notifier, "send", side_effect=RuntimeError("outbox write failed")):
         with TestClient(client.app, raise_server_exceptions=False) as failing_client:
             failing_client.headers.update(client.headers)
             response = failing_client.post(

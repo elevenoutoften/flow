@@ -1,0 +1,64 @@
+from __future__ import annotations
+
+from fastapi import HTTPException, Request
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
+from ..models import Task
+from ..notifications import WebhookNotificationProvider
+from ..repository import require_task
+from ..rules_engine import emit_event as emit_rule_event
+from ..services.task import TaskService
+from ..services.webhook import WebhookNotFoundError, WebhookService
+from ..telegram import TelegramNotificationProvider
+
+_webhook_notifier = WebhookNotificationProvider()
+_telegram_notifier = TelegramNotificationProvider()
+
+
+def get_db(request: Request):
+    db = request.app.state.SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+def _make_task_service(db: Session) -> TaskService:
+    return TaskService(
+        db=db,
+        commit_fn=_commit,
+        webhook_notifier=_webhook_notifier,
+        telegram_notifier=_telegram_notifier,
+        rule_emitter=emit_rule_event,
+    )
+
+
+def _require_task(db: Session, task_id: str) -> Task:
+    try:
+        return require_task(db, task_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Task not found.")
+
+
+def _require_webhook_delivery(db: Session, webhook_id: str, delivery_id: str):
+    svc = WebhookService(db)
+    try:
+        svc.get_config(webhook_id)
+    except WebhookNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=exc.message) from exc
+    delivery = svc.get_delivery(delivery_id)
+    if delivery is None or delivery.webhook_id != webhook_id:
+        raise HTTPException(status_code=404, detail="Webhook delivery not found.")
+    return delivery
+
+
+def _commit(db: Session) -> None:
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=f"Database conflict: {exc.orig}")
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Internal server error.")

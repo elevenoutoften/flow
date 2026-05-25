@@ -101,9 +101,11 @@ def _provision_git_worktree(config: WorkspaceConfig, task_id: str, repo_path: st
         validate_branch_component(config.base_branch, "Base branch")
         branch_name = f"{config.branch_prefix}{task_id}"
         repo_path = _normalize_path(repo_path)
-        root_dir = getattr(config, "root_dir", "")
-        if root_dir:
-            validate_containment(repo_path, root_dir)
+        root_dir = _require_configured_root_dir(
+            getattr(config, "root_dir", ""),
+            "Git worktree strategy requires a configured root_dir.",
+        )
+        validate_containment(repo_path, root_dir)
         worktree_path = _normalize_path(os.path.join(repo_path, ".worktrees", task_id))
         validate_containment(worktree_path, repo_path)
         os.makedirs(os.path.dirname(worktree_path), exist_ok=True)
@@ -203,16 +205,18 @@ def _normalize_path(path: str) -> str:
     return os.path.normpath(str(path))
 
 
+def _require_configured_root_dir(root_dir: str | None, message: str) -> str:
+    if not root_dir or not str(root_dir).strip():
+        raise ValueError(message)
+    return str(root_dir).strip()
+
+
 def _cleanup_root_for_strategy(strategy: str, path: str, config: WorkspaceConfig) -> str:
     if strategy == "shared_dir":
         return config.root_dir or "/tmp/flow-shared"
     if strategy == "scratch_dir":
         return config.scratch_root
     if strategy == "git_worktree":
-        if config.root_dir:
-            return config.root_dir
-        worktree_parent = Path(path).parent
-        if worktree_parent.name != ".worktrees":
-            raise ValueError("Git worktree path must be under a .worktrees directory.")
-        return str(worktree_parent.parent)
+        del path
+        return _require_configured_root_dir(config.root_dir, "Git worktree cleanup requires a configured root_dir.")
     raise ValueError(f"Unknown strategy: {strategy}")

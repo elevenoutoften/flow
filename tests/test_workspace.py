@@ -198,6 +198,56 @@ def test_git_worktree_provision_rejects_unsafe_branch_config(tmp_path):
     assert not (tmp_path / ".worktrees").exists()
 
 
+def test_provision_git_worktree_requires_root_dir(tmp_path):
+    config = SimpleNamespace(strategy="git_worktree", branch_prefix="task-", base_branch="main", root_dir="")
+
+    result = provision_workspace(config, "flow_000123", str(tmp_path))
+
+    assert result.ready is False
+    assert "requires a configured root_dir" in str(result.error)
+    assert not (tmp_path / ".worktrees").exists()
+
+
+def test_provision_git_worktree_blank_root_dir_rejects(tmp_path):
+    config = SimpleNamespace(strategy="git_worktree", branch_prefix="task-", base_branch="main", root_dir=" ")
+
+    result = provision_workspace(config, "flow_000123", str(tmp_path))
+
+    assert result.ready is False
+    assert "requires a configured root_dir" in str(result.error)
+    assert not (tmp_path / ".worktrees").exists()
+
+
+def test_cleanup_git_worktree_requires_root_dir(tmp_path):
+    config = SimpleNamespace(strategy="git_worktree", root_dir="", scratch_root=str(tmp_path / "scratch"))
+
+    assert cleanup_workspace("ws-flow_000123", "git_worktree", str(tmp_path / "repo" / ".worktrees" / "flow_000123"), config) is False
+
+
+def test_provision_git_worktree_arbitrary_path_rejected():
+    config = SimpleNamespace(
+        strategy="git_worktree",
+        branch_prefix="task-",
+        base_branch="main",
+        root_dir="/opt/flow/workspaces",
+    )
+
+    result = provision_workspace(config, "flow_000123", "/etc/passwd")
+
+    assert result.ready is False
+    assert "escapes workspace root" in str(result.error)
+
+
+def test_cleanup_git_worktree_arbitrary_path_rejected(tmp_path):
+    config = SimpleNamespace(
+        strategy="git_worktree",
+        root_dir="/opt/flow/workspaces",
+        scratch_root=str(tmp_path / "scratch"),
+    )
+
+    assert cleanup_workspace("ws-flow_000123", "git_worktree", "/etc/passwd", config) is False
+
+
 def test_git_worktree_provision_and_cleanup_use_subprocess(client, tmp_path, monkeypatch):
     calls = []
 
@@ -206,7 +256,7 @@ def test_git_worktree_provision_and_cleanup_use_subprocess(client, tmp_path, mon
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr("flow_app.workspace.subprocess.run", fake_run)
-    config = create_workspace_config(client, branch_prefix="agent-", base_branch="develop")
+    config = create_workspace_config(client, branch_prefix="agent-", base_branch="develop", root_dir=str(tmp_path))
 
     provisioned = client.post(
         f"/api/workspace-configs/{config['id']}/provision",
@@ -327,7 +377,7 @@ def test_git_worktree_path_uses_native_separators(monkeypatch):
     monkeypatch.setattr(workspace.subprocess, "run", fake_run)
     monkeypatch.setattr(workspace.os, "path", ntpath)
     monkeypatch.setattr(workspace.os, "makedirs", lambda *args, **kwargs: None)
-    config = SimpleNamespace(strategy="git_worktree", branch_prefix="task-", base_branch="main")
+    config = SimpleNamespace(strategy="git_worktree", branch_prefix="task-", base_branch="main", root_dir=r"C:\repo")
 
     result = workspace.provision_workspace(config, "flow_000123", r"C:\repo")
 
@@ -367,6 +417,7 @@ def test_mcp_workspace_tools(client, tmp_path, monkeypatch):
             "strategy": "git_worktree",
             "base_branch": "main",
             "branch_prefix": "mcp-",
+            "root_dir": str(tmp_path),
         },
     ).json()["result"]["structuredContent"]["workspace_config"]
 

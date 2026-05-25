@@ -1059,6 +1059,7 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
             payload.outcome,
             payload.next_recommended_agent,
             payload.capabilities,
+            author_key_id=actor.key_id,
         )
         db.commit()
         data = handoff_to_json(handoff)

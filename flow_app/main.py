@@ -891,6 +891,7 @@ def create_app(
             payload.outcome,
             payload.next_recommended_agent,
             payload.capabilities,
+            author_key_id=actor.key_id,
         )
         _commit(db)
         return serialize_task_handoff(handoff)
@@ -1412,6 +1413,7 @@ def ensure_compatible_schema(engine) -> None:
                     id VARCHAR(32) NOT NULL PRIMARY KEY,
                     task_id VARCHAR(32) NOT NULL,
                     author VARCHAR(120) NOT NULL,
+                    author_key_id VARCHAR(64),
                     summary TEXT NOT NULL,
                     changed_files TEXT NOT NULL DEFAULT '',
                     commands_run TEXT NOT NULL DEFAULT '',
@@ -1536,6 +1538,18 @@ def ensure_compatible_schema(engine) -> None:
 
     if "tasks" not in table_names:
         return
+
+    if "task_notes" in table_names:
+        existing_task_note_columns = {column["name"] for column in inspector.get_columns("task_notes")}
+        if "author_key_id" not in existing_task_note_columns:
+            with engine.begin() as connection:
+                connection.execute(text("ALTER TABLE task_notes ADD COLUMN author_key_id VARCHAR(64)"))
+
+    if "task_handoffs" in table_names:
+        existing_task_handoff_columns = {column["name"] for column in inspector.get_columns("task_handoffs")}
+        if "author_key_id" not in existing_task_handoff_columns:
+            with engine.begin() as connection:
+                connection.execute(text("ALTER TABLE task_handoffs ADD COLUMN author_key_id VARCHAR(64)"))
 
     existing = {column["name"] for column in inspector.get_columns("tasks")}
     additions = {

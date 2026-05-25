@@ -1300,6 +1300,7 @@ def ensure_compatible_schema(engine) -> None:
                     agent_type VARCHAR(24) NOT NULL DEFAULT 'cli',
                     capabilities TEXT NOT NULL DEFAULT '',
                     command TEXT NOT NULL DEFAULT '',
+                    command_allowlist TEXT NOT NULL DEFAULT '',
                     env_allowlist TEXT NOT NULL DEFAULT '',
                     working_directory VARCHAR(500) NOT NULL DEFAULT '',
                     max_concurrency INTEGER NOT NULL DEFAULT 1,
@@ -1499,6 +1500,9 @@ def ensure_compatible_schema(engine) -> None:
                 connection.execute(
                     text("ALTER TABLE agents ADD COLUMN dispatch_statuses TEXT NOT NULL DEFAULT 'backlog,todo'")
                 )
+        if "command_allowlist" not in existing_agent_columns:
+            with engine.begin() as connection:
+                connection.execute(text("ALTER TABLE agents ADD COLUMN command_allowlist TEXT NOT NULL DEFAULT ''"))
 
     if "tasks" not in table_names:
         return

@@ -139,6 +139,7 @@ class Agent(Base):
     agent_type: Mapped[str] = mapped_column(String(24), nullable=False, default="cli")
     capabilities: Mapped[str] = mapped_column(Text, nullable=False, default="")
     command: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    command_allowlist: Mapped[str] = mapped_column(Text, nullable=False, default="")
     env_allowlist: Mapped[str] = mapped_column(Text, nullable=False, default="")
     working_directory: Mapped[str] = mapped_column(String(500), nullable=False, default="")
     max_concurrency: Mapped[int] = mapped_column(Integer, nullable=False, default=1)

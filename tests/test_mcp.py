@@ -186,6 +186,37 @@ def test_mcp_flow_create_task_creates_task(client):
     assert client.get(f"/api/tasks/{task['id']}").json()["title"] == "Create task through MCP"
 
 
+def test_mcp_flow_create_and_update_agent_command_allowlist(client):
+    created = rpc(
+        client,
+        "tools/call",
+        {
+            "name": "flow_create_agent",
+            "arguments": {
+                "name": "mcp-agent",
+                "command": "python -m flow_app.hermes_wrapper",
+                "command_allowlist": "python -m flow_app.hermes_wrapper",
+            },
+        },
+    )
+
+    assert created.status_code == 200
+    agent = created.json()["result"]["structuredContent"]["agent"]
+    assert agent["command_allowlist"] == "python -m flow_app.hermes_wrapper"
+
+    updated = rpc(
+        client,
+        "tools/call",
+        {
+            "name": "flow_update_agent",
+            "arguments": {"agent_id": agent["id"], "command_allowlist": "python3,codex"},
+        },
+    )
+
+    assert updated.status_code == 200
+    assert updated.json()["result"]["structuredContent"]["agent"]["command_allowlist"] == "python3,codex"
+
+
 def test_mcp_webhook_management_tools_get_update_disable_and_delete(client):
     webhook = create_mcp_webhook(client, project="default")
 

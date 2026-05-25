@@ -8,7 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from flow_app.database import Base, build_engine, build_session_factory
-from flow_app.dispatcher import dispatch_loop, dispatch_one
+from flow_app.dispatcher import DispatchError, dispatch_loop, dispatch_one
 from flow_app.main import create_app
 from flow_app.repository import create_agent as repo_create_agent
 from flow_app.repository import create_task as repo_create_task
@@ -97,12 +97,13 @@ class _NoopThread:
 class TestAgentCRUD:
     def test_create_agent(self, tmp_path, default_command):
         with _client(tmp_path) as c:
-            agent = create_agent(c, command=default_command)
+            agent = create_agent(c, command=default_command, command_allowlist=f"{sys.executable},python3")
             assert agent["id"].startswith("agent_")
             assert agent["name"] == "codex-agent"
             assert agent["enabled"] is True
             assert agent["agent_type"] == "cli"
             assert agent["capabilities"] == "code,testing"
+            assert agent["command_allowlist"] == f"{sys.executable},python3"
 
     def test_list_agents(self, tmp_path):
         with _client(tmp_path) as c:
@@ -140,10 +141,14 @@ class TestAgentCRUD:
     def test_update_agent(self, tmp_path):
         with _client(tmp_path) as c:
             agent = create_agent(c)
-            r = c.patch(f"/api/agents/{agent['id']}", json={"description": "updated", "enabled": False})
+            r = c.patch(
+                f"/api/agents/{agent['id']}",
+                json={"description": "updated", "enabled": False, "command_allowlist": "python3"},
+            )
             assert r.status_code == 200
             assert r.json()["description"] == "updated"
             assert r.json()["enabled"] is False
+            assert r.json()["command_allowlist"] == "python3"
 
     def test_create_agent_requires_name(self, tmp_path):
         with _client(tmp_path) as c:
@@ -216,6 +221,78 @@ class TestDispatchStatuses:
 
             assert [run.task_id for run in impl_runs] == [todo_task.id]
             assert [run.task_id for run in review_runs] == [review_task.id]
+        finally:
+            db.close()
+
+
+class TestCommandAllowlist:
+    def test_dispatch_rejects_command_not_in_allowlist(self, tmp_path, monkeypatch):
+        db = _db(tmp_path)
+        popen_called = False
+
+        def fake_popen(args, **kwargs):
+            nonlocal popen_called
+            popen_called = True
+            return SimpleNamespace(pid=12345)
+
+        monkeypatch.setattr("flow_app.dispatcher.subprocess.Popen", fake_popen)
+        try:
+            agent = repo_create_agent(
+                db,
+                AgentCreate(name="worker", command=_success_command(), command_allowlist="codex,python3"),
+            )
+            task = repo_create_task(db, TaskCreate(title="Blocked command", status="todo"))
+
+            with pytest.raises(DispatchError, match="Command not in allowlist"):
+                dispatch_one(db, agent, task, api_key="key", base_url="http://flow.test")
+
+            assert popen_called is False
+        finally:
+            db.close()
+
+    def test_dispatch_allows_command_matching_allowlist_prefix(self, tmp_path, monkeypatch):
+        db = _db(tmp_path)
+        captured = {}
+
+        def fake_popen(args, **kwargs):
+            captured["args"] = args
+            return SimpleNamespace(pid=12345)
+
+        monkeypatch.setattr("flow_app.dispatcher.subprocess.Popen", fake_popen)
+        monkeypatch.setattr("flow_app.dispatcher.threading.Thread", _NoopThread)
+        try:
+            command = _success_command()
+            agent = repo_create_agent(
+                db,
+                AgentCreate(name="worker", command=command, command_allowlist=f'codex,"{sys.executable}"'),
+            )
+            task = repo_create_task(db, TaskCreate(title="Allowed command", status="todo"))
+
+            run = dispatch_one(db, agent, task, api_key="key", base_url="http://flow.test")
+
+            assert run.pid == 12345
+            assert captured["args"] == [sys.executable, "-c", "print('hello')"]
+        finally:
+            db.close()
+
+    def test_dispatch_empty_allowlist_allows_all_commands(self, tmp_path, monkeypatch):
+        db = _db(tmp_path)
+        captured = {}
+
+        def fake_popen(args, **kwargs):
+            captured["args"] = args
+            return SimpleNamespace(pid=12345)
+
+        monkeypatch.setattr("flow_app.dispatcher.subprocess.Popen", fake_popen)
+        monkeypatch.setattr("flow_app.dispatcher.threading.Thread", _NoopThread)
+        try:
+            agent = repo_create_agent(db, AgentCreate(name="worker", command=_success_command()))
+            task = repo_create_task(db, TaskCreate(title="Backward compatible", status="todo"))
+
+            run = dispatch_one(db, agent, task, api_key="key", base_url="http://flow.test")
+
+            assert run.pid == 12345
+            assert captured["args"] == [sys.executable, "-c", "print('hello')"]
         finally:
             db.close()
 

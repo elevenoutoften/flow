@@ -83,10 +83,13 @@ class AgentService:
         base_url: str,
         api_key_value: str,
         env_allowlist: str | None = None,
+        command_allowlist: str | None = None,
     ) -> AgentRun:
         agent = self._require_agent(agent_id)
         if env_allowlist is not None:
             agent.env_allowlist = env_allowlist
+        if command_allowlist is not None:
+            agent.command_allowlist = command_allowlist
         task = get_task(self.db, task_id) if task_id else _next_capable_task(self.db, agent)
         if task is None:
             if task_id:

@@ -13,6 +13,7 @@ Flow's Agent Registry and Dispatcher enable autonomous agents to claim and execu
 | `agent_type` | string | Agent type (default: `cli`) |
 | `capabilities` | text | Comma-separated capability tags |
 | `command` | text | Shell command template with `{task_id}`, `{agent_id}`, `{run_id}` placeholders |
+| `command_allowlist` | text | Comma-separated allowed command prefixes; empty allows all commands |
 | `env_allowlist` | text | Comma-separated env var names to pass through |
 | `working_directory` | string | CWD for the subprocess |
 | `max_concurrency` | int | Max simultaneous runs (default: 1) |
@@ -86,6 +87,21 @@ Dispatched subprocesses receive:
 | `FLOW_BASE_URL` | Flow API base URL |
 | `FLOW_API_KEY` | API key for the subprocess |
 | `FLOW_RUN_ID` | The run ID |
+
+## Trust Boundary
+
+Agent dispatch runs server-side commands with the full privileges of the Flow process. The `FLOW_API_KEY` environment variable gives the subprocess API access equivalent to the agent's configured role.
+
+**Guardrails:**
+
+- `command_allowlist`: A comma-separated list of allowed command prefixes. When non-empty, only commands starting with one of the listed prefixes are executed. Empty (default) allows all commands. Set this to restrict agents to specific binaries or scripts (e.g., `codex,python3`).
+- `env_allowlist`: Controls which host environment variables are passed through to the subprocess.
+- Agent `enabled` flag: Disabled agents cannot be dispatched.
+- Permission `dispatch`: Only admin, architect, and implementer roles can dispatch.
+
+**Recommendation:** For production deployments, set `command_allowlist` on all agents to the minimum set of commands they need. Avoid granting `dispatch` permission to roles that should not trigger server-side execution. Consider running the Flow dispatcher in a containerized environment with network policies that limit what subprocesses can access.
+
+**Scoped credentials:** The `FLOW_API_KEY` provided to the subprocess has the same role as the agent's API key. If the agent was created with a read-only key, the subprocess only has read access. Use role-specific API keys to limit subprocess permissions.
 
 ## Permissions
 

@@ -807,6 +807,7 @@ class AgentCreate(BaseModel):
     agent_type: str = "cli"
     capabilities: str = ""
     command: str = ""
+    command_allowlist: str = ""
     env_allowlist: str = ""
     working_directory: str = ""
     max_concurrency: int = Field(default=1, ge=1)
@@ -822,7 +823,15 @@ class AgentCreate(BaseModel):
             raise ValueError("Name is required.")
         return cleaned
 
-    @field_validator("description", "agent_type", "capabilities", "command", "env_allowlist", "working_directory")
+    @field_validator(
+        "description",
+        "agent_type",
+        "capabilities",
+        "command",
+        "command_allowlist",
+        "env_allowlist",
+        "working_directory",
+    )
     @classmethod
     def clean_text_fields(cls, value: str | None) -> str:
         return _clean_text(value)
@@ -840,6 +849,7 @@ class AgentUpdate(BaseModel):
     agent_type: str | None = None
     capabilities: str | None = None
     command: str | None = None
+    command_allowlist: str | None = None
     env_allowlist: str | None = None
     working_directory: str | None = None
     max_concurrency: int | None = Field(default=None, ge=1)
@@ -857,7 +867,15 @@ class AgentUpdate(BaseModel):
             raise ValueError("Name cannot be blank.")
         return cleaned
 
-    @field_validator("description", "agent_type", "capabilities", "command", "env_allowlist", "working_directory")
+    @field_validator(
+        "description",
+        "agent_type",
+        "capabilities",
+        "command",
+        "command_allowlist",
+        "env_allowlist",
+        "working_directory",
+    )
     @classmethod
     def clean_optional_text_fields(cls, value: str | None) -> str | None:
         if value is None:
@@ -882,6 +900,7 @@ class AgentResponse(BaseModel):
     agent_type: str
     capabilities: str
     command: str
+    command_allowlist: str
     env_allowlist: str
     working_directory: str
     max_concurrency: int

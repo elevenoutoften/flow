@@ -39,6 +39,7 @@ curl -s -X POST http://127.0.0.1:8100/api/agents \
     "name": "hermes-delegator",
     "description": "Hermes dogfood agent for Flow tasks",
     "command": "python -m flow_app.hermes_wrapper",
+    "command_allowlist": "python -m flow_app.hermes_wrapper",
     "capabilities": "planning,implementation,review,dogfood",
     "max_concurrency": 1,
     "heartbeat_timeout_seconds": 900
@@ -48,6 +49,12 @@ curl -s -X POST http://127.0.0.1:8100/api/agents \
 ## Agent Command Template
 
 Use this `command` value in the agent record:
+
+```text
+python -m flow_app.hermes_wrapper
+```
+
+`command_allowlist` defaults to empty, which allows all commands for backward compatibility. For dogfood deployments, set it to the wrapper command prefix:
 
 ```text
 python -m flow_app.hermes_wrapper

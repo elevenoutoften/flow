@@ -95,6 +95,10 @@ def dispatch_one(
         env["FLOW_WORKSPACE_DIR"] = workspace.path
     command_template = _agent_command(agent.command)
     command = _substitute_command(command_template, agent=agent, task=task, run=run)
+    if agent.command_allowlist:
+        allowed = [prefix.strip() for prefix in agent.command_allowlist.split(",") if prefix.strip()]
+        if not any(command.strip().startswith(prefix) for prefix in allowed):
+            raise DispatchError(f"Command not in allowlist for agent {agent.name}: {command.strip()[:80]}")
 
     try:
         process = subprocess.Popen(

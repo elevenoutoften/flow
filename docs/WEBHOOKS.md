@@ -31,6 +31,14 @@ curl -X POST http://localhost:8000/api/webhooks \
 
 The create response includes `secret` once. Store it securely; later reads do not return it.
 
+Set `FLOW_WEBHOOK_ENCRYPTION_KEY` to a valid Fernet key to encrypt webhook signing secrets at rest. Generate one with:
+
+```bash
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+When the key is not configured, Flow keeps the legacy plaintext behavior and logs a warning. Existing plaintext webhook secrets remain readable and are re-encrypted lazily after the key is configured.
+
 Update or disable a webhook with `PATCH /api/webhooks/{webhook_id}`:
 
 ```json
@@ -115,6 +123,8 @@ retry_backoff_seconds * 2^(attempts - 1)
 ```
 
 When attempts reach `max_retries`, the delivery status becomes `failed`.
+
+Stored delivery payloads are capped by `FLOW_MAX_WEBHOOK_PAYLOAD_BYTES` (default `65536`). Stored response bodies are capped by `FLOW_MAX_WEBHOOK_RESPONSE_BYTES` (default `4096`) and truncated responses end with `...[truncated]`.
 
 ## Delivery Log
 
@@ -220,6 +230,13 @@ Preview ready deliveries without sending HTTP requests:
 
 ```bash
 python -m flow_app.webhook_cli deliver --dry-run
+```
+
+Delete old delivery rows using the retention cleanup command. The default retention window is `FLOW_MAX_WEBHOOK_DELIVERY_AGE_DAYS=30`; override it per run with `--days`.
+
+```bash
+python -m flow_app.webhook_cli cleanup-deliveries
+python -m flow_app.webhook_cli cleanup-deliveries --days 14 --dry-run
 ```
 
 The task-specific test command is:

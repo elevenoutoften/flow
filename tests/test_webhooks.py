@@ -4,22 +4,27 @@ import hashlib
 import hmac
 import json
 import socket
+from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from cryptography.fernet import Fernet
 import httpx
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from flow_app import main as main_module
-from flow_app.models import Task, WebhookDelivery, utcnow
+from flow_app.config import reset_settings_cache
+from flow_app.models import Task, WebhookConfig, WebhookDelivery, utcnow
 from flow_app.notifications import WebhookNotificationProvider
 from flow_app.repository import (
+    cleanup_webhook_deliveries,
     create_task as repo_create_task,
     create_webhook_delivery,
     get_webhook_config,
     get_webhook_delivery,
+    get_webhook_secret,
     update_webhook_delivery,
 )
 from flow_app.schemas import TaskCreate
@@ -87,6 +92,18 @@ def create_task(client, **overrides):
     response = client.post("/api/tasks", json=payload)
     assert response.status_code == 201, response.text
     return response.json()
+
+
+def configured_client(tmp_path, monkeypatch, **env):
+    for key, value in env.items():
+        monkeypatch.setenv(key, str(value))
+    reset_settings_cache()
+    db_url = f"sqlite:///{tmp_path / 'flow.sqlite'}"
+    app = main_module.create_app(db_url, trusted_headers=True, session_secret="test-secret-for-testing")
+    test_client = TestClient(app)
+    test_client.headers.update({"X-Axis-Admin": "1", "X-Axis-User": "test-admin"})
+    test_client.__enter__()
+    return test_client
 
 
 def list_deliveries(client, webhook_id: str):
@@ -237,6 +254,49 @@ def test_webhook_config_create(client):
 
     fetched = client.get(f"/api/webhooks/{config['id']}").json()
     assert "secret" not in fetched
+
+
+def test_webhook_secret_encrypted_round_trip_and_signing(tmp_path, monkeypatch):
+    key = Fernet.generate_key().decode("utf-8")
+    client = configured_client(tmp_path, monkeypatch, FLOW_WEBHOOK_ENCRYPTION_KEY=key)
+    try:
+        config_data = create_webhook(client)
+        raw_secret = config_data["secret"]
+        with client.app.state.SessionLocal() as db:
+            config = get_webhook_config(db, config_data["id"])
+            assert config is not None
+            assert config.secret != raw_secret
+            assert config.secret_encrypted == 1
+            assert get_webhook_secret(config) == raw_secret
+
+            delivery = create_webhook_delivery(db, config.id, "task_created", '{"ok":true}')
+            db.commit()
+
+            CapturingWebhookClient.instances = []
+            CapturingWebhookClient.response = SimpleNamespace(status_code=200, text="accepted")
+            with patch("flow_app.webhooks.httpx.Client", CapturingWebhookClient):
+                deliver_webhook(db, delivery, config)
+                db.commit()
+
+            sent_headers = CapturingWebhookClient.instances[0].calls[0]["headers"]
+            assert sent_headers["X-Flow-Signature"] == sign_payload(raw_secret, b'{"ok":true}')
+
+        fetched = client.get(f"/api/webhooks/{config_data['id']}")
+        assert fetched.status_code == 200
+        assert "secret" not in fetched.json()
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_webhook_secret_plaintext_fallback(client, monkeypatch):
+    monkeypatch.delenv("FLOW_WEBHOOK_ENCRYPTION_KEY", raising=False)
+    config_data = create_webhook(client)
+
+    with client.app.state.SessionLocal() as db:
+        config = get_webhook_config(db, config_data["id"])
+        assert config is not None
+        assert config.secret == config_data["secret"]
+        assert config.secret_encrypted == 0
 
 
 def test_webhook_config_list(client):
@@ -612,6 +672,45 @@ def test_deliver_webhook_success(client):
         assert "Host" not in sent_headers
 
 
+def test_webhook_delivery_payload_is_capped(tmp_path, monkeypatch):
+    client = configured_client(tmp_path, monkeypatch, FLOW_MAX_WEBHOOK_PAYLOAD_BYTES=10)
+    try:
+        config_data = create_webhook(client)
+        with client.app.state.SessionLocal() as db:
+            delivery = create_webhook_delivery(db, config_data["id"], "task_created", "x" * 25)
+            db.commit()
+            saved = get_webhook_delivery(db, delivery.id)
+            assert saved is not None
+            assert saved.payload == "x" * 10
+            assert len(saved.payload.encode("utf-8")) == 10
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_webhook_response_body_is_capped(tmp_path, monkeypatch):
+    client = configured_client(tmp_path, monkeypatch, FLOW_MAX_WEBHOOK_RESPONSE_BYTES=32)
+    try:
+        config_data = create_webhook(client)
+        with client.app.state.SessionLocal() as db:
+            config = get_webhook_config(db, config_data["id"])
+            delivery = create_webhook_delivery(db, config.id, "task_created", '{"ok":true}')
+            db.commit()
+            delivery_id = delivery.id
+
+            CapturingWebhookClient.instances = []
+            CapturingWebhookClient.response = SimpleNamespace(status_code=500, text="z" * 100)
+            with patch("flow_app.webhooks.httpx.Client", CapturingWebhookClient):
+                deliver_webhook(db, delivery, config)
+                db.commit()
+
+            saved = get_webhook_delivery(db, delivery_id)
+            assert saved is not None
+            assert saved.last_response_body.endswith("...[truncated]")
+            assert len(saved.last_response_body.encode("utf-8")) <= 32
+    finally:
+        client.__exit__(None, None, None)
+
+
 def test_delivery_uses_resolved_ip(client, monkeypatch):
     config_data = create_webhook(client, url="https://example.com:8443/webhook?source=flow")
     with client.app.state.SessionLocal() as db:
@@ -788,3 +887,23 @@ def test_deliver_webhook_skips_unsafe_url(client):
         assert saved.last_response_code is None
         assert saved.last_response_body == "Webhook URL targets unacceptable address."
         client_cls.assert_not_called()
+
+
+def test_webhook_delivery_cleanup_deletes_only_old_rows(client):
+    config_data = create_webhook(client)
+    with client.app.state.SessionLocal() as db:
+        old_delivery = create_webhook_delivery(db, config_data["id"], "task_created", '{"old":true}')
+        recent_delivery = create_webhook_delivery(db, config_data["id"], "task_created", '{"recent":true}')
+        old_delivery.created_at = utcnow() - timedelta(days=45)
+        old_delivery.updated_at = old_delivery.created_at
+        recent_delivery.created_at = utcnow() - timedelta(days=2)
+        recent_delivery.updated_at = recent_delivery.created_at
+        db.commit()
+
+        deleted = cleanup_webhook_deliveries(db, older_than_days=30)
+        db.commit()
+
+        remaining_ids = set(db.scalars(select(WebhookDelivery.id)).all())
+        assert deleted == 1
+        assert old_delivery.id not in remaining_ids
+        assert recent_delivery.id in remaining_ids

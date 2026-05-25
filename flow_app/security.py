@@ -7,8 +7,10 @@ from enum import Enum
 import hashlib
 import hmac
 import json
+import logging
 import time
 
+from cryptography.fernet import Fernet, InvalidToken
 from fastapi import Cookie, Header, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
@@ -18,6 +20,8 @@ from .repository import hash_api_key, lookup_api_key_by_hash
 
 SESSION_COOKIE_NAME = "flow_session"
 SESSION_MAX_AGE = 60 * 60 * 12
+_LOGGER = logging.getLogger(__name__)
+_plaintext_webhook_warning_logged = False
 
 
 @dataclass(frozen=True)
@@ -56,6 +60,37 @@ class Permission(Enum):
     HANDOFF_READ = "handoff:read"
     HANDOFF_CREATE = "handoff:create"
     HANDOFF_MANAGE = "handoff:manage"
+
+
+def webhook_encryption_enabled() -> bool:
+    return bool(get_settings().webhook_encryption_key)
+
+
+def encrypt_secret(plaintext: str) -> str:
+    key = get_settings().webhook_encryption_key
+    if not key:
+        _warn_plaintext_webhook_secret()
+        return plaintext
+    return Fernet(key.encode("utf-8")).encrypt(plaintext.encode("utf-8")).decode("utf-8")
+
+
+def decrypt_secret(ciphertext: str) -> str | None:
+    key = get_settings().webhook_encryption_key
+    if not key:
+        _warn_plaintext_webhook_secret()
+        return ciphertext
+    try:
+        return Fernet(key.encode("utf-8")).decrypt(ciphertext.encode("utf-8")).decode("utf-8")
+    except InvalidToken:
+        return None
+
+
+def _warn_plaintext_webhook_secret() -> None:
+    global _plaintext_webhook_warning_logged
+    if _plaintext_webhook_warning_logged:
+        return
+    _plaintext_webhook_warning_logged = True
+    _LOGGER.warning("FLOW_WEBHOOK_ENCRYPTION_KEY is not set; webhook secrets will be stored in plaintext.")
 
 
 ROLE_PERMISSIONS: dict[ApiKeyRole, set[Permission]] = {

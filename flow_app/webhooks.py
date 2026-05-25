@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .models import Task, WebhookConfig, WebhookDelivery, utcnow
-from .repository import create_webhook_delivery, update_webhook_delivery
+from .repository import create_webhook_delivery, get_webhook_secret, update_webhook_delivery
 from .ssrf import resolve_webhook_target
 
 WEBHOOK_EVENTS = [
@@ -61,10 +61,14 @@ def deliver_webhook(db: Session, delivery: WebhookDelivery, config: WebhookConfi
         return
 
     payload_bytes = delivery.payload.encode("utf-8")
+    secret = get_webhook_secret(config)
+    if secret is None:
+        _record_failure(db, delivery, config, None, "Webhook secret could not be decrypted.")
+        return
     headers = {
         "Content-Type": "application/json",
         "X-Flow-Event": delivery.event,
-        "X-Flow-Signature": sign_payload(config.secret, payload_bytes),
+        "X-Flow-Signature": sign_payload(secret, payload_bytes),
         "X-Flow-Delivery-ID": delivery.id,
     }
 
@@ -76,7 +80,7 @@ def deliver_webhook(db: Session, delivery: WebhookDelivery, config: WebhookConfi
         _record_failure(db, delivery, config, None, str(exc))
         return
 
-    body = response.text[:2000]
+    body = response.text
     if 200 <= response.status_code < 300:
         update_webhook_delivery(
             db,
@@ -161,7 +165,7 @@ def _record_failure(
         attempts=attempts,
         next_attempt_at=next_attempt_at,
         last_response_code=status_code,
-        last_response_body=response_body[:2000],
+        last_response_body=response_body,
     )
 
 

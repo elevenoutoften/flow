@@ -65,11 +65,11 @@ from .schemas import (
     WorkspaceConfigResponse,
     WorkspaceConfigUpdate,
 )
-from .config import DEFAULT_PAGE_LIMIT
-
-
 def _apply_pagination(stmt: Select, *, limit: int | None = None, offset: int = 0) -> Select:
-    return stmt.limit(DEFAULT_PAGE_LIMIT if limit is None else limit).offset(offset)
+    stmt = stmt.offset(offset)
+    if limit is not None:
+        stmt = stmt.limit(limit)
+    return stmt
 
 
 def generate_task_id(session: Session) -> str:

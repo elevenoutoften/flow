@@ -1268,8 +1268,21 @@ def next_task(session: Session, *, project: str | None = None) -> Task | None:
     return None
 
 
-def add_note(session: Session, task: Task, body: str, *, author: str | None = None) -> TaskNote:
-    note = TaskNote(task_id=task.id, body=body, author=author, created_at=utcnow())
+def add_note(
+    session: Session,
+    task: Task,
+    body: str,
+    *,
+    author: str | None = None,
+    author_key_id: str | None = None,
+) -> TaskNote:
+    note = TaskNote(
+        task_id=task.id,
+        body=body,
+        author=author,
+        author_key_id=author_key_id,
+        created_at=utcnow(),
+    )
     task.notes.append(note)
     task.updated_at = utcnow()
     session.add(task)
@@ -1291,12 +1304,14 @@ def create_task_handoff(
     outcome: str,
     next_recommended_agent: str | None,
     capabilities: list[str],
+    author_key_id: str | None = None,
 ) -> TaskHandoff:
     require_task(session, task_id)
     handoff = TaskHandoff(
         id=generate_handoff_id(session),
         task_id=task_id,
         author=author,
+        author_key_id=author_key_id,
         summary=summary,
         changed_files=json.dumps(changed_files),
         commands_run=json.dumps(commands_run),

@@ -211,11 +211,14 @@ class TaskService:
         if not is_valid_transition(actor, task.status, target_status):
             raise InvalidTransitionError(actor.role.value, task.status, target_status)
         if task.status == "review" and target_status == "todo" and actor.role == ApiKeyRole.reviewer:
-            has_reviewer_note = any(note.author == actor.name for note in task.notes)
-            has_reviewer_handoff = any(
-                handoff.author == actor.name for handoff in list_task_handoffs(self.db, task.id)
+            has_reviewer_evidence = any(
+                note.author_key_id == actor.key_id for note in task.notes if note.author_key_id is not None
+            ) or any(
+                handoff.author_key_id == actor.key_id
+                for handoff in list_task_handoffs(self.db, task.id)
+                if handoff.author_key_id is not None
             )
-            if not has_reviewer_note and not has_reviewer_handoff:
+            if not has_reviewer_evidence:
                 raise SendbackContractError()
         if not cas_update_task(self.db, task_id, expected_version, {"status": target_status}):
             self.db.rollback()
@@ -240,7 +243,7 @@ class TaskService:
         task = self._require_task(task_id)
         if not can_note_task(actor, task):
             raise NotePermissionError()
-        add_note(self.db, task, note_text, author=author or actor.name)
+        add_note(self.db, task, note_text, author=author or actor.name, author_key_id=actor.key_id)
         self._commit(self.db)
         return self._require_task(task_id)
 
@@ -277,8 +280,9 @@ class TaskService:
                 handoff.outcome,
                 handoff.next_recommended_agent,
                 handoff.capabilities,
+                author_key_id=actor.key_id,
             )
-        add_note(self.db, task, summary, author=effective_author)
+        add_note(self.db, task, summary, author=effective_author, author_key_id=actor.key_id)
         auto_promote_unblocked_children(self.db, task.id)
         self._emit_rule(self.db, "task_completed", task_id=task_id, actor=actor)
         data = {"status": {"from": old_status, "to": "done"}}

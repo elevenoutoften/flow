@@ -214,13 +214,17 @@ def bearer_headers(api_key: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {api_key}"}
 
 
-def create_role_headers(client, role: str, name: str | None = None) -> dict[str, str]:
+def create_role_key(client, role: str, name: str | None = None) -> dict:
     created_key = client.post(
         "/api/api-keys",
         json={"name": name or f"{role}-key", "role": role},
     )
     assert created_key.status_code == 201, created_key.text
-    return bearer_headers(created_key.json()["api_key"])
+    return created_key.json()
+
+
+def create_role_headers(client, role: str, name: str | None = None) -> dict[str, str]:
+    return bearer_headers(create_role_key(client, role, name)["api_key"])
 
 
 def test_api_key_management_requires_human_admin_when_trusted_auth_headers_exist(tmp_path):
@@ -755,6 +759,133 @@ def test_reviewer_sendback_requires_note_or_handoff(client, no_auth_client):
     )
     assert architect_sendback.status_code == 200
     assert architect_sendback.json()["status"] == "todo"
+
+
+def test_reviewer_sendback_rejects_spoofed_note_author_name(client, no_auth_client):
+    reviewer_key = create_role_key(client, "reviewer", "spoofed-reviewer")
+    implementer_key = create_role_key(client, "implementer", "note-spoofer")
+    task = create_task(client, status="doing", assignee="note-spoofer")
+
+    note = no_auth_client.post(
+        f"/api/tasks/{task['id']}/note",
+        json={
+            "note": "Pretending to be the reviewer.",
+            "author": "spoofed-reviewer",
+            "author_key_id": reviewer_key["id"],
+        },
+        headers=bearer_headers(implementer_key["api_key"]),
+    )
+    assert note.status_code == 200, note.text
+    with client.app.state.SessionLocal() as db:
+        db_task = db.get(Task, task["id"])
+        assert db_task is not None
+        assert db_task.notes[-1].author == "spoofed-reviewer"
+        assert db_task.notes[-1].author_key_id == implementer_key["id"]
+
+    moved = no_auth_client.post(
+        f"/api/tasks/{task['id']}/move",
+        json={"status": "review"},
+        headers=bearer_headers(implementer_key["api_key"]),
+    )
+    assert moved.status_code == 200, moved.text
+
+    denied = no_auth_client.post(
+        f"/api/tasks/{task['id']}/move",
+        json={"status": "todo"},
+        headers=bearer_headers(reviewer_key["api_key"]),
+    )
+    assert denied.status_code == 409
+    assert denied.json()["detail"] == "Send-back requires a reviewer-authored note or handoff."
+
+
+def test_reviewer_sendback_accepts_reviewer_key_note_even_with_custom_author(client, no_auth_client):
+    reviewer_key = create_role_key(client, "reviewer", "reviewer-key-note")
+    task = create_task(client, status="review")
+
+    note = no_auth_client.post(
+        f"/api/tasks/{task['id']}/note",
+        json={"note": "Reviewer-owned evidence.", "author": "display-only-name"},
+        headers=bearer_headers(reviewer_key["api_key"]),
+    )
+    assert note.status_code == 200, note.text
+
+    moved = no_auth_client.post(
+        f"/api/tasks/{task['id']}/move",
+        json={"status": "todo"},
+        headers=bearer_headers(reviewer_key["api_key"]),
+    )
+    assert moved.status_code == 200, moved.text
+    assert moved.json()["status"] == "todo"
+
+
+def test_reviewer_sendback_rejects_spoofed_handoff_author_name(client, no_auth_client):
+    reviewer_key = create_role_key(client, "reviewer", "spoofed-handoff-reviewer")
+    implementer_key = create_role_key(client, "implementer", "handoff-spoofer")
+    task = create_task(client, status="review")
+
+    handoff = no_auth_client.post(
+        f"/api/tasks/{task['id']}/handoffs",
+        json={
+            "summary": "Pretending to be a reviewer handoff.",
+            "author": "spoofed-handoff-reviewer",
+            "author_key_id": reviewer_key["id"],
+        },
+        headers=bearer_headers(implementer_key["api_key"]),
+    )
+    assert handoff.status_code == 201, handoff.text
+
+    denied = no_auth_client.post(
+        f"/api/tasks/{task['id']}/move",
+        json={"status": "todo"},
+        headers=bearer_headers(reviewer_key["api_key"]),
+    )
+    assert denied.status_code == 409
+    assert denied.json()["detail"] == "Send-back requires a reviewer-authored note or handoff."
+
+
+def test_reviewer_sendback_accepts_reviewer_key_handoff_even_with_custom_author(client, no_auth_client):
+    reviewer_key = create_role_key(client, "reviewer", "reviewer-key-handoff")
+    task = create_task(client, status="review")
+
+    handoff = no_auth_client.post(
+        f"/api/tasks/{task['id']}/handoffs",
+        json={"summary": "Reviewer-owned handoff.", "author": "display-only-name"},
+        headers=bearer_headers(reviewer_key["api_key"]),
+    )
+    assert handoff.status_code == 201, handoff.text
+
+    moved = no_auth_client.post(
+        f"/api/tasks/{task['id']}/move",
+        json={"status": "todo"},
+        headers=bearer_headers(reviewer_key["api_key"]),
+    )
+    assert moved.status_code == 200, moved.text
+    assert moved.json()["status"] == "todo"
+
+
+def test_reviewer_sendback_ignores_legacy_null_author_key_note(client, no_auth_client):
+    reviewer_key = create_role_key(client, "reviewer", "legacy-reviewer-note")
+    task = create_task(client, status="review")
+
+    note = no_auth_client.post(
+        f"/api/tasks/{task['id']}/note",
+        json={"note": "Legacy reviewer note."},
+        headers=bearer_headers(reviewer_key["api_key"]),
+    )
+    assert note.status_code == 200, note.text
+    with client.app.state.SessionLocal() as db:
+        db_task = db.get(Task, task["id"])
+        assert db_task is not None
+        db_task.notes[-1].author_key_id = None
+        db.commit()
+
+    denied = no_auth_client.post(
+        f"/api/tasks/{task['id']}/move",
+        json={"status": "todo"},
+        headers=bearer_headers(reviewer_key["api_key"]),
+    )
+    assert denied.status_code == 409
+    assert denied.json()["detail"] == "Send-back requires a reviewer-authored note or handoff."
 
 
 def test_admin_can_do_any_transition(client, no_auth_client):

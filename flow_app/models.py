@@ -100,6 +100,7 @@ class TaskNote(Base):
     task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False, index=True)
     body: Mapped[str] = mapped_column(Text, nullable=False)
     author: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    author_key_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
     task: Mapped[Task] = relationship(back_populates="notes")
@@ -116,6 +117,7 @@ class TaskHandoff(Base):
         index=True,
     )
     author: Mapped[str] = mapped_column(String(120), nullable=False)
+    author_key_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
     summary: Mapped[str] = mapped_column(Text, nullable=False)
     changed_files: Mapped[str] = mapped_column(Text, nullable=False, default="")
     commands_run: Mapped[str] = mapped_column(Text, nullable=False, default="")

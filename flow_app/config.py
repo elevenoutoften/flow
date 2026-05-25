@@ -5,6 +5,8 @@ import hashlib
 import os
 from pathlib import Path
 
+from cryptography.fernet import Fernet
+
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -44,6 +46,25 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_optional(name: str) -> str | None:
+    value = os.environ.get(name, "").strip()
+    return value or None
+
+
+def _validate_fernet_key(value: str | None) -> str | None:
+    if value is None:
+        return None
+    try:
+        Fernet(value.encode("utf-8"))
+    except Exception as exc:
+        raise ValueError(f"{name_for_webhook_key()} must be a valid Fernet key") from exc
+    return value
+
+
+def name_for_webhook_key() -> str:
+    return "FLOW_WEBHOOK_ENCRYPTION_KEY"
+
+
 @dataclass(frozen=True)
 class FlowSettings:
     data_dir: Path
@@ -59,6 +80,10 @@ class FlowSettings:
     session_cookie_secure: bool
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
+    webhook_encryption_key: str | None = None
+    max_webhook_payload_bytes: int = 65536
+    max_webhook_response_bytes: int = 4096
+    max_webhook_delivery_age_days: int = 30
 
     @property
     def session_cookie_enabled(self) -> bool:
@@ -91,6 +116,10 @@ def get_settings() -> FlowSettings:
         session_cookie_secure=_env_bool("FLOW_SESSION_COOKIE_SECURE", default=False),
         telegram_bot_token=_env("FLOW_TELEGRAM_BOT_TOKEN", ""),
         telegram_chat_id=_env("FLOW_TELEGRAM_CHAT_ID", ""),
+        webhook_encryption_key=_validate_fernet_key(_env_optional("FLOW_WEBHOOK_ENCRYPTION_KEY")),
+        max_webhook_payload_bytes=_env_int("FLOW_MAX_WEBHOOK_PAYLOAD_BYTES", 65536),
+        max_webhook_response_bytes=_env_int("FLOW_MAX_WEBHOOK_RESPONSE_BYTES", 4096),
+        max_webhook_delivery_age_days=_env_int("FLOW_MAX_WEBHOOK_DELIVERY_AGE_DAYS", 30),
     )
     return _settings_cache
 

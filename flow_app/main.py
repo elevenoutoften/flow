@@ -1457,7 +1457,8 @@ def ensure_compatible_schema(engine) -> None:
                     id VARCHAR(32) NOT NULL PRIMARY KEY,
                     name VARCHAR(180) NOT NULL,
                     url VARCHAR(500) NOT NULL,
-                    secret VARCHAR(128) NOT NULL,
+                    secret VARCHAR(512) NOT NULL,
+                    secret_encrypted INTEGER NOT NULL DEFAULT 0,
                     events TEXT NOT NULL DEFAULT '',
                     active INTEGER NOT NULL DEFAULT 1,
                     max_retries INTEGER NOT NULL DEFAULT 3,
@@ -1578,6 +1579,14 @@ def ensure_compatible_schema(engine) -> None:
         if "workspace_state" not in existing_agent_run_columns:
             with engine.begin() as connection:
                 connection.execute(text("ALTER TABLE agent_runs ADD COLUMN workspace_state TEXT NOT NULL DEFAULT ''"))
+
+    if "webhook_configs" in inspector.get_table_names():
+        existing_webhook_config_columns = {column["name"] for column in inspector.get_columns("webhook_configs")}
+        if "secret_encrypted" not in existing_webhook_config_columns:
+            with engine.begin() as connection:
+                connection.execute(
+                    text("ALTER TABLE webhook_configs ADD COLUMN secret_encrypted INTEGER NOT NULL DEFAULT 0")
+                )
 
     if "api_keys" not in inspector.get_table_names():
         return

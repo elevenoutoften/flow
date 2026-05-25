@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import secrets
@@ -627,7 +627,8 @@ def create_webhook_config(
         id=generate_webhook_id(session),
         name=name,
         url=url,
-        secret=raw_secret,
+        secret=_encrypt_webhook_secret_for_storage(raw_secret),
+        secret_encrypted=int(_webhook_encryption_enabled()),
         events=_join_webhook_events(events),
         active=1,
         max_retries=max_retries,
@@ -658,6 +659,11 @@ def update_webhook_config(session: Session, config: WebhookConfig, updates_dict:
     changes = dict(updates_dict)
     if "events" in changes and changes["events"] is not None:
         changes["events"] = _join_webhook_events(changes["events"])
+    if "secret" in changes and changes["secret"] is not None:
+        changes["secret"] = _encrypt_webhook_secret_for_storage(changes["secret"])
+        changes["secret_encrypted"] = int(_webhook_encryption_enabled())
+    elif _webhook_encryption_enabled() and not config.secret_encrypted:
+        _migrate_webhook_secret_if_possible(session, config)
     for field, value in changes.items():
         setattr(config, field, value)
     config.updated_at = utcnow()
@@ -673,6 +679,9 @@ def delete_webhook_config(session: Session, config: WebhookConfig) -> None:
 
 
 def serialize_webhook_config(config: WebhookConfig) -> WebhookConfigResponse:
+    session = object_session(config)
+    if session is not None:
+        _migrate_webhook_secret_if_possible(session, config)
     return WebhookConfigResponse(
         id=config.id,
         name=config.name,
@@ -693,7 +702,7 @@ def create_webhook_delivery(session: Session, webhook_id: str, event: str, paylo
         id=generate_delivery_id(session),
         webhook_id=webhook_id,
         event=event,
-        payload=payload,
+        payload=_cap_webhook_payload(payload),
         status="pending",
         attempts=0,
         next_attempt_at=None,
@@ -736,12 +745,23 @@ def _webhook_deliveries_stmt(webhook_id: str, status: str | None = None, count: 
 
 
 def update_webhook_delivery(session: Session, delivery: WebhookDelivery, **kwargs) -> WebhookDelivery:
+    if "payload" in kwargs and kwargs["payload"] is not None:
+        kwargs["payload"] = _cap_webhook_payload(kwargs["payload"])
+    if "last_response_body" in kwargs and kwargs["last_response_body"] is not None:
+        kwargs["last_response_body"] = _cap_webhook_response_body(kwargs["last_response_body"])
     for field, value in kwargs.items():
         setattr(delivery, field, value)
     delivery.updated_at = utcnow()
     session.add(delivery)
     session.flush()
     return delivery
+
+
+def cleanup_webhook_deliveries(session: Session, *, older_than_days: int) -> int:
+    cutoff = utcnow() - timedelta(days=older_than_days)
+    result = session.execute(delete(WebhookDelivery).where(WebhookDelivery.created_at < cutoff))
+    session.flush()
+    return int(result.rowcount or 0)
 
 
 def create_notification_delivery(
@@ -1537,6 +1557,62 @@ def _join_webhook_events(events: list[str]) -> str:
 
 def _split_webhook_events(events: str) -> list[str]:
     return [event.strip() for event in events.split(",") if event.strip()]
+
+
+def get_webhook_secret(config: WebhookConfig) -> str | None:
+    if config.secret_encrypted:
+        from .security import decrypt_secret
+
+        return decrypt_secret(config.secret)
+    return config.secret
+
+
+def _migrate_webhook_secret_if_possible(session: Session, config: WebhookConfig) -> None:
+    if config.secret_encrypted or not _webhook_encryption_enabled():
+        return
+    plaintext = config.secret
+    config.secret = _encrypt_webhook_secret_for_storage(plaintext)
+    config.secret_encrypted = 1
+    config.updated_at = utcnow()
+    session.add(config)
+    session.flush()
+
+
+def _encrypt_webhook_secret_for_storage(plaintext: str) -> str:
+    from .security import encrypt_secret
+
+    return encrypt_secret(plaintext)
+
+
+def _webhook_encryption_enabled() -> bool:
+    from .security import webhook_encryption_enabled
+
+    return webhook_encryption_enabled()
+
+
+def _cap_webhook_payload(payload: str) -> str:
+    from .config import get_settings
+
+    return _truncate_utf8(payload, get_settings().max_webhook_payload_bytes)
+
+
+def _cap_webhook_response_body(body: str) -> str:
+    from .config import get_settings
+
+    return _truncate_utf8(body, get_settings().max_webhook_response_bytes, suffix="...[truncated]")
+
+
+def _truncate_utf8(value: str, max_bytes: int, suffix: str = "") -> str:
+    if max_bytes <= 0:
+        return ""
+    encoded = value.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return value
+    suffix_bytes = suffix.encode("utf-8")
+    if suffix and len(suffix_bytes) < max_bytes:
+        prefix_bytes = encoded[: max_bytes - len(suffix_bytes)]
+        return prefix_bytes.decode("utf-8", errors="ignore") + suffix
+    return encoded[:max_bytes].decode("utf-8", errors="ignore")
 
 
 def _load_json_list(value: str) -> list:

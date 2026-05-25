@@ -79,6 +79,14 @@ def dispatch_one(
     if len(running) >= agent.max_concurrency:
         raise DispatchError(f"Agent concurrency limit reached: {agent.name}")
 
+    command_template = _agent_command(agent.command)
+    preview_run = AgentRun(id="run_preview", agent_id=agent.id, task_id=task.id)
+    command = _substitute_command(command_template, agent=agent, task=task, run=preview_run)
+    if agent.command_allowlist:
+        allowed = [prefix.strip() for prefix in agent.command_allowlist.split(",") if prefix.strip()]
+        if not any(command.strip().startswith(prefix) for prefix in allowed):
+            raise DispatchError(f"Command not in allowlist for agent {agent.name}: {command.strip()[:80]}")
+
     task.assignee = agent.name
     if task.status in {"backlog", "todo"}:
         task.status = "doing"
@@ -89,16 +97,11 @@ def dispatch_one(
     run.started_at = now
     run.last_heartbeat_at = now
     run.updated_at = now
+    command = _substitute_command(command_template, agent=agent, task=task, run=run)
     env = _build_env(agent, task, run, api_key=api_key, base_url=base_url)
     workspace = _provision_run_workspace(session, task, run)
     if workspace is not None and workspace.ready:
         env["FLOW_WORKSPACE_DIR"] = workspace.path
-    command_template = _agent_command(agent.command)
-    command = _substitute_command(command_template, agent=agent, task=task, run=run)
-    if agent.command_allowlist:
-        allowed = [prefix.strip() for prefix in agent.command_allowlist.split(",") if prefix.strip()]
-        if not any(command.strip().startswith(prefix) for prefix in allowed):
-            raise DispatchError(f"Command not in allowlist for agent {agent.name}: {command.strip()[:80]}")
 
     try:
         process = subprocess.Popen(

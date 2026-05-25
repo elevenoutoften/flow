@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from flow_app.database import Base, build_engine, build_session_factory
 from flow_app.dispatcher import DispatchError, dispatch_loop, dispatch_one
 from flow_app.main import create_app
+from flow_app.models import AgentRun, Task
 from flow_app.repository import create_agent as repo_create_agent
 from flow_app.repository import create_task as repo_create_task
 from flow_app.repository import create_workspace_config as repo_create_workspace_config
@@ -229,6 +230,7 @@ class TestCommandAllowlist:
     def test_dispatch_rejects_command_not_in_allowlist(self, tmp_path, monkeypatch):
         db = _db(tmp_path)
         popen_called = False
+        workspace_root = tmp_path / "scratch"
 
         def fake_popen(args, **kwargs):
             nonlocal popen_called
@@ -242,11 +244,26 @@ class TestCommandAllowlist:
                 AgentCreate(name="worker", command=_success_command(), command_allowlist="codex,python3"),
             )
             task = repo_create_task(db, TaskCreate(title="Blocked command", status="todo"))
+            repo_create_workspace_config(
+                db,
+                WorkspaceConfigCreate(
+                    name="default",
+                    strategy="scratch_dir",
+                    scratch_root=str(workspace_root),
+                ),
+            )
 
             with pytest.raises(DispatchError, match="Command not in allowlist"):
                 dispatch_one(db, agent, task, api_key="key", base_url="http://flow.test")
 
+            db.expire_all()
+            refreshed_task = db.get(Task, task.id)
             assert popen_called is False
+            assert refreshed_task is not None
+            assert refreshed_task.assignee is None
+            assert refreshed_task.status == "todo"
+            assert db.query(AgentRun).count() == 0
+            assert not (workspace_root / task.id).exists()
         finally:
             db.close()
 

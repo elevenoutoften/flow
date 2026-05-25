@@ -14,6 +14,7 @@ from flow_app.repository import (
     create_task,
     create_task_handoff,
     get_task,
+    list_tasks,
     list_task_handoffs,
     task_update_changes,
 )
@@ -105,6 +106,25 @@ class TaskService:
         self._telegram.send(self.db, "task_created", task)
         self._commit(self.db)
         return task
+
+    def list_tasks(
+        self,
+        project: str | None = None,
+        status: str | None = None,
+        assignee: str | None = None,
+        unclaimed: bool = False,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> list[Task]:
+        return list_tasks(
+            self.db,
+            project=project,
+            status=status,
+            assignee=assignee,
+            unclaimed=unclaimed,
+            limit=limit,
+            offset=offset,
+        )
 
     def update_task(self, task_id: str, payload: TaskUpdate, actor: Actor) -> Task:
         task = self._require_task(task_id)

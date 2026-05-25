@@ -35,8 +35,13 @@ class AutomationService:
     def __init__(self, db: Session):
         self.db = db
 
-    def list_rules(self, enabled_only: bool = False) -> list[AutomationRule]:
-        return list_automation_rules(self.db, enabled_only=enabled_only)
+    def list_rules(
+        self,
+        enabled_only: bool = False,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> list[AutomationRule]:
+        return list_automation_rules(self.db, enabled_only=enabled_only, limit=limit, offset=offset)
 
     def get_rule(self, rule_id: str) -> AutomationRule:
         return self._require_rule(rule_id)

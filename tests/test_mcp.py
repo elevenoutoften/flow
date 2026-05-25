@@ -104,8 +104,29 @@ def test_mcp_flow_list_tasks_returns_tasks(client):
     assert response.status_code == 200
     result = response.json()["result"]
     assert result["structuredContent"]["count"] == 1
+    assert result["structuredContent"]["total"] == 1
+    assert result["structuredContent"]["limit"] == 100
+    assert result["structuredContent"]["offset"] == 0
     assert result["structuredContent"]["tasks"][0]["id"] == task["id"]
     assert "Found 1 Flow task" in result["content"][0]["text"]
+
+
+def test_mcp_flow_list_tasks_paginates(client):
+    created = [create_task(client, title=f"MCP task {index}", priority=index) for index in range(4)]
+
+    response = rpc(
+        client,
+        "tools/call",
+        {"name": "flow_list_tasks", "arguments": {"limit": 2, "offset": 1}},
+    )
+
+    assert response.status_code == 200
+    content = response.json()["result"]["structuredContent"]
+    assert content["count"] == 2
+    assert content["total"] == 4
+    assert content["limit"] == 2
+    assert content["offset"] == 1
+    assert [task["id"] for task in content["tasks"]] == [created[2]["id"], created[1]["id"]]
 
 
 def test_mcp_flow_get_task_returns_task(client):
@@ -279,6 +300,9 @@ def test_mcp_webhook_delivery_log_tools_list_and_get_detail(client):
     assert listed.status_code == 200
     result = listed.json()["result"]["structuredContent"]
     assert result["count"] == 1
+    assert result["total"] == 1
+    assert result["limit"] == 1
+    assert result["offset"] == 0
     delivery = result["deliveries"][0]
     assert delivery["webhook_id"] == webhook["id"]
     assert delivery["event"] == "task_created"
@@ -514,6 +538,9 @@ def test_mcp_flow_list_ideas_returns_ideas(client):
     assert response.status_code == 200
     result = response.json()["result"]
     assert result["structuredContent"]["count"] >= 1
+    assert result["structuredContent"]["total"] >= 1
+    assert result["structuredContent"]["limit"] == 100
+    assert result["structuredContent"]["offset"] == 0
     titles = [idea["title"] for idea in result["structuredContent"]["ideas"]]
     assert "Listable idea" in titles
 

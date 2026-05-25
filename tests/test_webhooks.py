@@ -91,7 +91,7 @@ def create_task(client, **overrides):
 def list_deliveries(client, webhook_id: str):
     response = client.get(f"/api/webhooks/{webhook_id}/deliveries")
     assert response.status_code == 200, response.text
-    return response.json()
+    return response.json()["items"]
 
 
 def assert_single_delivery(client, webhook_id: str, event: str, task_id: str):
@@ -497,7 +497,7 @@ def test_webhook_delivery_list(client):
     response = client.get(f"/api/webhooks/{config['id']}/deliveries")
 
     assert response.status_code == 200
-    deliveries = response.json()
+    deliveries = response.json()["items"]
     assert len(deliveries) == 1
     assert deliveries[0]["webhook_id"] == config["id"]
     assert deliveries[0]["event"] == "task_created"

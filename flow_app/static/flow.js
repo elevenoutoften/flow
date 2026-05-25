@@ -602,7 +602,8 @@
       }
       updateIdeasWorkspaceTitle(selectedProject);
       const query = params.toString() ? "?" + params.toString() : "";
-      state.ideas = await requestJson("/api/ideas" + query);
+      const response = await requestJson("/api/ideas" + query);
+      state.ideas = Array.isArray(response) ? response : response.items;
       renderIdeas(state.ideas);
       if (state.currentIdea) {
         const current = state.ideas.find((idea) => idea.id === state.currentIdea.id);

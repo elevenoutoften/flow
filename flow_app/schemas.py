@@ -330,6 +330,13 @@ class TaskListResponse(BaseModel):
     updated_at: datetime
 
 
+class PaginatedResponse(BaseModel):
+    items: list
+    total: int
+    limit: int
+    offset: int
+
+
 class TaskLinkCreate(BaseModel):
     parent_id: str
     child_id: str

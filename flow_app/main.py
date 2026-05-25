@@ -15,7 +15,7 @@ from sqlalchemy import inspect, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from .config import FLOW_VERSION, FlowSettings, get_settings
+from .config import DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT, FLOW_VERSION, FlowSettings, get_settings
 from .database import Base, build_engine, build_session_factory, default_database_url
 from .dispatcher import DispatchError, set_session_factory
 from .markdown_import import parse_markdown_tasks
@@ -26,6 +26,11 @@ from .repository import (
     archive_idea,
     auto_promote_unblocked_children,
     batch_dependency_summaries,
+    count_agent_runs,
+    count_automation_rules,
+    count_ideas,
+    count_tasks,
+    count_webhook_deliveries,
     create_agent,
     create_agent_api_key,
     create_automation_rule,
@@ -117,6 +122,7 @@ from .schemas import (
     MarkdownImportPreviewResponse,
     MoveRequest,
     NoteRequest,
+    PaginatedResponse,
     PromoteTaskSpec,
     ProjectCreate,
     ProjectResponse,
@@ -563,14 +569,18 @@ def create_app(
             "cleaned": svc.cleanup(config_id, payload.strategy, payload.path, config),
         }
 
-    @app.get("/api/automation-rules", response_model=list[AutomationRuleResponse])
+    @app.get("/api/automation-rules", response_model=PaginatedResponse)
     def api_list_automation_rules(
         db: Session = Depends(get_db),
         enabled_only: bool = Query(default=False),
+        limit: int = Query(default=DEFAULT_PAGE_LIMIT, ge=1, le=MAX_PAGE_LIMIT),
+        offset: int = Query(default=0, ge=0),
         _actor: Actor = Depends(require_permission(Permission.RULES_READ)),
     ):
         svc = AutomationService(db)
-        return [serialize_automation_rule(rule) for rule in svc.list_rules(enabled_only=enabled_only)]
+        items = [serialize_automation_rule(rule) for rule in svc.list_rules(enabled_only=enabled_only, limit=limit, offset=offset)]
+        total = count_automation_rules(db, enabled_only=enabled_only)
+        return {"items": items, "total": total, "limit": limit, "offset": offset}
 
     @app.post("/api/automation-rules/evaluate")
     def api_evaluate_automation_rules(
@@ -619,16 +629,23 @@ def create_app(
             raise HTTPException(status_code=404, detail=exc.message) from exc
         return serialize_automation_rule(rule)
 
-    @app.get("/api/agent-runs", response_model=list[AgentRunResponse])
+    @app.get("/api/agent-runs", response_model=PaginatedResponse)
     def api_list_agent_runs(
         db: Session = Depends(get_db),
         agent_id: str | None = Query(default=None),
         task_id: str | None = Query(default=None),
         status_filter: str | None = Query(default=None, alias="status"),
+        limit: int = Query(default=DEFAULT_PAGE_LIMIT, ge=1, le=MAX_PAGE_LIMIT),
+        offset: int = Query(default=0, ge=0),
         _actor: Actor = Depends(require_permission(Permission.TASKS_READ)),
     ):
         svc = AgentService(db)
-        return [serialize_agent_run(run) for run in svc.list_runs(agent_id=agent_id, task_id=task_id, status=status_filter)]
+        items = [
+            serialize_agent_run(run)
+            for run in svc.list_runs(agent_id=agent_id, task_id=task_id, status=status_filter, limit=limit, offset=offset)
+        ]
+        total = count_agent_runs(db, agent_id=agent_id, task_id=task_id, status=status_filter)
+        return {"items": items, "total": total, "limit": limit, "offset": offset}
 
     @app.get("/api/agent-runs/{run_id}", response_model=AgentRunResponse)
     def api_get_agent_run(
@@ -785,27 +802,32 @@ def create_app(
             raise HTTPException(status_code=404, detail="No unclaimed task is available.")
         return serialize_task(task)
 
-    @app.get("/api/tasks", response_model=list[TaskListResponse])
+    @app.get("/api/tasks", response_model=PaginatedResponse)
     def api_list_tasks(
         db: Session = Depends(get_db),
         project: str | None = Query(default=None),
         status_filter: str | None = Query(default=None, alias="status"),
         assignee: str | None = Query(default=None),
         unclaimed: bool = Query(default=False),
+        limit: int = Query(default=DEFAULT_PAGE_LIMIT, ge=1, le=MAX_PAGE_LIMIT),
+        offset: int = Query(default=0, ge=0),
         _actor: Actor = Depends(require_permission(Permission.TASKS_READ)),
     ):
         if status_filter and status_filter not in STATUSES:
             raise HTTPException(status_code=422, detail="Invalid task status.")
-        return [
+        items = [
             serialize_task_list(task)
-            for task in list_tasks(
-                db,
+            for task in _make_task_service(db).list_tasks(
                 project=project,
                 status=status_filter,
                 assignee=assignee,
                 unclaimed=unclaimed,
+                limit=limit,
+                offset=offset,
             )
         ]
+        total = count_tasks(db, project=project, status=status_filter, assignee=assignee, unclaimed=unclaimed)
+        return {"items": items, "total": total, "limit": limit, "offset": offset}
 
     @app.post("/api/tasks", response_model=TaskResponse, status_code=status.HTTP_201_CREATED)
     def api_create_task(
@@ -1036,15 +1058,19 @@ def create_app(
             raise HTTPException(status_code=409, detail=exc.message)
         return serialize_task(task)
 
-    @app.get("/api/ideas", response_model=list[IdeaResponse])
+    @app.get("/api/ideas", response_model=PaginatedResponse)
     def api_list_ideas(
         db: Session = Depends(get_db),
         project: str | None = Query(default=None),
         archived: bool = Query(default=False),
+        limit: int = Query(default=DEFAULT_PAGE_LIMIT, ge=1, le=MAX_PAGE_LIMIT),
+        offset: int = Query(default=0, ge=0),
         _actor: Actor = Depends(require_permission(Permission.TASKS_READ)),
     ):
         svc = IdeaService(db)
-        return [serialize_idea(idea, db) for idea in svc.list_ideas(project=project, archived=archived)]
+        items = [serialize_idea(idea, db) for idea in svc.list_ideas(project=project, archived=archived, limit=limit, offset=offset)]
+        total = count_ideas(db, project=project, archived=archived)
+        return {"items": items, "total": total, "limit": limit, "offset": offset}
 
     @app.post("/api/ideas", response_model=IdeaResponse, status_code=status.HTTP_201_CREATED)
     def api_create_idea(
@@ -1192,21 +1218,25 @@ def create_app(
             raise HTTPException(status_code=404, detail=exc.message) from exc
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
-    @app.get("/api/webhooks/{webhook_id}/deliveries", response_model=list[WebhookDeliveryResponse])
+    @app.get("/api/webhooks/{webhook_id}/deliveries", response_model=PaginatedResponse)
     def api_list_webhook_deliveries(
         webhook_id: str,
         db: Session = Depends(get_db),
         status_filter: str | None = Query(default=None, alias="status"),
+        limit: int = Query(default=DEFAULT_PAGE_LIMIT, ge=1, le=MAX_PAGE_LIMIT),
+        offset: int = Query(default=0, ge=0),
         _actor: Actor = Depends(require_permission(Permission.WEBHOOK_READ)),
     ):
         if status_filter and status_filter not in {"pending", "success", "failed", "retrying"}:
             raise HTTPException(status_code=422, detail="Invalid delivery status.")
         svc = WebhookService(db)
         try:
-            deliveries = svc.list_deliveries(webhook_id, status=status_filter)
+            deliveries = svc.list_deliveries(webhook_id, status=status_filter, limit=limit, offset=offset)
         except WebhookNotFoundError as exc:
             raise HTTPException(status_code=404, detail=exc.message) from exc
-        return [serialize_webhook_delivery(delivery) for delivery in deliveries]
+        items = [serialize_webhook_delivery(delivery) for delivery in deliveries]
+        total = count_webhook_deliveries(db, webhook_id, status=status_filter)
+        return {"items": items, "total": total, "limit": limit, "offset": offset}
 
     @app.get("/api/webhooks/{webhook_id}/deliveries/{delivery_id}", response_model=WebhookDeliveryDetailResponse)
     def api_get_webhook_delivery(

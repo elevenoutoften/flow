@@ -175,7 +175,7 @@ def test_ideas_quick_add_uses_selected_project(client_with_admin):
 
     filtered = client_with_admin.get("/api/ideas?project=alpha")
     assert filtered.status_code == 200
-    alpha_ideas = [item for item in filtered.json() if item["project"] == "alpha"]
+    alpha_ideas = [item for item in filtered.json()["items"] if item["project"] == "alpha"]
     assert len(alpha_ideas) == 2
 
 

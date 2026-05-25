@@ -45,7 +45,7 @@ def test_create_list_and_patch_task(client):
     assert task["notes"] == []
     assert task["source_filename"] is None
 
-    listed = client.get("/api/tasks").json()
+    listed = client.get("/api/tasks").json()["items"]
     assert [item["id"] for item in listed] == [task["id"]]
 
     response = client.patch(
@@ -71,7 +71,7 @@ def test_list_tasks_uses_lightweight_response_without_detail_fields(client):
 
     listed = client.get("/api/tasks")
     assert listed.status_code == 200
-    list_item = listed.json()[0]
+    list_item = listed.json()["items"][0]
     assert "notes" not in list_item
     assert "latest_handoff" not in list_item
 
@@ -103,8 +103,38 @@ def test_list_tasks_query_count_does_not_scale_with_notes_or_handoffs(client):
         event.remove(client.app.state.engine, "before_cursor_execute", count_statement)
 
     assert response.status_code == 200
-    assert len(response.json()) == 5
+    body = response.json()
+    assert len(body["items"]) == 5
+    assert body["total"] == 5
+    assert body["limit"] == 100
+    assert body["offset"] == 0
     assert len(statements) <= 3
+
+
+def test_list_tasks_pagination_metadata_and_bounds(client):
+    created = [create_task(client, title=f"Page task {index:03d}", priority=index) for index in range(105)]
+
+    default_page = client.get("/api/tasks")
+    assert default_page.status_code == 200
+    default_body = default_page.json()
+    assert len(default_body["items"]) == 100
+    assert default_body["total"] == 105
+    assert default_body["limit"] == 100
+    assert default_body["offset"] == 0
+
+    page = client.get("/api/tasks", params={"limit": 3, "offset": 2})
+    assert page.status_code == 200
+    body = page.json()
+    assert body["total"] == 105
+    assert body["limit"] == 3
+    assert body["offset"] == 2
+    assert [item["id"] for item in body["items"]] == [created[102]["id"], created[101]["id"], created[100]["id"]]
+
+    beyond = client.get("/api/tasks", params={"limit": 10, "offset": 999})
+    assert beyond.status_code == 200
+    assert beyond.json()["items"] == []
+
+    assert client.get("/api/tasks", params={"limit": 501}).status_code == 422
 
 
 def test_api_key_create_list_and_revoke(client):
@@ -1575,7 +1605,7 @@ def test_human_required_in_list_and_get_responses(client):
     assert fetched["blocker_reason"] == "blocked"
 
     # GET /api/tasks
-    listed = client.get("/api/tasks").json()
+    listed = client.get("/api/tasks").json()["items"]
     found = [t for t in listed if t["id"] == task_id][0]
     assert found["human_required"] is True
     assert found["assignee_type"] == "mixed"

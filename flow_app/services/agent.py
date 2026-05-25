@@ -70,8 +70,10 @@ class AgentService:
         agent_id: str | None = None,
         status: str | None = None,
         task_id: str | None = None,
+        limit: int | None = None,
+        offset: int = 0,
     ) -> list[AgentRun]:
-        return list_agent_runs(self.db, agent_id=agent_id, task_id=task_id, status=status)
+        return list_agent_runs(self.db, agent_id=agent_id, task_id=task_id, status=status, limit=limit, offset=offset)
 
     def get_run(self, run_id: str) -> AgentRun:
         return self._require_run(run_id)

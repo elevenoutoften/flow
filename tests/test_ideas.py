@@ -23,7 +23,7 @@ def test_create_list_and_get_idea(client):
     assert idea["author"] == "codex"
     assert idea["archived_at"] is None
 
-    listed = client.get("/api/ideas").json()
+    listed = client.get("/api/ideas").json()["items"]
     assert [item["id"] for item in listed] == [idea["id"]]
 
     fetched = client.get(f"/api/ideas/{idea['id']}").json()
@@ -55,17 +55,17 @@ def test_archive_and_unarchive_idea(client):
     assert body["archived_at"] is not None
     assert body["id"] == idea["id"]
 
-    listed = client.get("/api/ideas").json()
+    listed = client.get("/api/ideas").json()["items"]
     assert idea["id"] not in [item["id"] for item in listed]
 
-    archived_listed = client.get("/api/ideas?archived=true").json()
+    archived_listed = client.get("/api/ideas?archived=true").json()["items"]
     assert idea["id"] in [item["id"] for item in archived_listed]
 
     unarchived = client.post(f"/api/ideas/{idea['id']}/unarchive", json={})
     assert unarchived.status_code == 200
     assert unarchived.json()["archived_at"] is None
 
-    listed = client.get("/api/ideas").json()
+    listed = client.get("/api/ideas").json()["items"]
     assert idea["id"] in [item["id"] for item in listed]
 
 
@@ -73,10 +73,10 @@ def test_list_ideas_filters_project(client):
     create_idea(client, project="default", title="Idea A")
     create_idea(client, project="other-project", title="Idea B")
 
-    all_ideas = client.get("/api/ideas").json()
+    all_ideas = client.get("/api/ideas").json()["items"]
     assert len(all_ideas) == 2
 
-    filtered = client.get("/api/ideas?project=other-project").json()
+    filtered = client.get("/api/ideas?project=other-project").json()["items"]
     assert len(filtered) == 1
     assert filtered[0]["title"] == "Idea B"
 
@@ -88,7 +88,7 @@ def test_ideas_filtered_by_project(client_with_admin):
     response = client_with_admin.get("/api/ideas?project=alpha")
 
     assert response.status_code == 200
-    ideas = response.json()
+    ideas = response.json()["items"]
     assert [idea["project"] for idea in ideas] == ["alpha"]
     assert [idea["title"] for idea in ideas] == ["Alpha idea"]
 
@@ -134,7 +134,7 @@ def test_ideas_all_projects_unfiltered(client_with_admin):
     response = client_with_admin.get("/api/ideas")
 
     assert response.status_code == 200
-    assert {idea["project"] for idea in response.json()} == {"alpha", "beta"}
+    assert {idea["project"] for idea in response.json()["items"]} == {"alpha", "beta"}
 
 
 def test_idea_not_found(client):

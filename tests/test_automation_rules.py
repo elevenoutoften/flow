@@ -49,7 +49,7 @@ def test_rule_crud_create_list_get_update_enable_disable(client):
     assert rule["name"] == "Rule one"
     assert rule["enabled"] is True
 
-    listed = client.get("/api/automation-rules").json()
+    listed = client.get("/api/automation-rules").json()["items"]
     assert [item["id"] for item in listed] == [rule["id"]]
 
     fetched = client.get(f"/api/automation-rules/{rule['id']}")
@@ -63,7 +63,7 @@ def test_rule_crud_create_list_get_update_enable_disable(client):
     assert updated.status_code == 200, updated.text
     assert updated.json()["enabled"] is False
     assert updated.json()["priority"] == 10
-    assert client.get("/api/automation-rules?enabled_only=true").json() == []
+    assert client.get("/api/automation-rules?enabled_only=true").json()["items"] == []
 
 
 def test_condition_evaluation_operators():
@@ -140,7 +140,7 @@ def test_rule_permissions_read_only_can_list_implementer_cannot_create(client, n
 
     read_response = no_auth_client.get("/api/automation-rules", headers=bearer_headers(reader))
     assert read_response.status_code == 200
-    assert read_response.json()[0]["name"] == "High priority created"
+    assert read_response.json()["items"][0]["name"] == "High priority created"
 
     create_response = no_auth_client.post(
         "/api/automation-rules",
@@ -292,7 +292,8 @@ def test_rule_spawn_action_dispatches_agent_and_reports_failures(client, monkeyp
     assert calls == [(agent["id"], task["id"], "key", "url")]
 
     missing = create_task(client, title="No matching agent")
-    client.patch(f"/api/automation-rules/{client.get('/api/automation-rules').json()[0]['id']}", json={"actions": json.dumps([{"type": "spawn", "agent_name": "missing"}])})
+    rule_id = client.get("/api/automation-rules").json()["items"][0]["id"]
+    client.patch(f"/api/automation-rules/{rule_id}", json={"actions": json.dumps([{"type": "spawn", "agent_name": "missing"}])})
     failure = client.post("/api/automation-rules/evaluate", json={"trigger": "task_created", "task_id": missing["id"]})
     failure_result = failure.json()["matches"][0]["action_results"][0]
     assert failure_result["success"] is False
@@ -311,11 +312,11 @@ def test_rule_webhook_action_creates_delivery(client):
     result = response.json()["matches"][0]["action_results"][0]
     assert result["success"] is True
 
-    deliveries = client.get(f"/api/webhooks/{webhook['id']}/deliveries").json()
+    deliveries = client.get(f"/api/webhooks/{webhook['id']}/deliveries").json()["items"]
     assert len(deliveries) == 1
     assert deliveries[0]["event"] == "task_created"
 
     retry = client.post("/api/automation-rules/evaluate", json={"trigger": "task_created", "task_id": task["id"]})
     retry_result = retry.json()["matches"][0]["action_results"][0]
     assert retry_result["details"]["idempotent"] is True
-    assert len(client.get(f"/api/webhooks/{webhook['id']}/deliveries").json()) == 1
+    assert len(client.get(f"/api/webhooks/{webhook['id']}/deliveries").json()["items"]) == 1

@@ -38,8 +38,14 @@ class IdeaService:
     def __init__(self, db: Session):
         self.db = db
 
-    def list_ideas(self, project: str | None = None, archived: bool = False) -> list[Idea]:
-        return list_ideas(self.db, project=project, archived=archived)
+    def list_ideas(
+        self,
+        project: str | None = None,
+        archived: bool = False,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> list[Idea]:
+        return list_ideas(self.db, project=project, archived=archived, limit=limit, offset=offset)
 
     def get_idea(self, idea_id: str) -> Idea:
         return self._require_idea(idea_id)

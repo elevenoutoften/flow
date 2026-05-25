@@ -453,7 +453,7 @@ class TestAgentRunLifecycle:
             c.post(f"/api/agents/{agent['id']}/dispatch", params={"task_id": task["id"]})
             r = c.get("/api/agent-runs")
             assert r.status_code == 200
-            assert len(r.json()) >= 1
+            assert len(r.json()["items"]) >= 1
 
     def test_list_agent_runs_filters(self, tmp_path):
         with _client(tmp_path) as c:
@@ -462,10 +462,10 @@ class TestAgentRunLifecycle:
             c.post(f"/api/agents/{agent['id']}/dispatch", params={"task_id": task["id"]})
             r = c.get("/api/agent-runs", params={"agent_id": agent["id"]})
             assert r.status_code == 200
-            assert len(r.json()) >= 1
+            assert len(r.json()["items"]) >= 1
             r2 = c.get("/api/agent-runs", params={"status": "running"})
             assert r2.status_code == 200
-            assert len(r2.json()) >= 1
+            assert len(r2.json()["items"]) >= 1
 
     def test_stale_recovery(self, tmp_path):
         with _client(tmp_path) as c:

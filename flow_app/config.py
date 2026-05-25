@@ -19,6 +19,8 @@ def _compute_asset_version() -> str:
 
 
 FLOW_VERSION = _compute_asset_version()
+DEFAULT_PAGE_LIMIT = 100
+MAX_PAGE_LIMIT = 500
 
 
 def _env(name: str, default: str) -> str:

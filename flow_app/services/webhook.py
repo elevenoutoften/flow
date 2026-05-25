@@ -75,13 +75,11 @@ class WebhookService:
         self,
         webhook_id: str,
         limit: int | None = None,
+        offset: int = 0,
         status: str | None = None,
     ) -> list[WebhookDelivery]:
         self._require_config(webhook_id)
-        deliveries = list_webhook_deliveries(self.db, webhook_id, status=status)
-        if limit is not None:
-            return deliveries[:limit]
-        return deliveries
+        return list_webhook_deliveries(self.db, webhook_id, status=status, limit=limit, offset=offset)
 
     def get_delivery(self, delivery_id: str) -> WebhookDelivery | None:
         return get_webhook_delivery(self.db, delivery_id)

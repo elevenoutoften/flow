@@ -7,12 +7,17 @@ from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from ..config import default_project
+from ..config import DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT, default_project
 from ..dispatcher import DispatchError
 from ..models import ApiKeyRole, Idea, Task
 from ..repository import (
     archive_idea,
     auto_promote_unblocked_children,
+    count_agent_runs,
+    count_automation_rules,
+    count_ideas,
+    count_tasks,
+    count_webhook_deliveries,
     create_agent,
     create_automation_rule,
     create_task_handoff,
@@ -153,6 +158,8 @@ TOOLS: list[dict[str, Any]] = [
                     "enum": list(STATUSES),
                     "description": "Optional task status filter.",
                 },
+                "limit": {"type": "integer", "minimum": 1, "maximum": MAX_PAGE_LIMIT, "default": DEFAULT_PAGE_LIMIT},
+                "offset": {"type": "integer", "minimum": 0, "default": 0},
             },
         },
     },
@@ -356,6 +363,8 @@ TOOLS: list[dict[str, Any]] = [
             "properties": {
                 "project": {"type": "string", "description": "Optional project slug."},
                 "archived": {"type": "boolean", "default": False},
+                "limit": {"type": "integer", "minimum": 1, "maximum": MAX_PAGE_LIMIT, "default": DEFAULT_PAGE_LIMIT},
+                "offset": {"type": "integer", "minimum": 0, "default": 0},
             },
         },
     },
@@ -593,7 +602,8 @@ TOOLS: list[dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "webhook_id": {"type": "string", "description": "Webhook config ID"},
-                "limit": {"type": "integer", "minimum": 1, "description": "Maximum deliveries to return"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": MAX_PAGE_LIMIT, "default": DEFAULT_PAGE_LIMIT},
+                "offset": {"type": "integer", "minimum": 0, "default": 0},
             },
             "required": ["webhook_id"],
         },
@@ -710,6 +720,8 @@ TOOLS: list[dict[str, Any]] = [
                 "agent_id": {"type": "string"},
                 "task_id": {"type": "string"},
                 "status": {"type": "string"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": MAX_PAGE_LIMIT, "default": DEFAULT_PAGE_LIMIT},
+                "offset": {"type": "integer", "minimum": 0, "default": 0},
             },
         },
     },
@@ -739,7 +751,11 @@ TOOLS: list[dict[str, Any]] = [
         "description": "List Flow automation rules.",
         "inputSchema": {
             "type": "object",
-            "properties": {"enabled_only": {"type": "boolean", "default": False}},
+            "properties": {
+                "enabled_only": {"type": "boolean", "default": False},
+                "limit": {"type": "integer", "minimum": 1, "maximum": MAX_PAGE_LIMIT, "default": DEFAULT_PAGE_LIMIT},
+                "offset": {"type": "integer", "minimum": 0, "default": 0},
+            },
         },
     },
     {
@@ -889,9 +905,12 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
         status = optional_string(arguments.get("status"))
         if status and status not in STATUSES:
             raise JsonRpcError(-32602, "Invalid task status.")
-        tasks = [task_list_to_json(task) for task in list_tasks(db, project=project, status=status)]
+        limit = optional_limit(arguments.get("limit"))
+        offset = optional_offset(arguments.get("offset"))
+        tasks = [task_list_to_json(task) for task in list_tasks(db, project=project, status=status, limit=limit, offset=offset)]
+        total = count_tasks(db, project=project, status=status)
         return tool_result(
-            {"tasks": tasks, "count": len(tasks)},
+            {"tasks": tasks, "count": len(tasks), "total": total, "limit": limit, "offset": offset},
             f"Found {len(tasks)} Flow task{'s' if len(tasks) != 1 else ''}.",
         )
 
@@ -1106,10 +1125,13 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
         require_tool_permission(actor, Permission.TASKS_READ)
         project = optional_string(arguments.get("project"))
         archived = optional_bool(arguments.get("archived"), default=False)
+        limit = optional_limit(arguments.get("limit"))
+        offset = optional_offset(arguments.get("offset"))
         svc = IdeaService(db)
-        ideas = [idea_to_json(idea, db) for idea in svc.list_ideas(project=project, archived=archived)]
+        ideas = [idea_to_json(idea, db) for idea in svc.list_ideas(project=project, archived=archived, limit=limit, offset=offset)]
+        total = count_ideas(db, project=project, archived=archived)
         return tool_result(
-            {"ideas": ideas, "count": len(ideas)},
+            {"ideas": ideas, "count": len(ideas), "total": total, "limit": limit, "offset": offset},
             f"Found {len(ideas)} Flow idea{'s' if len(ideas) != 1 else ''}.",
         )
 
@@ -1357,14 +1379,19 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
     if name == "flow_list_webhook_deliveries":
         require_tool_permission(actor, Permission.WEBHOOK_READ)
         webhook_id = require_string(arguments.get("webhook_id"), "webhook_id")
-        limit = optional_int(arguments.get("limit"), "limit")
+        limit = optional_limit(arguments.get("limit"))
+        offset = optional_offset(arguments.get("offset"))
         svc = WebhookService(db)
         try:
-            deliveries = [webhook_delivery_to_json(delivery) for delivery in svc.list_deliveries(webhook_id, limit=limit)]
+            deliveries = [
+                webhook_delivery_to_json(delivery)
+                for delivery in svc.list_deliveries(webhook_id, limit=limit, offset=offset)
+            ]
+            total = count_webhook_deliveries(db, webhook_id)
         except WebhookNotFoundError as exc:
             raise JsonRpcError(-32602, exc.message) from exc
         return tool_result(
-            {"deliveries": deliveries, "count": len(deliveries)},
+            {"deliveries": deliveries, "count": len(deliveries), "total": total, "limit": limit, "offset": offset},
             f"Found {len(deliveries)} Flow webhook deliver{'y' if len(deliveries) == 1 else 'ies'}.",
         )
 
@@ -1484,16 +1511,24 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
     if name == "flow_list_agent_runs":
         require_tool_permission(actor, Permission.TASKS_READ)
         svc = AgentService(db)
+        limit = optional_limit(arguments.get("limit"))
+        offset = optional_offset(arguments.get("offset"))
+        agent_id = optional_string(arguments.get("agent_id"))
+        task_id = optional_string(arguments.get("task_id"))
+        status = optional_string(arguments.get("status"))
         runs = [
             agent_run_to_json(run)
             for run in svc.list_runs(
-                agent_id=optional_string(arguments.get("agent_id")),
-                task_id=optional_string(arguments.get("task_id")),
-                status=optional_string(arguments.get("status")),
+                agent_id=agent_id,
+                task_id=task_id,
+                status=status,
+                limit=limit,
+                offset=offset,
             )
         ]
+        total = count_agent_runs(db, agent_id=agent_id, task_id=task_id, status=status)
         return tool_result(
-            {"runs": runs, "count": len(runs)},
+            {"runs": runs, "count": len(runs), "total": total, "limit": limit, "offset": offset},
             f"Found {len(runs)} Flow agent run{'s' if len(runs) != 1 else ''}.",
         )
 
@@ -1525,10 +1560,13 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
     if name == "flow_list_automation_rules":
         require_tool_permission(actor, Permission.RULES_READ)
         enabled_only = optional_bool(arguments.get("enabled_only"), default=False)
+        limit = optional_limit(arguments.get("limit"))
+        offset = optional_offset(arguments.get("offset"))
         svc = AutomationService(db)
-        rules = [automation_rule_to_json(rule) for rule in svc.list_rules(enabled_only=enabled_only)]
+        rules = [automation_rule_to_json(rule) for rule in svc.list_rules(enabled_only=enabled_only, limit=limit, offset=offset)]
+        total = count_automation_rules(db, enabled_only=enabled_only)
         return tool_result(
-            {"rules": rules, "count": len(rules)},
+            {"rules": rules, "count": len(rules), "total": total, "limit": limit, "offset": offset},
             f"Found {len(rules)} Flow automation rule{'s' if len(rules) != 1 else ''}.",
         )
 
@@ -1735,6 +1773,25 @@ def optional_int(value: Any, field: str) -> int | None:
         raise JsonRpcError(-32602, f"{field} must be an integer.")
     if value < 1:
         raise JsonRpcError(-32602, f"{field} must be at least 1.")
+    return value
+
+
+def optional_limit(value: Any) -> int:
+    limit = optional_int(value, "limit")
+    if limit is None:
+        return DEFAULT_PAGE_LIMIT
+    if limit > MAX_PAGE_LIMIT:
+        raise JsonRpcError(-32602, f"limit must be at most {MAX_PAGE_LIMIT}.")
+    return limit
+
+
+def optional_offset(value: Any) -> int:
+    if value is None:
+        return 0
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise JsonRpcError(-32602, "offset must be an integer.")
+    if value < 0:
+        raise JsonRpcError(-32602, "offset must be at least 0.")
     return value
 
 

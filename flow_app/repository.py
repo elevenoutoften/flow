@@ -5,7 +5,7 @@ import hashlib
 import json
 import secrets
 
-from sqlalchemy import Select, delete, select, update as sqlalchemy_update
+from sqlalchemy import Select, case, delete, func, select, update as sqlalchemy_update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session, object_session, selectinload
 
@@ -65,6 +65,11 @@ from .schemas import (
     WorkspaceConfigResponse,
     WorkspaceConfigUpdate,
 )
+from .config import DEFAULT_PAGE_LIMIT
+
+
+def _apply_pagination(stmt: Select, *, limit: int | None = None, offset: int = 0) -> Select:
+    return stmt.limit(DEFAULT_PAGE_LIMIT if limit is None else limit).offset(offset)
 
 
 def generate_task_id(session: Session) -> str:
@@ -351,17 +356,40 @@ def list_agent_runs(
     agent_id: str | None = None,
     task_id: str | None = None,
     status: str | None = None,
+    limit: int | None = None,
+    offset: int = 0,
 ) -> list[AgentRun]:
-    stmt = select(AgentRun)
+    stmt = _agent_runs_stmt(agent_id=agent_id, task_id=task_id, status=status)
+    stmt = stmt.order_by(AgentRun.created_at.desc(), AgentRun.id)
+    return list(session.scalars(_apply_pagination(stmt, limit=limit, offset=offset)).all())
+
+
+def count_agent_runs(
+    session: Session,
+    *,
+    agent_id: str | None = None,
+    task_id: str | None = None,
+    status: str | None = None,
+) -> int:
+    stmt = _agent_runs_stmt(agent_id=agent_id, task_id=task_id, status=status, count=True)
+    return int(session.scalar(stmt) or 0)
+
+
+def _agent_runs_stmt(
+    *,
+    agent_id: str | None = None,
+    task_id: str | None = None,
+    status: str | None = None,
+    count: bool = False,
+) -> Select:
+    stmt = select(func.count()).select_from(AgentRun) if count else select(AgentRun)
     if agent_id:
         stmt = stmt.where(AgentRun.agent_id == agent_id)
     if task_id:
         stmt = stmt.where(AgentRun.task_id == task_id)
     if status:
         stmt = stmt.where(AgentRun.status == status)
-    runs = list(session.scalars(stmt).all())
-    runs.sort(key=lambda run: (-(_ensure_datetime(run.created_at).timestamp()), run.id))
-    return runs
+    return stmt
 
 
 def serialize_agent_run(run: AgentRun) -> AgentRunResponse:
@@ -457,13 +485,27 @@ def get_automation_rule(session: Session, rule_id: str) -> AutomationRule | None
     return session.get(AutomationRule, rule_id)
 
 
-def list_automation_rules(session: Session, *, enabled_only: bool = False) -> list[AutomationRule]:
-    stmt = select(AutomationRule)
+def list_automation_rules(
+    session: Session,
+    *,
+    enabled_only: bool = False,
+    limit: int | None = None,
+    offset: int = 0,
+) -> list[AutomationRule]:
+    stmt = _automation_rules_stmt(enabled_only=enabled_only)
+    stmt = stmt.order_by(AutomationRule.priority.desc(), func.lower(AutomationRule.name), AutomationRule.id)
+    return list(session.scalars(_apply_pagination(stmt, limit=limit, offset=offset)).all())
+
+
+def count_automation_rules(session: Session, *, enabled_only: bool = False) -> int:
+    return int(session.scalar(_automation_rules_stmt(enabled_only=enabled_only, count=True)) or 0)
+
+
+def _automation_rules_stmt(*, enabled_only: bool = False, count: bool = False) -> Select:
+    stmt = select(func.count()).select_from(AutomationRule) if count else select(AutomationRule)
     if enabled_only:
         stmt = stmt.where(AutomationRule.enabled == 1)
-    rules = list(session.scalars(stmt).all())
-    rules.sort(key=lambda rule: (-rule.priority, rule.name.lower(), rule.id))
-    return rules
+    return stmt
 
 
 def update_automation_rule(session: Session, rule: AutomationRule, payload: AutomationRuleUpdate) -> AutomationRule:
@@ -669,13 +711,28 @@ def get_webhook_delivery(session: Session, delivery_id: str) -> WebhookDelivery 
     return session.get(WebhookDelivery, delivery_id)
 
 
-def list_webhook_deliveries(session: Session, webhook_id: str, status: str | None = None) -> list[WebhookDelivery]:
-    stmt = select(WebhookDelivery).where(WebhookDelivery.webhook_id == webhook_id)
+def list_webhook_deliveries(
+    session: Session,
+    webhook_id: str,
+    status: str | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+) -> list[WebhookDelivery]:
+    stmt = _webhook_deliveries_stmt(webhook_id, status=status)
+    stmt = stmt.order_by(WebhookDelivery.created_at.desc(), WebhookDelivery.id)
+    return list(session.scalars(_apply_pagination(stmt, limit=limit, offset=offset)).all())
+
+
+def count_webhook_deliveries(session: Session, webhook_id: str, status: str | None = None) -> int:
+    return int(session.scalar(_webhook_deliveries_stmt(webhook_id, status=status, count=True)) or 0)
+
+
+def _webhook_deliveries_stmt(webhook_id: str, status: str | None = None, count: bool = False) -> Select:
+    stmt = select(func.count()).select_from(WebhookDelivery) if count else select(WebhookDelivery)
+    stmt = stmt.where(WebhookDelivery.webhook_id == webhook_id)
     if status:
         stmt = stmt.where(WebhookDelivery.status == status)
-    deliveries = list(session.scalars(stmt).all())
-    deliveries.sort(key=lambda delivery: (-_ensure_datetime(delivery.created_at).timestamp(), delivery.id))
-    return deliveries
+    return stmt
 
 
 def update_webhook_delivery(session: Session, delivery: WebhookDelivery, **kwargs) -> WebhookDelivery:
@@ -996,17 +1053,37 @@ def list_ideas(
     *,
     project: str | None = None,
     archived: bool = False,
+    limit: int | None = None,
+    offset: int = 0,
 ) -> list[Idea]:
-    stmt = select(Idea)
+    stmt = _ideas_stmt(project=project, archived=archived)
+    stmt = stmt.order_by(Idea.created_at.desc(), Idea.id)
+    return list(session.scalars(_apply_pagination(stmt, limit=limit, offset=offset)).all())
+
+
+def count_ideas(
+    session: Session,
+    *,
+    project: str | None = None,
+    archived: bool = False,
+) -> int:
+    return int(session.scalar(_ideas_stmt(project=project, archived=archived, count=True)) or 0)
+
+
+def _ideas_stmt(
+    *,
+    project: str | None = None,
+    archived: bool = False,
+    count: bool = False,
+) -> Select:
+    stmt = select(func.count()).select_from(Idea) if count else select(Idea)
     if project:
         stmt = stmt.where(Idea.project == project)
     if archived:
         stmt = stmt.where(Idea.archived_at.is_not(None))
     else:
         stmt = stmt.where(Idea.archived_at.is_(None))
-    items = list(session.scalars(stmt).all())
-    items.sort(key=lambda idea: (-(idea.created_at.timestamp() if idea.created_at else 0), idea.id))
-    return items
+    return stmt
 
 
 def create_idea(session: Session, payload: IdeaCreate) -> Idea:
@@ -1062,8 +1139,36 @@ def list_tasks(
     status: str | None = None,
     assignee: str | None = None,
     unclaimed: bool = False,
+    limit: int | None = None,
+    offset: int = 0,
 ) -> list[Task]:
-    stmt = select(Task)
+    stmt = _tasks_stmt(project=project, status=status, assignee=assignee, unclaimed=unclaimed)
+    status_order = case({name: index for index, name in enumerate(STATUSES)}, value=Task.status, else_=99)
+    stmt = stmt.order_by(status_order, Task.priority.desc(), Task.created_at, Task.id)
+    return list(session.scalars(_apply_pagination(stmt, limit=limit, offset=offset)).all())
+
+
+def count_tasks(
+    session: Session,
+    *,
+    project: str | None = None,
+    status: str | None = None,
+    assignee: str | None = None,
+    unclaimed: bool = False,
+) -> int:
+    stmt = _tasks_stmt(project=project, status=status, assignee=assignee, unclaimed=unclaimed, count=True)
+    return int(session.scalar(stmt) or 0)
+
+
+def _tasks_stmt(
+    *,
+    project: str | None = None,
+    status: str | None = None,
+    assignee: str | None = None,
+    unclaimed: bool = False,
+    count: bool = False,
+) -> Select:
+    stmt = select(func.count()).select_from(Task) if count else select(Task)
     if project:
         stmt = stmt.where(Task.project == project)
     if status:
@@ -1072,11 +1177,7 @@ def list_tasks(
         stmt = stmt.where(Task.assignee == assignee)
     if unclaimed:
         stmt = stmt.where(Task.assignee.is_(None))
-
-    items = list(session.scalars(stmt).all())
-    status_order = {name: index for index, name in enumerate(STATUSES)}
-    items.sort(key=lambda task: (status_order.get(task.status, 99), -task.priority, task.created_at, task.id))
-    return items
+    return stmt
 
 
 def create_task(session: Session, payload: TaskCreate) -> Task:

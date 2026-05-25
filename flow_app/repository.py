@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import logging
 import secrets
 
 from sqlalchemy import Select, case, delete, func, select, update as sqlalchemy_update
@@ -65,6 +66,11 @@ from .schemas import (
     WorkspaceConfigResponse,
     WorkspaceConfigUpdate,
 )
+
+
+_logger = logging.getLogger(__name__)
+
+
 def _apply_pagination(stmt: Select, *, limit: int | None = None, offset: int = 0) -> Select:
     stmt = stmt.offset(offset)
     if limit is not None:
@@ -161,9 +167,7 @@ def get_project(session: Session, slug: str) -> Project | None:
 
 
 def list_projects(session: Session) -> list[Project]:
-    projects = list(session.scalars(select(Project)).all())
-    projects.sort(key=lambda project: project.slug)
-    return projects
+    return list(session.scalars(select(Project).order_by(Project.slug)).all())
 
 
 def create_project(session: Session, payload: ProjectCreate) -> Project:
@@ -293,9 +297,8 @@ def list_agents(session: Session, *, enabled_only: bool = False) -> list[Agent]:
     stmt = select(Agent)
     if enabled_only:
         stmt = stmt.where(Agent.enabled == 1)
-    agents = list(session.scalars(stmt).all())
-    agents.sort(key=lambda agent: (agent.name.lower(), agent.id))
-    return agents
+    stmt = stmt.order_by(func.lower(Agent.name), Agent.id)
+    return list(session.scalars(stmt).all())
 
 
 def update_agent(session: Session, agent: Agent, payload: AgentUpdate) -> Agent:
@@ -454,7 +457,7 @@ def find_capable_agents(session: Session, task: Task) -> list[Agent]:
     keywords = _task_keywords(task)
     capable = []
     for agent in list_agents(session, enabled_only=True):
-        capabilities = [item.strip().lower() for item in agent.capabilities.split(",") if item.strip()]
+        capabilities = [item.lower() for item in _split_comma_list(agent.capabilities)]
         if not capabilities or any(capability in keywords for capability in capabilities):
             capable.append(agent)
     return capable
@@ -569,9 +572,8 @@ def list_workspace_configs(session: Session, *, enabled_only: bool = False) -> l
     stmt = select(WorkspaceConfig)
     if enabled_only:
         stmt = stmt.where(WorkspaceConfig.enabled == 1)
-    configs = list(session.scalars(stmt).all())
-    configs.sort(key=lambda config: (config.name.lower(), config.id))
-    return configs
+    stmt = stmt.order_by(func.lower(WorkspaceConfig.name), WorkspaceConfig.id)
+    return list(session.scalars(stmt).all())
 
 
 def update_workspace_config(
@@ -650,9 +652,8 @@ def list_webhook_configs(session: Session, project: str | None = None) -> list[W
     stmt = select(WebhookConfig)
     if project:
         stmt = stmt.where(WebhookConfig.project == project)
-    configs = list(session.scalars(stmt).all())
-    configs.sort(key=lambda config: (config.name.lower(), config.id))
-    return configs
+    stmt = stmt.order_by(func.lower(WebhookConfig.name), WebhookConfig.id)
+    return list(session.scalars(stmt).all())
 
 
 def update_webhook_config(session: Session, config: WebhookConfig, updates_dict: dict) -> WebhookConfig:
@@ -865,9 +866,8 @@ def list_task_links(
         stmt = stmt.where(TaskLink.child_id == child_id)
     if link_type:
         stmt = stmt.where(TaskLink.link_type == link_type)
-    links = list(session.scalars(stmt).all())
-    links.sort(key=lambda link: (_ensure_datetime(link.created_at), link.id))
-    return links
+    stmt = stmt.order_by(TaskLink.created_at, TaskLink.id)
+    return list(session.scalars(stmt).all())
 
 
 def serialize_task_link(link: TaskLink) -> TaskLinkResponse:
@@ -944,10 +944,11 @@ def batch_dependency_summaries(session: Session, task_ids: list[str]) -> dict[st
 
     links = list(
         session.scalars(
-            select(TaskLink).where((TaskLink.parent_id.in_(task_ids)) | (TaskLink.child_id.in_(task_ids)))
+            select(TaskLink)
+            .where((TaskLink.parent_id.in_(task_ids)) | (TaskLink.child_id.in_(task_ids)))
+            .order_by(TaskLink.created_at, TaskLink.id)
         ).all()
     )
-    links.sort(key=lambda link: (_ensure_datetime(link.created_at), link.id))
 
     related_task_ids = {link.parent_id for link in links} | {link.child_id for link in links}
     tasks_by_id = {}
@@ -1354,9 +1355,12 @@ def get_task_handoff(session: Session, handoff_id: str) -> TaskHandoff | None:
 
 
 def list_task_handoffs(session: Session, task_id: str) -> list[TaskHandoff]:
-    handoffs = list(session.scalars(select(TaskHandoff).where(TaskHandoff.task_id == task_id)).all())
-    handoffs.sort(key=lambda handoff: (-_ensure_datetime(handoff.created_at).timestamp(), handoff.id))
-    return handoffs
+    stmt = (
+        select(TaskHandoff)
+        .where(TaskHandoff.task_id == task_id)
+        .order_by(TaskHandoff.created_at.desc(), TaskHandoff.id)
+    )
+    return list(session.scalars(stmt).all())
 
 
 def batch_latest_handoffs(session: Session, task_ids: list[str]) -> dict[str, TaskHandoff | None]:
@@ -1556,7 +1560,7 @@ def _join_webhook_events(events: list[str]) -> str:
 
 
 def _split_webhook_events(events: str) -> list[str]:
-    return [event.strip() for event in events.split(",") if event.strip()]
+    return _split_comma_list(events)
 
 
 def get_webhook_secret(config: WebhookConfig) -> str | None:
@@ -1619,8 +1623,16 @@ def _load_json_list(value: str) -> list:
     try:
         parsed = json.loads(value or "[]")
     except json.JSONDecodeError:
+        _logger.warning("Malformed JSON list in stored data, returning empty list: %r", (value or "")[:100])
         return []
     return parsed if isinstance(parsed, list) else []
+
+
+def _split_comma_list(value: str | None) -> list[str]:
+    """Parse a comma-separated string into a list of stripped, non-empty items."""
+    if not value:
+        return []
+    return [item.strip() for item in value.split(",") if item.strip()]
 
 
 def _task_keywords(task: Task) -> set[str]:

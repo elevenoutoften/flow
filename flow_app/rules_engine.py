@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from .models import ApiKeyRole, AutomationRule, Task, WebhookDelivery
 from .repository import (
+    _split_comma_list,
     add_note,
     get_agent,
     get_agent_by_name,
@@ -350,7 +351,7 @@ def _first_enabled_agent(session: Session, capability: str | None):
     for agent in list_agents(session, enabled_only=True):
         if capability is None:
             return agent
-        capabilities = {item.strip() for item in agent.capabilities.split(",") if item.strip()}
+        capabilities = set(_split_comma_list(agent.capabilities))
         if capability in capabilities:
             return agent
     return None

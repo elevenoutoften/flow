@@ -70,6 +70,8 @@ class FlowSettings:
     data_dir: Path
     database_url: str
     default_project: str
+    sqlite_journal_mode: str
+    sqlite_busy_timeout_ms: int
     host: str
     port: int
     debug: bool
@@ -106,6 +108,8 @@ def get_settings() -> FlowSettings:
         data_dir=data_dir,
         database_url=database_url,
         default_project=_env("FLOW_DEFAULT_PROJECT", "default"),
+        sqlite_journal_mode=_env("FLOW_SQLITE_JOURNAL_MODE", "WAL"),
+        sqlite_busy_timeout_ms=_env_int("FLOW_SQLITE_BUSY_TIMEOUT_MS", 5000),
         host=_env("FLOW_HOST", "0.0.0.0"),
         port=_env_int("FLOW_PORT", 8100),
         debug=_env_bool("FLOW_DEBUG"),

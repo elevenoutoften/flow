@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from .config import FLOW_VERSION, FlowSettings, get_settings
 from .database import Base, build_engine, build_session_factory, default_database_url
-from .dispatcher import DispatchError, _next_capable_task, complete_run, dispatch_one, heartbeat_run, set_session_factory, stale_recovery
+from .dispatcher import DispatchError, set_session_factory
 from .markdown_import import parse_markdown_tasks
 from .mcp import JsonRpcError, error_response, exception_response, handle_mcp_message
 from .models import Task, utcnow
@@ -170,9 +170,13 @@ from .services.task import (
     TaskNotFoundError,
     TaskService,
 )
+from .services.agent import AgentError, AgentNotFoundError, AgentRunNotFoundError, AgentService
+from .services.automation import AutomationRuleNotFoundError, AutomationService
+from .services.idea import IdeaNotFoundError, IdeaService
+from .services.webhook import WebhookError, WebhookNotFoundError, WebhookService
+from .services.workspace import WorkspaceConfigNotFoundError, WorkspaceService
 from .webhooks import WEBHOOK_EVENTS, deliver_webhook
 from .telegram import TelegramNotificationProvider
-from .workspace import cleanup_workspace, provision_workspace
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(PACKAGE_DIR / "templates"))
@@ -439,7 +443,8 @@ def create_app(
         enabled_only: bool = Query(default=False),
         _actor: Actor = Depends(require_permission(Permission.AGENT_READ)),
     ):
-        return [serialize_agent(agent) for agent in list_agents(db, enabled_only=enabled_only)]
+        svc = AgentService(db)
+        return [serialize_agent(agent) for agent in svc.list_agents(enabled_only=enabled_only)]
 
     @app.get("/api/agents/{agent_id}", response_model=AgentResponse)
     def api_get_agent(
@@ -447,9 +452,11 @@ def create_app(
         db: Session = Depends(get_db),
         _actor: Actor = Depends(require_permission(Permission.AGENT_READ)),
     ):
-        agent = get_agent(db, agent_id)
-        if agent is None:
-            raise HTTPException(status_code=404, detail="Agent not found.")
+        svc = AgentService(db)
+        try:
+            agent = svc.get_agent(agent_id)
+        except AgentNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=exc.message) from exc
         return serialize_agent(agent)
 
     @app.post("/api/agents", response_model=AgentResponse, status_code=status.HTTP_201_CREATED)
@@ -458,8 +465,8 @@ def create_app(
         db: Session = Depends(get_db),
         _actor: Actor = Depends(require_permission(Permission.AGENT_MANAGE)),
     ):
-        agent = create_agent(db, payload)
-        _commit(db)
+        svc = AgentService(db)
+        agent = svc.create_agent(payload)
         return serialize_agent(agent)
 
     @app.patch("/api/agents/{agent_id}", response_model=AgentResponse)
@@ -469,11 +476,11 @@ def create_app(
         db: Session = Depends(get_db),
         _actor: Actor = Depends(require_permission(Permission.AGENT_MANAGE)),
     ):
-        agent = get_agent(db, agent_id)
-        if agent is None:
-            raise HTTPException(status_code=404, detail="Agent not found.")
-        agent = update_agent(db, agent, payload)
-        _commit(db)
+        svc = AgentService(db)
+        try:
+            agent = svc.update_agent(agent_id, payload)
+        except AgentNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=exc.message) from exc
         return serialize_agent(agent)
 
     @app.get("/api/workspace-configs", response_model=list[WorkspaceConfigResponse])
@@ -482,10 +489,8 @@ def create_app(
         enabled_only: bool = Query(default=False),
         _actor: Actor = Depends(require_permission(Permission.WORKSPACE_READ)),
     ):
-        return [
-            serialize_workspace_config(config)
-            for config in list_workspace_configs(db, enabled_only=enabled_only)
-        ]
+        svc = WorkspaceService(db)
+        return [serialize_workspace_config(config) for config in svc.list_configs(enabled_only=enabled_only)]
 
     @app.get("/api/workspace-configs/{config_id}", response_model=WorkspaceConfigResponse)
     def api_get_workspace_config(
@@ -493,9 +498,11 @@ def create_app(
         db: Session = Depends(get_db),
         _actor: Actor = Depends(require_permission(Permission.WORKSPACE_READ)),
     ):
-        config = get_workspace_config(db, config_id)
-        if config is None:
-            raise HTTPException(status_code=404, detail="Workspace config not found.")
+        svc = WorkspaceService(db)
+        try:
+            config = svc.get_config(config_id)
+        except WorkspaceConfigNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=exc.message) from exc
         return serialize_workspace_config(config)
 
     @app.post("/api/workspace-configs", response_model=WorkspaceConfigResponse, status_code=status.HTTP_201_CREATED)
@@ -504,8 +511,8 @@ def create_app(
         db: Session = Depends(get_db),
         _actor: Actor = Depends(require_permission(Permission.WORKSPACE_MANAGE)),
     ):
-        config = create_workspace_config(db, payload)
-        _commit(db)
+        svc = WorkspaceService(db)
+        config = svc.create_config(payload)
         return serialize_workspace_config(config)
 
     @app.patch("/api/workspace-configs/{config_id}", response_model=WorkspaceConfigResponse)
@@ -515,11 +522,11 @@ def create_app(
         db: Session = Depends(get_db),
         _actor: Actor = Depends(require_permission(Permission.WORKSPACE_MANAGE)),
     ):
-        config = get_workspace_config(db, config_id)
-        if config is None:
-            raise HTTPException(status_code=404, detail="Workspace config not found.")
-        config = update_workspace_config(db, config, payload)
-        _commit(db)
+        svc = WorkspaceService(db)
+        try:
+            config = svc.update_config(config_id, payload)
+        except WorkspaceConfigNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=exc.message) from exc
         return serialize_workspace_config(config)
 
     @app.post("/api/workspace-configs/{config_id}/provision")
@@ -530,10 +537,12 @@ def create_app(
         db: Session = Depends(get_db),
         _actor: Actor = Depends(require_permission(Permission.WORKSPACE_MANAGE)),
     ):
-        config = get_workspace_config(db, config_id)
-        if config is None:
-            raise HTTPException(status_code=404, detail="Workspace config not found.")
-        return provision_workspace(config, task_id, repo_path)
+        svc = WorkspaceService(db)
+        try:
+            config = svc.get_config(config_id)
+        except WorkspaceConfigNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=exc.message) from exc
+        return svc.provision(config, task_id, repo_path)
 
     @app.post("/api/workspace-configs/{config_id}/cleanup")
     async def api_cleanup_workspace(
@@ -542,14 +551,16 @@ def create_app(
         db: Session = Depends(get_db),
         _actor: Actor = Depends(require_permission(Permission.WORKSPACE_MANAGE)),
     ):
-        config = get_workspace_config(db, config_id)
-        if config is None:
-            raise HTTPException(status_code=404, detail="Workspace config not found.")
+        svc = WorkspaceService(db)
+        try:
+            config = svc.get_config(config_id)
+        except WorkspaceConfigNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=exc.message) from exc
         return {
             "workspace_id": config_id,
             "strategy": payload.strategy,
             "path": payload.path,
-            "cleaned": cleanup_workspace(config_id, payload.strategy, payload.path, config),
+            "cleaned": svc.cleanup(config_id, payload.strategy, payload.path, config),
         }
 
     @app.get("/api/automation-rules", response_model=list[AutomationRuleResponse])
@@ -558,7 +569,8 @@ def create_app(
         enabled_only: bool = Query(default=False),
         _actor: Actor = Depends(require_permission(Permission.RULES_READ)),
     ):
-        return [serialize_automation_rule(rule) for rule in list_automation_rules(db, enabled_only=enabled_only)]
+        svc = AutomationService(db)
+        return [serialize_automation_rule(rule) for rule in svc.list_rules(enabled_only=enabled_only)]
 
     @app.post("/api/automation-rules/evaluate")
     def api_evaluate_automation_rules(
@@ -566,8 +578,8 @@ def create_app(
         db: Session = Depends(get_db),
         actor: Actor = Depends(require_permission(Permission.RULES_EVALUATE)),
     ):
-        matches = evaluate_rules(db, payload, actor=actor)
-        _commit(db)
+        svc = AutomationService(db)
+        matches = svc.evaluate_rules(payload, actor=actor)
         return {"matches": matches, "count": len(matches)}
 
     @app.get("/api/automation-rules/{rule_id}", response_model=AutomationRuleResponse)
@@ -576,9 +588,11 @@ def create_app(
         db: Session = Depends(get_db),
         _actor: Actor = Depends(require_permission(Permission.RULES_READ)),
     ):
-        rule = get_automation_rule(db, rule_id)
-        if rule is None:
-            raise HTTPException(status_code=404, detail="Automation rule not found.")
+        svc = AutomationService(db)
+        try:
+            rule = svc.get_rule(rule_id)
+        except AutomationRuleNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=exc.message) from exc
         return serialize_automation_rule(rule)
 
     @app.post("/api/automation-rules", response_model=AutomationRuleResponse, status_code=status.HTTP_201_CREATED)
@@ -587,8 +601,8 @@ def create_app(
         db: Session = Depends(get_db),
         _actor: Actor = Depends(require_permission(Permission.RULES_MANAGE)),
     ):
-        rule = create_automation_rule(db, payload)
-        _commit(db)
+        svc = AutomationService(db)
+        rule = svc.create_rule(payload)
         return serialize_automation_rule(rule)
 
     @app.patch("/api/automation-rules/{rule_id}", response_model=AutomationRuleResponse)
@@ -598,11 +612,11 @@ def create_app(
         db: Session = Depends(get_db),
         _actor: Actor = Depends(require_permission(Permission.RULES_MANAGE)),
     ):
-        rule = get_automation_rule(db, rule_id)
-        if rule is None:
-            raise HTTPException(status_code=404, detail="Automation rule not found.")
-        rule = update_automation_rule(db, rule, payload)
-        _commit(db)
+        svc = AutomationService(db)
+        try:
+            rule = svc.update_rule(rule_id, payload)
+        except AutomationRuleNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=exc.message) from exc
         return serialize_automation_rule(rule)
 
     @app.get("/api/agent-runs", response_model=list[AgentRunResponse])
@@ -613,10 +627,8 @@ def create_app(
         status_filter: str | None = Query(default=None, alias="status"),
         _actor: Actor = Depends(require_permission(Permission.TASKS_READ)),
     ):
-        return [
-            serialize_agent_run(run)
-            for run in list_agent_runs(db, agent_id=agent_id, task_id=task_id, status=status_filter)
-        ]
+        svc = AgentService(db)
+        return [serialize_agent_run(run) for run in svc.list_runs(agent_id=agent_id, task_id=task_id, status=status_filter)]
 
     @app.get("/api/agent-runs/{run_id}", response_model=AgentRunResponse)
     def api_get_agent_run(
@@ -624,9 +636,11 @@ def create_app(
         db: Session = Depends(get_db),
         _actor: Actor = Depends(require_permission(Permission.TASKS_READ)),
     ):
-        run = get_agent_run(db, run_id)
-        if run is None:
-            raise HTTPException(status_code=404, detail="Agent run not found.")
+        svc = AgentService(db)
+        try:
+            run = svc.get_run(run_id)
+        except AgentRunNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=exc.message) from exc
         return serialize_agent_run(run)
 
     @app.post("/api/agents/{agent_id}/dispatch", response_model=AgentRunResponse)
@@ -637,26 +651,21 @@ def create_app(
         task_id: str | None = Query(default=None),
         actor: Actor = Depends(require_permission(Permission.DISPATCH)),
     ):
-        agent = get_agent(db, agent_id)
-        if agent is None:
-            raise HTTPException(status_code=404, detail="Agent not found.")
-        if task_id:
-            task = _require_task(db, task_id)
-        else:
-            task = _next_capable_task(db, agent)
-        if task is None:
-            raise HTTPException(status_code=404, detail="No eligible task found for agent dispatch_statuses.")
+        svc = AgentService(db)
         try:
-            run = dispatch_one(
-                db,
-                agent,
-                task,
-                api_key=request.headers.get("authorization", "").removeprefix("Bearer ").strip(),
+            run = svc.dispatch(
+                agent_id,
+                task_id,
                 base_url=str(request.base_url).rstrip("/"),
+                api_key_value=request.headers.get("authorization", "").removeprefix("Bearer ").strip(),
             )
+        except AgentNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=exc.message) from exc
+        except AgentError as exc:
+            status_code = 404 if exc.error_type == "not_found" else 400
+            raise HTTPException(status_code=status_code, detail=exc.message) from exc
         except DispatchError as exc:
-            raise HTTPException(status_code=409, detail=str(exc))
-        _commit(db)
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         return serialize_agent_run(run)
 
     @app.post("/api/agent-runs/{run_id}/heartbeat", response_model=AgentRunResponse)
@@ -665,11 +674,11 @@ def create_app(
         db: Session = Depends(get_db),
         _actor: Actor = Depends(require_permission(Permission.DISPATCH)),
     ):
-        run = get_agent_run(db, run_id)
-        if run is None:
-            raise HTTPException(status_code=404, detail="Agent run not found.")
-        run = heartbeat_run(db, run)
-        _commit(db)
+        svc = AgentService(db)
+        try:
+            run = svc.heartbeat(run_id)
+        except AgentRunNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=exc.message) from exc
         return serialize_agent_run(run)
 
     @app.post("/api/agent-runs/{run_id}/complete", response_model=AgentRunResponse)
@@ -679,11 +688,11 @@ def create_app(
         exit_code: int = Query(...),
         _actor: Actor = Depends(require_permission(Permission.DISPATCH)),
     ):
-        run = get_agent_run(db, run_id)
-        if run is None:
-            raise HTTPException(status_code=404, detail="Agent run not found.")
-        run = complete_run(db, run, exit_code)
-        _commit(db)
+        svc = AgentService(db)
+        try:
+            run = svc.complete_run(run_id, exit_code)
+        except AgentRunNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=exc.message) from exc
         return serialize_agent_run(run)
 
     @app.post("/api/agent-runs/stale-recovery")
@@ -691,8 +700,8 @@ def create_app(
         db: Session = Depends(get_db),
         _actor: Actor = Depends(require_permission(Permission.TASKS_EDIT)),
     ):
-        recovered = stale_recovery(db)
-        _commit(db)
+        svc = AgentService(db)
+        recovered = svc.stale_recovery()
         return {"recovered_run_ids": recovered, "count": len(recovered)}
 
     @app.post("/api/import/markdown/preview", response_model=MarkdownImportPreviewResponse)
@@ -1034,7 +1043,8 @@ def create_app(
         archived: bool = Query(default=False),
         _actor: Actor = Depends(require_permission(Permission.TASKS_READ)),
     ):
-        return [serialize_idea(idea, db) for idea in list_ideas(db, project=project, archived=archived)]
+        svc = IdeaService(db)
+        return [serialize_idea(idea, db) for idea in svc.list_ideas(project=project, archived=archived)]
 
     @app.post("/api/ideas", response_model=IdeaResponse, status_code=status.HTTP_201_CREATED)
     def api_create_idea(
@@ -1044,8 +1054,8 @@ def create_app(
     ):
         if not payload.author and actor.name:
             payload.author = actor.name
-        idea = create_idea(db, payload)
-        _commit(db)
+        svc = IdeaService(db)
+        idea = svc.create_idea(payload)
         return serialize_idea(idea, db)
 
     @app.get("/api/ideas/{idea_id}", response_model=IdeaResponse)
@@ -1054,9 +1064,11 @@ def create_app(
         db: Session = Depends(get_db),
         _actor: Actor = Depends(require_permission(Permission.TASKS_READ)),
     ):
-        idea = get_idea(db, idea_id)
-        if idea is None:
-            raise HTTPException(status_code=404, detail="Idea not found.")
+        svc = IdeaService(db)
+        try:
+            idea = svc.get_idea(idea_id)
+        except IdeaNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=exc.message) from exc
         return serialize_idea(idea, db)
 
     @app.patch("/api/ideas/{idea_id}", response_model=IdeaResponse)
@@ -1066,11 +1078,11 @@ def create_app(
         db: Session = Depends(get_db),
         _actor: Actor = Depends(require_permission(Permission.TASKS_EDIT)),
     ):
-        idea = get_idea(db, idea_id)
-        if idea is None:
-            raise HTTPException(status_code=404, detail="Idea not found.")
-        idea = update_idea(db, idea, payload)
-        _commit(db)
+        svc = IdeaService(db)
+        try:
+            idea = svc.update_idea(idea_id, payload)
+        except IdeaNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=exc.message) from exc
         return serialize_idea(idea, db)
 
     @app.post("/api/ideas/{idea_id}/archive", response_model=IdeaResponse)
@@ -1079,11 +1091,11 @@ def create_app(
         db: Session = Depends(get_db),
         _actor: Actor = Depends(require_permission(Permission.TASKS_EDIT)),
     ):
-        idea = get_idea(db, idea_id)
-        if idea is None:
-            raise HTTPException(status_code=404, detail="Idea not found.")
-        idea = archive_idea(db, idea)
-        _commit(db)
+        svc = IdeaService(db)
+        try:
+            idea = svc.archive_idea(idea_id)
+        except IdeaNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=exc.message) from exc
         return serialize_idea(idea, db)
 
     @app.post("/api/ideas/{idea_id}/unarchive", response_model=IdeaResponse)
@@ -1092,11 +1104,11 @@ def create_app(
         db: Session = Depends(get_db),
         _actor: Actor = Depends(require_permission(Permission.TASKS_EDIT)),
     ):
-        idea = get_idea(db, idea_id)
-        if idea is None:
-            raise HTTPException(status_code=404, detail="Idea not found.")
-        idea = unarchive_idea(db, idea)
-        _commit(db)
+        svc = IdeaService(db)
+        try:
+            idea = svc.unarchive_idea(idea_id)
+        except IdeaNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=exc.message) from exc
         return serialize_idea(idea, db)
 
     @app.post("/api/ideas/{idea_id}/promote", response_model=IdeaResponse)
@@ -1106,13 +1118,11 @@ def create_app(
         db: Session = Depends(get_db),
         _actor: Actor = Depends(require_permission(Permission.TASKS_CREATE)),
     ):
-        idea = get_idea(db, idea_id)
-        if idea is None:
-            raise HTTPException(status_code=404, detail="Idea not found.")
-        tasks, idea = promote_tasks(db, idea, payload)
-        for task in tasks:
-            _webhook_notifier.send(db, "idea_promoted", task, {"idea_id": idea.id})
-        _commit(db)
+        svc = IdeaService(db)
+        try:
+            idea = svc.promote_idea(idea_id, payload, _webhook_notifier, db)
+        except IdeaNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=exc.message) from exc
         return serialize_idea(idea, db)
 
     @app.post("/api/webhooks", response_model=WebhookConfigCreateResponse, status_code=status.HTTP_201_CREATED)
@@ -1121,17 +1131,12 @@ def create_app(
         db: Session = Depends(get_db),
         _actor: Actor = Depends(require_permission(Permission.WEBHOOK_MANAGE)),
     ):
-        _validate_webhook_events(payload.events)
-        config, raw_secret = create_webhook_config(
-            db,
-            payload.name,
-            payload.url,
-            payload.events,
-            payload.project,
-            payload.max_retries,
-            payload.retry_backoff_seconds,
-        )
-        _commit(db)
+        svc = WebhookService(db)
+        try:
+            config, raw_secret = svc.create_config(payload)
+        except WebhookError as exc:
+            status_code = 422 if exc.error_type == "invalid_event" else 400
+            raise HTTPException(status_code=status_code, detail=exc.message) from exc
         data = serialize_webhook_config(config).model_dump()
         return WebhookConfigCreateResponse(**data, secret=raw_secret)
 
@@ -1141,7 +1146,8 @@ def create_app(
         project: str | None = Query(default=None),
         _actor: Actor = Depends(require_permission(Permission.WEBHOOK_READ)),
     ):
-        return [serialize_webhook_config(config) for config in list_webhook_configs(db, project=project)]
+        svc = WebhookService(db)
+        return [serialize_webhook_config(config) for config in svc.list_configs(project=project)]
 
     @app.get("/api/webhooks/{webhook_id}", response_model=WebhookConfigResponse)
     def api_get_webhook(
@@ -1149,9 +1155,11 @@ def create_app(
         db: Session = Depends(get_db),
         _actor: Actor = Depends(require_permission(Permission.WEBHOOK_READ)),
     ):
-        config = get_webhook_config(db, webhook_id)
-        if config is None:
-            raise HTTPException(status_code=404, detail="Webhook not found.")
+        svc = WebhookService(db)
+        try:
+            config = svc.get_config(webhook_id)
+        except WebhookNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=exc.message) from exc
         return serialize_webhook_config(config)
 
     @app.patch("/api/webhooks/{webhook_id}", response_model=WebhookConfigResponse)
@@ -1161,14 +1169,14 @@ def create_app(
         db: Session = Depends(get_db),
         _actor: Actor = Depends(require_permission(Permission.WEBHOOK_MANAGE)),
     ):
-        config = get_webhook_config(db, webhook_id)
-        if config is None:
-            raise HTTPException(status_code=404, detail="Webhook not found.")
-        updates = {key: value for key, value in payload.model_dump(exclude_unset=True).items() if value is not None}
-        if "events" in updates:
-            _validate_webhook_events(updates["events"])
-        config = update_webhook_config(db, config, updates)
-        _commit(db)
+        svc = WebhookService(db)
+        try:
+            config = svc.update_config(webhook_id, payload)
+        except WebhookNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=exc.message) from exc
+        except WebhookError as exc:
+            status_code = 422 if exc.error_type == "invalid_event" else 400
+            raise HTTPException(status_code=status_code, detail=exc.message) from exc
         return serialize_webhook_config(config)
 
     @app.delete("/api/webhooks/{webhook_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -1177,11 +1185,11 @@ def create_app(
         db: Session = Depends(get_db),
         _actor: Actor = Depends(require_permission(Permission.WEBHOOK_MANAGE)),
     ):
-        config = get_webhook_config(db, webhook_id)
-        if config is None:
-            raise HTTPException(status_code=404, detail="Webhook not found.")
-        delete_webhook_config(db, config)
-        _commit(db)
+        svc = WebhookService(db)
+        try:
+            svc.delete_config(webhook_id)
+        except WebhookNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=exc.message) from exc
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     @app.get("/api/webhooks/{webhook_id}/deliveries", response_model=list[WebhookDeliveryResponse])
@@ -1191,14 +1199,14 @@ def create_app(
         status_filter: str | None = Query(default=None, alias="status"),
         _actor: Actor = Depends(require_permission(Permission.WEBHOOK_READ)),
     ):
-        if get_webhook_config(db, webhook_id) is None:
-            raise HTTPException(status_code=404, detail="Webhook not found.")
         if status_filter and status_filter not in {"pending", "success", "failed", "retrying"}:
             raise HTTPException(status_code=422, detail="Invalid delivery status.")
-        return [
-            serialize_webhook_delivery(delivery)
-            for delivery in list_webhook_deliveries(db, webhook_id, status=status_filter)
-        ]
+        svc = WebhookService(db)
+        try:
+            deliveries = svc.list_deliveries(webhook_id, status=status_filter)
+        except WebhookNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=exc.message) from exc
+        return [serialize_webhook_delivery(delivery) for delivery in deliveries]
 
     @app.get("/api/webhooks/{webhook_id}/deliveries/{delivery_id}", response_model=WebhookDeliveryDetailResponse)
     def api_get_webhook_delivery(
@@ -1221,9 +1229,11 @@ def create_app(
         db: Session = Depends(get_db),
         _actor: Actor = Depends(require_permission(Permission.WEBHOOK_READ)),
     ):
-        config = get_webhook_config(db, webhook_id)
-        if config is None:
-            raise HTTPException(status_code=404, detail="Webhook not found.")
+        svc = WebhookService(db)
+        try:
+            config = svc.get_config(webhook_id)
+        except WebhookNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=exc.message) from exc
         delivery = _require_webhook_delivery(db, webhook_id, delivery_id)
         if delivery.status != "failed":
             raise HTTPException(status_code=409, detail="Only failed deliveries can be retried.")
@@ -1247,7 +1257,12 @@ def _require_task(db: Session, task_id: str) -> Task:
 
 
 def _require_webhook_delivery(db: Session, webhook_id: str, delivery_id: str):
-    delivery = get_webhook_delivery(db, delivery_id)
+    svc = WebhookService(db)
+    try:
+        svc.get_config(webhook_id)
+    except WebhookNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=exc.message) from exc
+    delivery = svc.get_delivery(delivery_id)
     if delivery is None or delivery.webhook_id != webhook_id:
         raise HTTPException(status_code=404, detail="Webhook delivery not found.")
     return delivery

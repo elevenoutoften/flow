@@ -8,7 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..config import default_project
-from ..dispatcher import DispatchError, complete_run, dispatch_one, heartbeat_run
+from ..dispatcher import DispatchError
 from ..models import ApiKeyRole, Idea, Task
 from ..repository import (
     archive_idea,
@@ -92,9 +92,13 @@ from ..services.task import (
     TaskNotFoundError,
     TaskService,
 )
+from ..services.agent import AgentError, AgentNotFoundError, AgentRunNotFoundError, AgentService
+from ..services.automation import AutomationRuleNotFoundError, AutomationService
+from ..services.idea import IdeaNotFoundError, IdeaService
+from ..services.webhook import WebhookError, WebhookNotFoundError, WebhookService
+from ..services.workspace import WorkspaceConfigNotFoundError, WorkspaceService
 from ..telegram import TelegramNotificationProvider
 from ..webhooks import WEBHOOK_EVENTS
-from ..workspace import cleanup_workspace, provision_workspace
 
 
 def _authorize_task_update_mcp(actor: Actor | None, task: Task, payload) -> None:
@@ -1100,7 +1104,8 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
         require_tool_permission(actor, Permission.TASKS_READ)
         project = optional_string(arguments.get("project"))
         archived = optional_bool(arguments.get("archived"), default=False)
-        ideas = [idea_to_json(idea, db) for idea in list_ideas(db, project=project, archived=archived)]
+        svc = IdeaService(db)
+        ideas = [idea_to_json(idea, db) for idea in svc.list_ideas(project=project, archived=archived)]
         return tool_result(
             {"ideas": ideas, "count": len(ideas)},
             f"Found {len(ideas)} Flow idea{'s' if len(ideas) != 1 else ''}.",
@@ -1117,29 +1122,34 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
             )
         except ValidationError as exc:
             raise JsonRpcError(-32602, "Invalid idea payload.", exc.errors()) from exc
-        idea = create_idea(db, payload)
-        db.commit()
+        svc = IdeaService(db)
+        idea = svc.create_idea(payload)
         data = idea_to_json(idea, db)
         return tool_result({"idea": data}, f"Created Flow idea {data['id']}: {data['title']}")
 
     if name == "flow_update_idea":
         require_tool_permission(actor, Permission.TASKS_EDIT)
         idea_id = require_string(arguments.get("idea_id"), "idea_id")
-        idea = require_idea(db, idea_id)
         try:
             payload = IdeaUpdate(**update_arguments(arguments, IDEA_UPDATE_FIELDS, "idea_id"))
         except ValidationError as exc:
             raise JsonRpcError(-32602, "Invalid idea payload.", exc.errors()) from exc
-        idea = update_idea(db, idea, payload)
-        db.commit()
+        svc = IdeaService(db)
+        try:
+            idea = svc.update_idea(idea_id, payload)
+        except IdeaNotFoundError as exc:
+            raise JsonRpcError(-32602, exc.message) from exc
         data = idea_to_json(idea, db)
         return tool_result({"idea": data}, f"Updated Flow idea {data['id']}: {data['title']}")
 
     if name == "flow_archive_idea":
         require_tool_permission(actor, Permission.TASKS_EDIT)
         idea_id = require_string(arguments.get("idea_id"), "idea_id")
-        idea = archive_idea(db, require_idea(db, idea_id))
-        db.commit()
+        svc = IdeaService(db)
+        try:
+            idea = svc.archive_idea(idea_id)
+        except IdeaNotFoundError as exc:
+            raise JsonRpcError(-32602, exc.message) from exc
         data = idea_to_json(idea, db)
         return tool_result({"idea": data}, f"Archived Flow idea {data['id']}: {data['title']}")
 
@@ -1155,8 +1165,11 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
             raise JsonRpcError(-32602, "Invalid promoted task payload.") from exc
         except ValidationError as exc:
             raise JsonRpcError(-32602, "Invalid promoted task payload.", exc.errors()) from exc
-        _tasks, idea = promote_tasks(db, require_idea(db, idea_id), specs)
-        db.commit()
+        svc = IdeaService(db)
+        try:
+            idea = svc.promote_idea(idea_id, specs, _webhook_notifier, db)
+        except IdeaNotFoundError as exc:
+            raise JsonRpcError(-32602, exc.message) from exc
         data = idea_to_json(idea, db)
         return tool_result(
             {"idea": data},
@@ -1167,7 +1180,8 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
     if name == "flow_list_agents":
         require_tool_permission(actor, Permission.AGENT_READ)
         enabled_only = optional_bool(arguments.get("enabled_only"), default=False)
-        agents = [agent_to_json(agent) for agent in list_agents(db, enabled_only=enabled_only)]
+        svc = AgentService(db)
+        agents = [agent_to_json(agent) for agent in svc.list_agents(enabled_only=enabled_only)]
         return tool_result(
             {"agents": agents, "count": len(agents)},
             f"Found {len(agents)} Flow agent{'s' if len(agents) != 1 else ''}.",
@@ -1176,9 +1190,11 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
     if name == "flow_get_agent":
         require_tool_permission(actor, Permission.AGENT_READ)
         agent_id = require_string(arguments.get("agent_id"), "agent_id")
-        agent = get_agent(db, agent_id)
-        if agent is None:
-            raise JsonRpcError(-32602, f"Agent not found: {agent_id}")
+        svc = AgentService(db)
+        try:
+            agent = svc.get_agent(agent_id)
+        except AgentNotFoundError as exc:
+            raise JsonRpcError(-32602, exc.message) from exc
         data = agent_to_json(agent)
         return tool_result({"agent": data}, f"Found Flow agent {data['id']}: {data['name']}")
 
@@ -1201,30 +1217,33 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
             )
         except ValidationError as exc:
             raise JsonRpcError(-32602, "Invalid agent payload.", exc.errors()) from exc
-        agent = create_agent(db, payload)
-        db.commit()
+        svc = AgentService(db)
+        agent = svc.create_agent(payload)
         data = agent_to_json(agent)
         return tool_result({"agent": data}, f"Created Flow agent {data['id']}: {data['name']}")
 
     if name == "flow_update_agent":
         require_tool_permission(actor, Permission.AGENT_MANAGE)
         agent_id = require_string(arguments.get("agent_id"), "agent_id")
-        agent = require_agent(db, agent_id)
         try:
             payload = AgentUpdate(**update_arguments(arguments, AGENT_UPDATE_FIELDS, "agent_id"))
         except ValidationError as exc:
             raise JsonRpcError(-32602, "Invalid agent payload.", exc.errors()) from exc
-        agent = update_agent(db, agent, payload)
-        db.commit()
+        svc = AgentService(db)
+        try:
+            agent = svc.update_agent(agent_id, payload)
+        except AgentNotFoundError as exc:
+            raise JsonRpcError(-32602, exc.message) from exc
         data = agent_to_json(agent)
         return tool_result({"agent": data}, f"Updated Flow agent {data['id']}: {data['name']}")
 
     if name == "flow_list_workspace_configs":
         require_tool_permission(actor, Permission.WORKSPACE_READ)
         enabled_only = optional_bool(arguments.get("enabled_only"), default=False)
+        svc = WorkspaceService(db)
         configs = [
             workspace_config_to_json(config)
-            for config in list_workspace_configs(db, enabled_only=enabled_only)
+            for config in svc.list_configs(enabled_only=enabled_only)
         ]
         return tool_result(
             {"workspace_configs": configs, "count": len(configs)},
@@ -1250,16 +1269,11 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
             )
         except ValidationError as exc:
             raise JsonRpcError(-32602, "Invalid webhook payload.", exc.errors()) from exc
-        config, raw_secret = create_webhook_config(
-            db,
-            payload.name,
-            payload.url,
-            payload.events,
-            payload.project,
-            payload.max_retries,
-            payload.retry_backoff_seconds,
-        )
-        db.commit()
+        svc = WebhookService(db)
+        try:
+            config, raw_secret = svc.create_config(payload)
+        except WebhookError as exc:
+            raise JsonRpcError(-32602, exc.message) from exc
         data = webhook_config_to_json(config)
         data["secret"] = raw_secret
         return tool_result({"webhook": data}, f"Created Flow webhook {data['id']}: {data['name']}")
@@ -1267,7 +1281,8 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
     if name == "flow_list_webhooks":
         require_tool_permission(actor, Permission.WEBHOOK_READ)
         project = optional_string(arguments.get("project"))
-        webhooks = [webhook_config_to_json(config) for config in list_webhook_configs(db, project=project)]
+        svc = WebhookService(db)
+        webhooks = [webhook_config_to_json(config) for config in svc.list_configs(project=project)]
         return tool_result(
             {"webhooks": webhooks, "count": len(webhooks)},
             f"Found {len(webhooks)} Flow webhook{'s' if len(webhooks) != 1 else ''}.",
@@ -1276,14 +1291,17 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
     if name == "flow_get_webhook":
         require_tool_permission(actor, Permission.WEBHOOK_READ)
         webhook_id = require_string(arguments.get("webhook_id"), "webhook_id")
-        config = require_webhook_config(db, webhook_id)
+        svc = WebhookService(db)
+        try:
+            config = svc.get_config(webhook_id)
+        except WebhookNotFoundError as exc:
+            raise JsonRpcError(-32602, exc.message) from exc
         data = webhook_config_to_json(config)
         return tool_result({"webhook": data}, f"Found Flow webhook {data['id']}: {data['name']}")
 
     if name == "flow_update_webhook":
         require_tool_permission(actor, Permission.WEBHOOK_MANAGE)
         webhook_id = require_string(arguments.get("webhook_id"), "webhook_id")
-        config = require_webhook_config(db, webhook_id)
         updates = update_arguments(arguments, WEBHOOK_UPDATE_FIELDS, "webhook_id")
         if "active" in updates:
             if not isinstance(updates["active"], bool):
@@ -1302,36 +1320,46 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
             payload = WebhookConfigUpdate(**updates)
         except ValidationError as exc:
             raise JsonRpcError(-32602, "Invalid webhook payload.", exc.errors()) from exc
-        update_data = {key: value for key, value in payload.model_dump(exclude_unset=True).items() if value is not None}
-        config = update_webhook_config(db, config, update_data)
-        db.commit()
+        svc = WebhookService(db)
+        try:
+            config = svc.update_config(webhook_id, payload)
+        except WebhookNotFoundError as exc:
+            raise JsonRpcError(-32602, exc.message) from exc
+        except WebhookError as exc:
+            raise JsonRpcError(-32602, exc.message) from exc
         data = webhook_config_to_json(config)
         return tool_result({"webhook": data}, f"Updated Flow webhook {data['id']}: {data['name']}")
 
     if name == "flow_disable_webhook":
         require_tool_permission(actor, Permission.WEBHOOK_MANAGE)
         webhook_id = require_string(arguments.get("webhook_id"), "webhook_id")
-        config = update_webhook_config(db, require_webhook_config(db, webhook_id), {"active": 0})
-        db.commit()
+        svc = WebhookService(db)
+        try:
+            config = svc.update_config(webhook_id, WebhookConfigUpdate(active=0))
+        except WebhookNotFoundError as exc:
+            raise JsonRpcError(-32602, exc.message) from exc
         data = webhook_config_to_json(config)
         return tool_result({"webhook": data}, f"Disabled Flow webhook {data['id']}: {data['name']}")
 
     if name == "flow_delete_webhook":
         require_tool_permission(actor, Permission.WEBHOOK_MANAGE)
         webhook_id = require_string(arguments.get("webhook_id"), "webhook_id")
-        config = require_webhook_config(db, webhook_id)
-        delete_webhook_config(db, config)
-        db.commit()
+        svc = WebhookService(db)
+        try:
+            svc.delete_config(webhook_id)
+        except WebhookNotFoundError as exc:
+            raise JsonRpcError(-32602, exc.message) from exc
         return tool_result({"deleted": True, "webhook_id": webhook_id}, f"Deleted Flow webhook {webhook_id}.")
 
     if name == "flow_list_webhook_deliveries":
         require_tool_permission(actor, Permission.WEBHOOK_READ)
         webhook_id = require_string(arguments.get("webhook_id"), "webhook_id")
-        require_webhook_config(db, webhook_id)
         limit = optional_int(arguments.get("limit"), "limit")
-        deliveries = [webhook_delivery_to_json(delivery) for delivery in list_webhook_deliveries(db, webhook_id)]
-        if limit is not None:
-            deliveries = deliveries[:limit]
+        svc = WebhookService(db)
+        try:
+            deliveries = [webhook_delivery_to_json(delivery) for delivery in svc.list_deliveries(webhook_id, limit=limit)]
+        except WebhookNotFoundError as exc:
+            raise JsonRpcError(-32602, exc.message) from exc
         return tool_result(
             {"deliveries": deliveries, "count": len(deliveries)},
             f"Found {len(deliveries)} Flow webhook deliver{'y' if len(deliveries) == 1 else 'ies'}.",
@@ -1340,7 +1368,8 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
     if name == "flow_get_webhook_delivery":
         require_tool_permission(actor, Permission.WEBHOOK_READ)
         delivery_id = require_string(arguments.get("delivery_id"), "delivery_id")
-        delivery = get_webhook_delivery(db, delivery_id)
+        svc = WebhookService(db)
+        delivery = svc.get_delivery(delivery_id)
         if delivery is None:
             raise JsonRpcError(-32602, f"Webhook delivery not found: {delivery_id}")
         data = webhook_delivery_to_json(delivery)
@@ -1350,7 +1379,11 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
     if name == "flow_get_workspace_config":
         require_tool_permission(actor, Permission.WORKSPACE_READ)
         config_id = require_string(arguments.get("config_id"), "config_id")
-        config = require_workspace_config(db, config_id)
+        svc = WorkspaceService(db)
+        try:
+            config = svc.get_config(config_id)
+        except WorkspaceConfigNotFoundError as exc:
+            raise JsonRpcError(-32602, exc.message) from exc
         data = workspace_config_to_json(config)
         return tool_result({"workspace_config": data}, f"Found Flow workspace config {data['id']}: {data['name']}")
 
@@ -1369,23 +1402,25 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
             )
         except ValidationError as exc:
             raise JsonRpcError(-32602, "Invalid workspace config payload.", exc.errors()) from exc
-        config = create_workspace_config(db, payload)
-        db.commit()
+        svc = WorkspaceService(db)
+        config = svc.create_config(payload)
         data = workspace_config_to_json(config)
         return tool_result({"workspace_config": data}, f"Created Flow workspace config {data['id']}: {data['name']}")
 
     if name == "flow_update_workspace_config":
         require_tool_permission(actor, Permission.WORKSPACE_MANAGE)
         config_id = require_string(arguments.get("config_id"), "config_id")
-        config = require_workspace_config(db, config_id)
         try:
             payload = WorkspaceConfigUpdate(
                 **update_arguments(arguments, WORKSPACE_CONFIG_UPDATE_FIELDS, "config_id")
             )
         except ValidationError as exc:
             raise JsonRpcError(-32602, "Invalid workspace config payload.", exc.errors()) from exc
-        config = update_workspace_config(db, config, payload)
-        db.commit()
+        svc = WorkspaceService(db)
+        try:
+            config = svc.update_config(config_id, payload)
+        except WorkspaceConfigNotFoundError as exc:
+            raise JsonRpcError(-32602, exc.message) from exc
         data = workspace_config_to_json(config)
         return tool_result({"workspace_config": data}, f"Updated Flow workspace config {data['id']}: {data['name']}")
 
@@ -1393,8 +1428,12 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
         require_tool_permission(actor, Permission.WORKSPACE_MANAGE)
         config_id = require_string(arguments.get("config_id"), "config_id")
         task_id = require_string(arguments.get("task_id"), "task_id")
-        config = require_workspace_config(db, config_id)
-        result = provision_workspace(config, task_id, optional_string(arguments.get("repo_path")))
+        svc = WorkspaceService(db)
+        try:
+            config = svc.get_config(config_id)
+        except WorkspaceConfigNotFoundError as exc:
+            raise JsonRpcError(-32602, exc.message) from exc
+        result = svc.provision(config, task_id, optional_string(arguments.get("repo_path")))
         return tool_result(
             {"workspace": result.__dict__},
             f"Provisioned Flow workspace {result.workspace_id} with strategy {result.strategy}.",
@@ -1406,8 +1445,12 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
         strategy = require_string(arguments.get("strategy"), "strategy")
         path = require_string(arguments.get("path"), "path")
         config_id = optional_string(arguments.get("config_id"))
-        config = require_workspace_config(db, config_id) if config_id else None
-        cleaned = cleanup_workspace(workspace_id, strategy, path, config)
+        svc = WorkspaceService(db)
+        try:
+            config = svc.get_config(config_id) if config_id else None
+        except WorkspaceConfigNotFoundError as exc:
+            raise JsonRpcError(-32602, exc.message) from exc
+        cleaned = svc.cleanup(workspace_id, strategy, path, config)
         return tool_result(
             {"workspace_id": workspace_id, "strategy": strategy, "path": path, "cleaned": cleaned},
             f"Cleaned Flow workspace {workspace_id}.",
@@ -1417,26 +1460,30 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
         require_tool_permission(actor, Permission.DISPATCH)
         agent_id = require_string(arguments.get("agent_id"), "agent_id")
         task_id = require_string(arguments.get("task_id"), "task_id")
+        svc = AgentService(db)
         try:
-            run = dispatch_one(
-                db,
-                require_agent(db, agent_id),
-                require_task(db, task_id),
-                api_key=optional_string(arguments.get("api_key")) or "",
+            run = svc.dispatch(
+                agent_id,
+                task_id,
                 base_url=optional_string(arguments.get("base_url")) or "",
+                api_key_value=optional_string(arguments.get("api_key")) or "",
             )
+        except AgentNotFoundError as exc:
+            raise JsonRpcError(-32602, exc.message) from exc
+        except AgentError as exc:
+            code = -32602 if exc.error_type == "not_found" else -32603
+            raise JsonRpcError(code, exc.message) from exc
         except DispatchError as exc:
             raise JsonRpcError(-32603, str(exc)) from exc
-        db.commit()
         data = agent_run_to_json(run)
         return tool_result({"run": data}, f"Dispatched Flow agent run {data['id']}.")
 
     if name == "flow_list_agent_runs":
         require_tool_permission(actor, Permission.TASKS_READ)
+        svc = AgentService(db)
         runs = [
             agent_run_to_json(run)
-            for run in list_agent_runs(
-                db,
+            for run in svc.list_runs(
                 agent_id=optional_string(arguments.get("agent_id")),
                 task_id=optional_string(arguments.get("task_id")),
                 status=optional_string(arguments.get("status")),
@@ -1450,9 +1497,11 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
     if name == "flow_heartbeat":
         require_tool_permission(actor, Permission.DISPATCH)
         run_id = require_string(arguments.get("run_id"), "run_id")
-        run = require_agent_run(db, run_id)
-        run = heartbeat_run(db, run)
-        db.commit()
+        svc = AgentService(db)
+        try:
+            run = svc.heartbeat(run_id)
+        except AgentRunNotFoundError as exc:
+            raise JsonRpcError(-32602, exc.message) from exc
         data = agent_run_to_json(run)
         return tool_result({"run": data}, f"Heartbeat recorded for Flow agent run {data['id']}.")
 
@@ -1462,15 +1511,19 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
         exit_code = arguments.get("exit_code")
         if not isinstance(exit_code, int):
             raise JsonRpcError(-32602, "exit_code must be an integer.")
-        run = complete_run(db, require_agent_run(db, run_id), exit_code)
-        db.commit()
+        svc = AgentService(db)
+        try:
+            run = svc.complete_run(run_id, exit_code)
+        except AgentRunNotFoundError as exc:
+            raise JsonRpcError(-32602, exc.message) from exc
         data = agent_run_to_json(run)
         return tool_result({"run": data}, f"Completed Flow agent run {data['id']}.")
 
     if name == "flow_list_automation_rules":
         require_tool_permission(actor, Permission.RULES_READ)
         enabled_only = optional_bool(arguments.get("enabled_only"), default=False)
-        rules = [automation_rule_to_json(rule) for rule in list_automation_rules(db, enabled_only=enabled_only)]
+        svc = AutomationService(db)
+        rules = [automation_rule_to_json(rule) for rule in svc.list_rules(enabled_only=enabled_only)]
         return tool_result(
             {"rules": rules, "count": len(rules)},
             f"Found {len(rules)} Flow automation rule{'s' if len(rules) != 1 else ''}.",
@@ -1479,7 +1532,11 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
     if name == "flow_get_automation_rule":
         require_tool_permission(actor, Permission.RULES_READ)
         rule_id = require_string(arguments.get("rule_id"), "rule_id")
-        rule = require_automation_rule(db, rule_id)
+        svc = AutomationService(db)
+        try:
+            rule = svc.get_rule(rule_id)
+        except AutomationRuleNotFoundError as exc:
+            raise JsonRpcError(-32602, exc.message) from exc
         data = automation_rule_to_json(rule)
         return tool_result({"rule": data}, f"Found Flow automation rule {data['id']}: {data['name']}")
 
@@ -1498,21 +1555,23 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
             )
         except ValidationError as exc:
             raise JsonRpcError(-32602, "Invalid automation rule payload.", exc.errors()) from exc
-        rule = create_automation_rule(db, payload)
-        db.commit()
+        svc = AutomationService(db)
+        rule = svc.create_rule(payload)
         data = automation_rule_to_json(rule)
         return tool_result({"rule": data}, f"Created Flow automation rule {data['id']}: {data['name']}")
 
     if name == "flow_update_automation_rule":
         require_tool_permission(actor, Permission.RULES_MANAGE)
         rule_id = require_string(arguments.get("rule_id"), "rule_id")
-        rule = require_automation_rule(db, rule_id)
         try:
             payload = AutomationRuleUpdate(**update_arguments(arguments, RULE_UPDATE_FIELDS, "rule_id"))
         except ValidationError as exc:
             raise JsonRpcError(-32602, "Invalid automation rule payload.", exc.errors()) from exc
-        rule = update_automation_rule(db, rule, payload)
-        db.commit()
+        svc = AutomationService(db)
+        try:
+            rule = svc.update_rule(rule_id, payload)
+        except AutomationRuleNotFoundError as exc:
+            raise JsonRpcError(-32602, exc.message) from exc
         data = automation_rule_to_json(rule)
         return tool_result({"rule": data}, f"Updated Flow automation rule {data['id']}: {data['name']}")
 
@@ -1530,8 +1589,8 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
             )
         except ValidationError as exc:
             raise JsonRpcError(-32602, "Invalid automation event payload.", exc.errors()) from exc
-        matches = evaluate_rules(db, event)
-        db.commit()
+        svc = AutomationService(db)
+        matches = svc.evaluate_rules(event)
         return tool_result(
             {"matches": matches, "count": len(matches)},
             f"Matched {len(matches)} Flow automation rule{'s' if len(matches) != 1 else ''}.",

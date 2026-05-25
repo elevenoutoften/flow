@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import socket
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -21,8 +22,32 @@ from flow_app.repository import (
     update_webhook_delivery,
 )
 from flow_app.schemas import TaskCreate
-from flow_app.ssrf import SSRF_ERROR_MSG, validate_webhook_url
+from flow_app.ssrf import SSRF_ERROR_MSG, resolve_webhook_target, validate_webhook_url
 from flow_app.webhooks import deliver_webhook, sign_payload
+
+
+@pytest.fixture(autouse=True)
+def deterministic_webhook_dns(monkeypatch):
+    def fake_getaddrinfo(host, port, *args, **kwargs):
+        if host == "example.com":
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
+        if host == "localhost":
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", port))]
+        try:
+            socket.inet_pton(socket.AF_INET, host)
+        except OSError:
+            pass
+        else:
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (host, port))]
+        try:
+            socket.inet_pton(socket.AF_INET6, host)
+        except OSError:
+            pass
+        else:
+            return [(socket.AF_INET6, socket.SOCK_STREAM, 6, "", (host, port, 0, 0))]
+        raise socket.gaierror(f"Could not resolve {host}")
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
 
 
 def bearer_headers(api_key: str) -> dict[str, str]:
@@ -82,10 +107,31 @@ def assert_single_delivery(client, webhook_id: str, event: str, task_id: str):
     return deliveries[0]
 
 
-def test_validate_webhook_url_accepts_valid_public_url():
+def test_validate_webhook_url_accepts_valid_public_url(monkeypatch):
     url = "https://example.com/webhook"
 
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", args[1]))],
+    )
+
     assert validate_webhook_url(url) == url
+
+
+def test_validate_webhook_url_rejects_dns_rebinding(monkeypatch):
+    calls = iter(
+        [
+            [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))],
+            [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 443))],
+        ]
+    )
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *args, **kwargs: next(calls))
+
+    resolved_ip, url = resolve_webhook_target("https://example.com/webhook")
+
+    assert resolved_ip == "93.184.216.34"
+    assert url == "https://example.com/webhook"
 
 
 def test_validate_webhook_url_rejects_invalid_scheme():
@@ -116,6 +162,39 @@ def test_validate_webhook_url_rejects_private_ips(url):
 def test_validate_webhook_url_rejects_ipv6_loopback():
     with pytest.raises(ValueError, match=SSRF_ERROR_MSG):
         validate_webhook_url("http://[::1]/test")
+
+
+def test_resolve_webhook_target_accepts_ipv6_bracket_hostname():
+    resolved_ip, url = resolve_webhook_target("https://[2606:2800:220:1:248:1893:25c8:1946]/webhook")
+
+    assert resolved_ip == "2606:2800:220:1:248:1893:25c8:1946"
+    assert url == "https://[2606:2800:220:1:248:1893:25c8:1946]/webhook"
+
+
+def test_resolve_webhook_target_uses_specified_port(monkeypatch):
+    seen_ports = []
+
+    def fake_getaddrinfo(host, port, *args, **kwargs):
+        seen_ports.append(port)
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+
+    resolved_ip, url = resolve_webhook_target("https://example.com:8443/webhook")
+
+    assert resolved_ip == "93.184.216.34"
+    assert url == "https://example.com:8443/webhook"
+    assert seen_ports == [8443]
+
+
+def test_resolve_webhook_target_rejects_unresolved_hostname(monkeypatch):
+    def fake_getaddrinfo(host, port, *args, **kwargs):
+        raise socket.gaierror("no address")
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+
+    with pytest.raises(ValueError, match="Could not resolve hostname"):
+        resolve_webhook_target("https://does-not-resolve.invalid/webhook")
 
 
 def test_webhook_config_create(client):
@@ -497,6 +576,25 @@ def test_deliver_webhook_success(client):
         assert saved.last_response_code == 200
         assert saved.last_response_body == "accepted"
         assert post.call_args.kwargs["headers"]["X-Flow-Signature"] == sign_payload(config.secret, b'{"ok":true}')
+
+
+def test_delivery_uses_resolved_ip(client, monkeypatch):
+    config_data = create_webhook(client, url="https://example.com:8443/webhook?source=flow")
+    with client.app.state.SessionLocal() as db:
+        config = get_webhook_config(db, config_data["id"])
+        delivery = create_webhook_delivery(db, config.id, "task_created", '{"ok":true}')
+        db.commit()
+
+        monkeypatch.setattr(
+            "flow_app.webhooks.resolve_webhook_target",
+            lambda url: ("93.184.216.34", url),
+        )
+        with patch("flow_app.webhooks.httpx.post", return_value=SimpleNamespace(status_code=200, text="accepted")) as post:
+            deliver_webhook(db, delivery, config)
+            db.commit()
+
+        assert post.call_args.args[0] == "https://93.184.216.34:8443/webhook?source=flow"
+        assert post.call_args.kwargs["headers"]["Host"] == "example.com"
 
 
 def test_deliver_webhook_failure_retries(client):

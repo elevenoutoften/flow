@@ -90,6 +90,18 @@ def verify(secret: str, body: bytes, signature: str) -> bool:
 
 Use the exact raw request body bytes. Re-serializing JSON can change the signature.
 
+## SSRF Protection
+
+Webhook URLs are user-supplied and cross a trust boundary. Flow validates all webhook URLs at create/update time and re-validates them at delivery time.
+
+Only absolute `http://` or `https://` URLs with hostnames that resolve to public IP addresses are accepted.
+
+Blocked ranges include localhost (`127.0.0.0/8`, `::1`), RFC 1918 private addresses (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), link-local addresses (`169.254.0.0/16`, `fe80::/10`), carrier-grade NAT (`100.64.0.0/10`), IPv6 unique local addresses (`fc00::/7`), IPv4-mapped IPv6 addresses (`::ffff:0:0/96`), the zero network (`0.0.0.0/8`), and the cloud metadata address (`169.254.169.254`).
+
+At delivery time, Flow resolves the hostname and sends the HTTP request directly to the validated IP address with the original hostname in the `Host` header. This prevents TOCTOU attacks where DNS is rebound between validation and request.
+
+URLs targeting blocked ranges receive a `422` validation error at create/update time. At delivery time, failures are logged with status `failed` and message `Webhook URL targets unacceptable address.`
+
 ## Retry Behavior
 
 Successful HTTP status codes are `2xx`. Any non-`2xx` response or `httpx` transport error records a failure.

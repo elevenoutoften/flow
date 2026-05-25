@@ -4,6 +4,8 @@ import hashlib
 import hmac
 import json
 from datetime import timedelta
+from ipaddress import ip_address
+from urllib.parse import urlparse, urlunparse
 from uuid import uuid4
 
 import httpx
@@ -12,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from .models import Task, WebhookConfig, WebhookDelivery, utcnow
 from .repository import create_webhook_delivery, update_webhook_delivery
-from .ssrf import is_safe_webhook_target
+from .ssrf import resolve_webhook_target
 
 WEBHOOK_EVENTS = [
     "task_created",
@@ -54,20 +56,24 @@ def emit_event(db: Session, event_name: str, task: Task, changes: dict | None = 
 
 
 def deliver_webhook(db: Session, delivery: WebhookDelivery, config: WebhookConfig) -> None:
-    if not is_safe_webhook_target(config.url):
+    try:
+        resolved_ip, _ = resolve_webhook_target(config.url)
+    except ValueError:
         _record_failure(db, delivery, config, None, "Webhook URL targets unacceptable address.")
         return
 
+    request_url, host_header = _resolved_request_target(config.url, resolved_ip)
     payload_bytes = delivery.payload.encode("utf-8")
     headers = {
         "Content-Type": "application/json",
+        "Host": host_header,
         "X-Flow-Event": delivery.event,
         "X-Flow-Signature": sign_payload(config.secret, payload_bytes),
         "X-Flow-Delivery-ID": delivery.id,
     }
 
     try:
-        response = httpx.post(config.url, content=payload_bytes, headers=headers, timeout=10.0)
+        response = httpx.post(request_url, content=payload_bytes, headers=headers, timeout=10.0)
     except httpx.HTTPError as exc:
         _record_failure(db, delivery, config, None, str(exc))
         return
@@ -89,6 +95,17 @@ def deliver_webhook(db: Session, delivery: WebhookDelivery, config: WebhookConfi
 
 def sign_payload(secret: str, payload_bytes: bytes) -> str:
     return hmac.new(secret.encode("utf-8"), payload_bytes, hashlib.sha256).hexdigest()
+
+
+def _resolved_request_target(url: str, resolved_ip: str) -> tuple[str, str]:
+    parsed = urlparse(url)
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    ip = ip_address(resolved_ip)
+    host = f"[{resolved_ip}]" if ip.version == 6 else resolved_ip
+    netloc = f"{host}:{port}"
+    path = parsed.path or "/"
+    request_url = urlunparse((parsed.scheme, netloc, path, parsed.params, parsed.query, ""))
+    return request_url, parsed.hostname or ""
 
 
 def _record_failure(

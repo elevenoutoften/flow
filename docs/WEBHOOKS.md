@@ -98,7 +98,9 @@ Only absolute `http://` or `https://` URLs with hostnames that resolve to public
 
 Blocked ranges include localhost (`127.0.0.0/8`, `::1`), RFC 1918 private addresses (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), link-local addresses (`169.254.0.0/16`, `fe80::/10`), carrier-grade NAT (`100.64.0.0/10`), IPv6 unique local addresses (`fc00::/7`), IPv4-mapped IPv6 addresses (`::ffff:0:0/96`), the zero network (`0.0.0.0/8`), and the cloud metadata address (`169.254.169.254`).
 
-At delivery time, Flow resolves the hostname and sends the HTTP request directly to the validated IP address with the original hostname in the `Host` header. This prevents TOCTOU attacks where DNS is rebound between validation and request.
+At delivery time, Flow resolves the hostname again, validates every returned address, and pins the request transport to the validated IP. The outbound TCP connection is made to that pinned IP instead of doing another DNS lookup, which prevents TOCTOU attacks where DNS is rebound between validation and request.
+
+For HTTPS webhook URLs, Flow preserves the original hostname for TLS SNI and certificate verification while connecting to the pinned IP. The HTTP `Host` header also remains the original hostname, including a non-default port when present. This keeps normal public HTTPS webhook certificates working without relaxing TLS verification.
 
 URLs targeting blocked ranges receive a `422` validation error at create/update time. At delivery time, failures are logged with status `failed` and message `Webhook URL targets unacceptable address.`
 

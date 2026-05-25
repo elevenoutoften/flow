@@ -2,8 +2,9 @@
 
 Webhook URLs cross a trust boundary: they are supplied by users, then fetched by
 the server. Only absolute http/https URLs whose hostnames resolve to public IP
-targets are allowed. Delivery revalidates the URL so DNS rebinding that happens
-after configuration is still caught before the outbound request.
+targets are allowed. Delivery revalidates and pins the resolved IP in the HTTP
+transport so DNS rebinding is blocked while HTTPS SNI and certificate
+verification still use the original hostname.
 """
 
 from __future__ import annotations

@@ -7,6 +7,7 @@ import socket
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -23,7 +24,7 @@ from flow_app.repository import (
 )
 from flow_app.schemas import TaskCreate
 from flow_app.ssrf import SSRF_ERROR_MSG, resolve_webhook_target, validate_webhook_url
-from flow_app.webhooks import deliver_webhook, sign_payload
+from flow_app.webhooks import _PinnedDNSTransport, deliver_webhook, sign_payload
 
 
 @pytest.fixture(autouse=True)
@@ -105,6 +106,33 @@ def assert_single_delivery(client, webhook_id: str, event: str, task_id: str):
     assert payload["event"] == event
     assert payload["task_id"] == task_id
     return deliveries[0]
+
+
+class CapturingWebhookClient:
+    instances = []
+    response = SimpleNamespace(status_code=200, text="accepted")
+
+    def __init__(self, *, transport):
+        self.transport = transport
+        self.calls = []
+        self.__class__.instances.append(self)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def post(self, url, *, content, headers, timeout):
+        self.calls.append(
+            {
+                "url": url,
+                "content": content,
+                "headers": headers,
+                "timeout": timeout,
+            }
+        )
+        return self.__class__.response
 
 
 def test_validate_webhook_url_accepts_valid_public_url(monkeypatch):
@@ -527,7 +555,9 @@ def test_webhook_delivery_retry(client):
         db.commit()
         delivery_id = delivery.id
 
-    with patch("flow_app.webhooks.httpx.post", return_value=SimpleNamespace(status_code=200, text="ok")):
+    CapturingWebhookClient.instances = []
+    CapturingWebhookClient.response = SimpleNamespace(status_code=200, text="ok")
+    with patch("flow_app.webhooks.httpx.Client", CapturingWebhookClient):
         response = client.post(f"/api/webhooks/{config['id']}/deliveries/{delivery_id}/retry")
 
     assert response.status_code == 200, response.text
@@ -565,7 +595,9 @@ def test_deliver_webhook_success(client):
         db.commit()
         delivery_id = delivery.id
 
-        with patch("flow_app.webhooks.httpx.post", return_value=SimpleNamespace(status_code=200, text="accepted")) as post:
+        CapturingWebhookClient.instances = []
+        CapturingWebhookClient.response = SimpleNamespace(status_code=200, text="accepted")
+        with patch("flow_app.webhooks.httpx.Client", CapturingWebhookClient):
             deliver_webhook(db, delivery, config)
             db.commit()
 
@@ -575,7 +607,9 @@ def test_deliver_webhook_success(client):
         assert saved.next_attempt_at is None
         assert saved.last_response_code == 200
         assert saved.last_response_body == "accepted"
-        assert post.call_args.kwargs["headers"]["X-Flow-Signature"] == sign_payload(config.secret, b'{"ok":true}')
+        sent_headers = CapturingWebhookClient.instances[0].calls[0]["headers"]
+        assert sent_headers["X-Flow-Signature"] == sign_payload(config.secret, b'{"ok":true}')
+        assert "Host" not in sent_headers
 
 
 def test_delivery_uses_resolved_ip(client, monkeypatch):
@@ -589,12 +623,127 @@ def test_delivery_uses_resolved_ip(client, monkeypatch):
             "flow_app.webhooks.resolve_webhook_target",
             lambda url: ("93.184.216.34", url),
         )
-        with patch("flow_app.webhooks.httpx.post", return_value=SimpleNamespace(status_code=200, text="accepted")) as post:
+        CapturingWebhookClient.instances = []
+        CapturingWebhookClient.response = SimpleNamespace(status_code=200, text="accepted")
+        with patch("flow_app.webhooks.httpx.Client", CapturingWebhookClient):
             deliver_webhook(db, delivery, config)
             db.commit()
 
-        assert post.call_args.args[0] == "https://93.184.216.34:8443/webhook?source=flow"
-        assert post.call_args.kwargs["headers"]["Host"] == "example.com"
+        captured_client = CapturingWebhookClient.instances[0]
+        assert captured_client.calls[0]["url"] == "https://example.com:8443/webhook?source=flow"
+        assert captured_client.transport._pinned_ip == "93.184.216.34"
+
+
+def test_deliver_webhook_https_preserves_sni(client, monkeypatch):
+    config_data = create_webhook(client, url="https://example.com/webhook")
+    with client.app.state.SessionLocal() as db:
+        config = get_webhook_config(db, config_data["id"])
+        delivery = create_webhook_delivery(db, config.id, "task_created", '{"ok":true}')
+        db.commit()
+
+        monkeypatch.setattr(
+            "flow_app.webhooks.resolve_webhook_target",
+            lambda url: ("93.184.216.34", url),
+        )
+        captured_requests = []
+
+        def fake_handle_request(self, request):
+            captured_requests.append(request)
+            return httpx.Response(200, text="accepted", request=request)
+
+        monkeypatch.setattr(httpx.HTTPTransport, "handle_request", fake_handle_request)
+
+        deliver_webhook(db, delivery, config)
+
+    assert str(captured_requests[0].url) == "https://93.184.216.34/webhook"
+    assert captured_requests[0].headers["Host"] == "example.com"
+    assert captured_requests[0].extensions["sni_hostname"] == "example.com"
+
+
+def test_deliver_webhook_dns_rebinding_blocked(client, monkeypatch):
+    config_data = create_webhook(client, url="https://example.com/webhook")
+    with client.app.state.SessionLocal() as db:
+        config = get_webhook_config(db, config_data["id"])
+        delivery = create_webhook_delivery(db, config.id, "task_created", '{"ok":true}')
+        db.commit()
+
+        monkeypatch.setattr(
+            "flow_app.webhooks.resolve_webhook_target",
+            lambda url: ("93.184.216.34", url),
+        )
+
+        def rebinding_getaddrinfo(host, port, *args, **kwargs):
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", port))]
+
+        monkeypatch.setattr(socket, "getaddrinfo", rebinding_getaddrinfo)
+        captured_requests = []
+
+        def fake_handle_request(self, request):
+            captured_requests.append(request)
+            return httpx.Response(200, text="accepted", request=request)
+
+        monkeypatch.setattr(httpx.HTTPTransport, "handle_request", fake_handle_request)
+
+        deliver_webhook(db, delivery, config)
+
+    assert captured_requests[0].url.host == "93.184.216.34"
+    assert captured_requests[0].headers["Host"] == "example.com"
+
+
+def test_pinned_dns_transport_ipv4(monkeypatch):
+    captured_requests = []
+
+    def fake_handle_request(self, request):
+        captured_requests.append(request)
+        return httpx.Response(200, request=request)
+
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", fake_handle_request)
+
+    transport = _PinnedDNSTransport("93.184.216.34")
+    request = httpx.Request("POST", "http://example.com:8080/webhook", content=b"{}")
+    response = transport.handle_request(request)
+
+    assert response.status_code == 200
+    assert str(captured_requests[0].url) == "http://93.184.216.34:8080/webhook"
+    assert captured_requests[0].headers["Host"] == "example.com:8080"
+    assert "sni_hostname" not in captured_requests[0].extensions
+
+
+def test_pinned_dns_transport_ipv6(monkeypatch):
+    captured_requests = []
+
+    def fake_handle_request(self, request):
+        captured_requests.append(request)
+        return httpx.Response(200, request=request)
+
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", fake_handle_request)
+
+    transport = _PinnedDNSTransport("2606:2800:220:1:248:1893:25c8:1946")
+    request = httpx.Request("GET", "https://example.com:8443/webhook")
+    transport.handle_request(request)
+
+    assert str(captured_requests[0].url) == "https://[2606:2800:220:1:248:1893:25c8:1946]:8443/webhook"
+    assert captured_requests[0].headers["Host"] == "example.com:8443"
+    assert captured_requests[0].extensions["sni_hostname"] == "example.com"
+
+
+def test_pinned_dns_transport_preserves_original_url(monkeypatch):
+    captured_requests = []
+
+    def fake_handle_request(self, request):
+        captured_requests.append(request)
+        return httpx.Response(200, request=request)
+
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", fake_handle_request)
+
+    transport = _PinnedDNSTransport("93.184.216.34")
+    request = httpx.Request("GET", "https://example.com/webhook?source=flow")
+    original_url = str(request.url)
+    transport.handle_request(request)
+
+    assert str(request.url) == original_url
+    assert str(captured_requests[0].url) == "https://93.184.216.34/webhook?source=flow"
+    assert captured_requests[0].headers["Host"] == "example.com"
 
 
 def test_deliver_webhook_failure_retries(client):
@@ -605,7 +754,9 @@ def test_deliver_webhook_failure_retries(client):
         db.commit()
         delivery_id = delivery.id
 
-        with patch("flow_app.webhooks.httpx.post", return_value=SimpleNamespace(status_code=500, text="nope")):
+        CapturingWebhookClient.instances = []
+        CapturingWebhookClient.response = SimpleNamespace(status_code=500, text="nope")
+        with patch("flow_app.webhooks.httpx.Client", CapturingWebhookClient):
             deliver_webhook(db, delivery, config)
             db.commit()
 
@@ -627,7 +778,7 @@ def test_deliver_webhook_skips_unsafe_url(client):
         db.commit()
         delivery_id = delivery.id
 
-        with patch("flow_app.webhooks.httpx.post") as post:
+        with patch("flow_app.webhooks.httpx.Client") as client_cls:
             deliver_webhook(db, delivery, config)
             db.commit()
 
@@ -636,4 +787,4 @@ def test_deliver_webhook_skips_unsafe_url(client):
         assert saved.attempts == 1
         assert saved.last_response_code is None
         assert saved.last_response_body == "Webhook URL targets unacceptable address."
-        post.assert_not_called()
+        client_cls.assert_not_called()

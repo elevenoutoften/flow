@@ -204,6 +204,8 @@ def _run_cron_rules(session: Session, *, dry_run: bool) -> int:
     for rule in rules:
         if not _cron_config_matches(rule.trigger_config, now):
             continue
+        if rule.last_run_at is not None and _same_minute(rule.last_run_at, now):
+            continue
         if dry_run:
             logger.info("Would fire cron automation rule %s (%s)", rule.name, rule.id)
             continue
@@ -214,18 +216,17 @@ def _run_cron_rules(session: Session, *, dry_run: bool) -> int:
 
 
 def _emit_single_cron_rule(session: Session, rules: list[AutomationRule], rule: AutomationRule) -> list[dict]:
-    original_enabled = {candidate.id: candidate.enabled for candidate in rules}
-    try:
-        for candidate in rules:
-            candidate.enabled = int(candidate.id == rule.id)
-            session.add(candidate)
-        session.flush()
-        return emit_event(session, "cron", data={"rule_id": rule.id, "rule_name": rule.name})
-    finally:
-        for candidate in rules:
-            candidate.enabled = original_enabled[candidate.id]
-            session.add(candidate)
-        session.flush()
+    return emit_event(session, "cron", data={"rule_id": rule.id, "rule_name": rule.name}, rule_id=rule.id)
+
+
+def _same_minute(left: datetime, right: datetime) -> bool:
+    return (
+        left.year == right.year
+        and left.month == right.month
+        and left.day == right.day
+        and left.hour == right.hour
+        and left.minute == right.minute
+    )
 
 
 def _cron_config_matches(trigger_config: str | None, now: datetime | None = None) -> bool:

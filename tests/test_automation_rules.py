@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
-from flow_app.models import ApiKeyRole
+from flow_app.models import ApiKeyRole, AutomationRule
 from flow_app.repository import get_task
+from flow_app.runner import _run_cron_rules
 from flow_app.rules_engine import emit_event
 from flow_app.rules_engine import evaluate_conditions
 from flow_app.security import Actor
@@ -109,6 +111,93 @@ def test_event_emission_respects_disabled_rules(client):
     create_task(client, priority=100)
 
     assert client.get(f"/api/automation-rules/{rule['id']}").json()["last_run_at"] is None
+
+
+def test_cron_rule_does_not_fire_twice_in_same_minute(client, monkeypatch):
+    now = datetime(2026, 5, 25, 14, 30, 15, tzinfo=timezone.utc)
+    rule = create_rule(client, name="Cron once", trigger="cron", conditions="[]", actions="[]")
+    monkeypatch.setattr("flow_app.runner.utcnow", lambda: now)
+
+    with client.app.state.SessionLocal() as db:
+        rule_model = db.get(AutomationRule, rule["id"])
+        last_run_at = now.replace(second=1)
+        rule_model.last_run_at = last_run_at
+        db.commit()
+
+        assert _run_cron_rules(db, dry_run=False) == 0
+
+        db.refresh(rule_model)
+        assert rule_model.last_run_at.replace(tzinfo=timezone.utc) == last_run_at
+
+
+def test_cron_rule_fires_when_last_run_was_previous_minute(client, monkeypatch):
+    now = datetime(2026, 5, 25, 14, 30, 15, tzinfo=timezone.utc)
+    rule = create_rule(client, name="Cron next minute", trigger="cron", conditions="[]", actions="[]")
+    monkeypatch.setattr("flow_app.runner.utcnow", lambda: now)
+
+    with client.app.state.SessionLocal() as db:
+        rule_model = db.get(AutomationRule, rule["id"])
+        previous_run_at = now - timedelta(minutes=1)
+        rule_model.last_run_at = previous_run_at
+        db.commit()
+
+        assert _run_cron_rules(db, dry_run=False) == 1
+
+        db.refresh(rule_model)
+        assert rule_model.last_run_at is not None
+        assert rule_model.last_run_at.replace(tzinfo=timezone.utc) != previous_run_at
+
+
+def test_emit_event_with_rule_id_only_executes_that_rule(client):
+    task = create_task(client, priority=100)
+    first = create_rule(
+        client,
+        name="First matching rule",
+        actions=json.dumps([{"type": "add_note", "text": "first rule ran"}]),
+    )
+    second = create_rule(
+        client,
+        name="Second matching rule",
+        actions=json.dumps([{"type": "add_note", "text": "second rule ran"}]),
+    )
+
+    with client.app.state.SessionLocal() as db:
+        matches = emit_event(db, "task_created", task_id=task["id"], rule_id=second["id"])
+        db.commit()
+
+    assert [match["rule_id"] for match in matches] == [second["id"]]
+
+    notes = client.get(f"/api/tasks/{task['id']}").json()["notes"]
+    bodies = [note["body"] for note in notes]
+    assert "first rule ran" not in bodies
+    assert bodies.count("second rule ran") == 1
+    assert client.get(f"/api/automation-rules/{first['id']}").json()["last_run_at"] is None
+    assert client.get(f"/api/automation-rules/{second['id']}").json()["last_run_at"] is not None
+
+
+def test_emit_event_without_rule_id_executes_all_matching_rules(client):
+    task = create_task(client, priority=100)
+    first = create_rule(
+        client,
+        name="First matching rule",
+        actions=json.dumps([{"type": "add_note", "text": "first rule ran"}]),
+    )
+    second = create_rule(
+        client,
+        name="Second matching rule",
+        actions=json.dumps([{"type": "add_note", "text": "second rule ran"}]),
+    )
+
+    with client.app.state.SessionLocal() as db:
+        matches = emit_event(db, "task_created", task_id=task["id"])
+        db.commit()
+
+    assert {match["rule_id"] for match in matches} == {first["id"], second["id"]}
+
+    notes = client.get(f"/api/tasks/{task['id']}").json()["notes"]
+    bodies = [note["body"] for note in notes]
+    assert bodies.count("first rule ran") == 1
+    assert bodies.count("second rule ran") == 1
 
 
 def test_task_lifecycle_events_update_matching_rule_last_run(client):

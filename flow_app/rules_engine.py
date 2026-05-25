@@ -104,14 +104,13 @@ def match_rules(
     trigger: str,
     task_id: str | None = None,
     data: dict | None = None,
+    rule_id: str | None = None,
 ) -> list[MatchResult]:
     """Find all enabled rules matching the trigger and conditions."""
-    rules = (
-        session.query(AutomationRule)
-        .filter(AutomationRule.enabled == 1, AutomationRule.trigger == trigger)
-        .order_by(AutomationRule.priority.desc())
-        .all()
-    )
+    query = session.query(AutomationRule).filter(AutomationRule.enabled == 1, AutomationRule.trigger == trigger)
+    if rule_id is not None:
+        query = query.filter(AutomationRule.id == rule_id)
+    rules = query.order_by(AutomationRule.priority.desc()).all()
 
     results = []
     task_data = data or {}
@@ -394,9 +393,10 @@ def emit_event(
     task_id: str | None = None,
     data: dict | None = None,
     actor: Actor | None = None,
+    rule_id: str | None = None,
 ) -> list[dict]:
     """Emit an event, execute matched rule actions, and return serializable results."""
-    matches = match_rules(session, trigger, task_id, data)
+    matches = match_rules(session, trigger, task_id, data, rule_id=rule_id)
     results = []
     for match in matches:
         rule = session.get(AutomationRule, match.rule_id)

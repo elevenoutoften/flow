@@ -330,7 +330,7 @@ class TestDogfoodE2E:
             assert reviewer_claim_r.status_code == 200, reviewer_claim_r.text
             reviewer_note_r = client.post(
                 f"/api/tasks/{approve_task_id}/note",
-                json={"note": "Approved after review.", "author": "test-reviewer"},
+                json={"note": "Approved after review."},
                 headers=rev_headers,
             )
             assert reviewer_note_r.status_code == 200, reviewer_note_r.text
@@ -375,7 +375,7 @@ class TestDogfoodE2E:
             assert reviewer_claim_r.status_code == 200, reviewer_claim_r.text
             reviewer_note_r = client.post(
                 f"/api/tasks/{sendback_task_id}/note",
-                json={"note": "Please address the rejection feedback.", "author": "test-reviewer"},
+                json={"note": "Please address the rejection feedback."},
                 headers=rev_headers,
             )
             assert reviewer_note_r.status_code == 200, reviewer_note_r.text

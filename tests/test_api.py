@@ -620,7 +620,9 @@ def test_reviewer_can_approve_and_send_back(client, no_auth_client):
 
 def test_reviewer_sendback_requires_note_or_handoff(client, no_auth_client):
     reviewer_headers = create_role_headers(client, "reviewer", "reviewer-sendback")
+    implementer_headers = create_role_headers(client, "implementer", "implementer-sendback")
     admin_headers = create_role_headers(client, "admin", "admin-sendback")
+    architect_headers = create_role_headers(client, "architect", "architect-sendback")
 
     no_context_task = create_task(client, status="review")
     denied = no_auth_client.post(
@@ -629,7 +631,7 @@ def test_reviewer_sendback_requires_note_or_handoff(client, no_auth_client):
         headers=reviewer_headers,
     )
     assert denied.status_code == 409
-    assert denied.json()["detail"] == "Send-back requires at least one note or handoff on the task."
+    assert denied.json()["detail"] == "Send-back requires a reviewer-authored note or handoff."
 
     note = no_auth_client.post(
         f"/api/tasks/{no_context_task['id']}/note",
@@ -667,6 +669,45 @@ def test_reviewer_sendback_requires_note_or_handoff(client, no_auth_client):
     assert allowed_with_handoff.status_code == 200
     assert allowed_with_handoff.json()["status"] == "todo"
 
+    implementer_note_task = create_task(client, status="doing", assignee="implementer-sendback")
+    implementer_note = no_auth_client.post(
+        f"/api/tasks/{implementer_note_task['id']}/note",
+        json={"note": "Implementation context from before review."},
+        headers=implementer_headers,
+    )
+    assert implementer_note.status_code == 200, implementer_note.text
+
+    moved_to_review = no_auth_client.post(
+        f"/api/tasks/{implementer_note_task['id']}/move",
+        json={"status": "review"},
+        headers=implementer_headers,
+    )
+    assert moved_to_review.status_code == 200
+    assert moved_to_review.json()["status"] == "review"
+
+    denied_with_implementer_note = no_auth_client.post(
+        f"/api/tasks/{implementer_note_task['id']}/move",
+        json={"status": "todo"},
+        headers=reviewer_headers,
+    )
+    assert denied_with_implementer_note.status_code == 409
+    assert denied_with_implementer_note.json()["detail"] == "Send-back requires a reviewer-authored note or handoff."
+
+    reviewer_note = no_auth_client.post(
+        f"/api/tasks/{implementer_note_task['id']}/note",
+        json={"note": "Reviewer requested changes."},
+        headers=reviewer_headers,
+    )
+    assert reviewer_note.status_code == 200, reviewer_note.text
+
+    allowed_after_reviewer_note = no_auth_client.post(
+        f"/api/tasks/{implementer_note_task['id']}/move",
+        json={"status": "todo"},
+        headers=reviewer_headers,
+    )
+    assert allowed_after_reviewer_note.status_code == 200
+    assert allowed_after_reviewer_note.json()["status"] == "todo"
+
     admin_task = create_task(client, status="review")
     admin_sendback = no_auth_client.post(
         f"/api/tasks/{admin_task['id']}/move",
@@ -675,6 +716,15 @@ def test_reviewer_sendback_requires_note_or_handoff(client, no_auth_client):
     )
     assert admin_sendback.status_code == 200
     assert admin_sendback.json()["status"] == "todo"
+
+    architect_task = create_task(client, status="review")
+    architect_sendback = no_auth_client.post(
+        f"/api/tasks/{architect_task['id']}/move",
+        json={"status": "todo"},
+        headers=architect_headers,
+    )
+    assert architect_sendback.status_code == 200
+    assert architect_sendback.json()["status"] == "todo"
 
 
 def test_admin_can_do_any_transition(client, no_auth_client):

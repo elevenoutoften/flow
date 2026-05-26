@@ -8,7 +8,7 @@ from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, InvalidToken
 import httpx
 import pytest
 from fastapi.testclient import TestClient
@@ -30,6 +30,7 @@ from flow_app.repository import (
 )
 from flow_app.schemas import TaskCreate
 from flow_app.ssrf import SSRF_ERROR_MSG, resolve_webhook_target, validate_webhook_url
+from flow_app.webhook_cli import run_re_encrypt_plaintext, run_rotate_key
 from flow_app.webhooks import _PinnedDNSTransport, deliver_webhook, sign_payload
 
 
@@ -103,6 +104,7 @@ def configured_client(tmp_path, monkeypatch, **env):
     app = main_module.create_app(db_url, trusted_headers=True, session_secret="test-secret-for-testing")
     test_client = TestClient(app)
     test_client.headers.update({"X-Axis-Admin": "1", "X-Axis-User": "test-admin"})
+    test_client.flow_database_url = db_url
     test_client.__enter__()
     return test_client
 
@@ -257,6 +259,19 @@ def test_webhook_config_create(client):
     assert "secret" not in fetched
 
 
+def test_webhook_secret_not_exposed_in_get_responses(client):
+    config = create_webhook(client)
+
+    fetched = client.get(f"/api/webhooks/{config['id']}")
+    listed = client.get("/api/webhooks")
+
+    assert fetched.status_code == 200, fetched.text
+    assert "secret" not in fetched.json()
+    assert listed.status_code == 200, listed.text
+    assert listed.json()
+    assert all("secret" not in item for item in listed.json())
+
+
 def test_webhook_secret_encrypted_round_trip_and_signing(tmp_path, monkeypatch):
     key = Fernet.generate_key().decode("utf-8")
     client = configured_client(tmp_path, monkeypatch, FLOW_WEBHOOK_ENCRYPTION_KEY=key)
@@ -289,6 +304,32 @@ def test_webhook_secret_encrypted_round_trip_and_signing(tmp_path, monkeypatch):
         client.__exit__(None, None, None)
 
 
+def test_webhook_key_rotation_re_encrypts_secrets(tmp_path, monkeypatch):
+    old_key = Fernet.generate_key().decode("utf-8")
+    new_key = Fernet.generate_key().decode("utf-8")
+    client = configured_client(tmp_path, monkeypatch, FLOW_WEBHOOK_ENCRYPTION_KEY=old_key)
+    try:
+        config_data = create_webhook(client)
+        raw_secret = config_data["secret"]
+
+        dry_run_count = run_rotate_key(old_key, new_key, dry_run=True, database_url=client.flow_database_url)
+        rotated_count = run_rotate_key(old_key, new_key, database_url=client.flow_database_url)
+
+        assert dry_run_count == 1
+        assert rotated_count == 1
+        monkeypatch.setenv("FLOW_WEBHOOK_ENCRYPTION_KEY", new_key)
+        reset_settings_cache()
+        with client.app.state.SessionLocal() as db:
+            config = get_webhook_config(db, config_data["id"])
+            assert config is not None
+            assert config.secret_encrypted == 1
+            assert get_webhook_secret(config) == raw_secret
+            with pytest.raises(InvalidToken):
+                Fernet(old_key.encode("utf-8")).decrypt(config.secret.encode("utf-8"))
+    finally:
+        client.__exit__(None, None, None)
+
+
 def test_webhook_secret_plaintext_fallback(client, monkeypatch):
     monkeypatch.delenv("FLOW_WEBHOOK_ENCRYPTION_KEY", raising=False)
     config_data = create_webhook(client)
@@ -298,6 +339,38 @@ def test_webhook_secret_plaintext_fallback(client, monkeypatch):
         assert config is not None
         assert config.secret == config_data["secret"]
         assert config.secret_encrypted == 0
+
+
+def test_webhook_plaintext_re_encryption(tmp_path, monkeypatch):
+    monkeypatch.delenv("FLOW_WEBHOOK_ENCRYPTION_KEY", raising=False)
+    reset_settings_cache()
+    client = configured_client(tmp_path, monkeypatch)
+    try:
+        config_data = create_webhook(client)
+        raw_secret = config_data["secret"]
+        with client.app.state.SessionLocal() as db:
+            config = get_webhook_config(db, config_data["id"])
+            assert config is not None
+            assert config.secret == raw_secret
+            assert config.secret_encrypted == 0
+
+        key = Fernet.generate_key().decode("utf-8")
+        monkeypatch.setenv("FLOW_WEBHOOK_ENCRYPTION_KEY", key)
+        reset_settings_cache()
+
+        dry_run_count = run_re_encrypt_plaintext(dry_run=True, database_url=client.flow_database_url)
+        encrypted_count = run_re_encrypt_plaintext(database_url=client.flow_database_url)
+
+        assert dry_run_count == 1
+        assert encrypted_count == 1
+        with client.app.state.SessionLocal() as db:
+            config = get_webhook_config(db, config_data["id"])
+            assert config is not None
+            assert config.secret != raw_secret
+            assert config.secret_encrypted == 1
+            assert get_webhook_secret(config) == raw_secret
+    finally:
+        client.__exit__(None, None, None)
 
 
 def test_webhook_config_list(client):

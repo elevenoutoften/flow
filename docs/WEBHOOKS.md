@@ -98,6 +98,65 @@ def verify(secret: str, body: bytes, signature: str) -> bool:
 
 Use the exact raw request body bytes. Re-serializing JSON can change the signature.
 
+## Secret Storage and Rotation
+
+### Storage
+
+When `FLOW_WEBHOOK_ENCRYPTION_KEY` is set to a valid Fernet key, Flow encrypts webhook signing secrets at rest using Fernet symmetric encryption. Fernet uses AES-128-CBC with HMAC-SHA256 authentication.
+
+Each `WebhookConfig` row has a `secret_encrypted` flag. A value of `1` means the stored `secret` is Fernet ciphertext. A value of `0` means the stored `secret` is plaintext.
+
+When `FLOW_WEBHOOK_ENCRYPTION_KEY` is not configured, Flow stores webhook secrets in plaintext and logs a one-time warning. This is the local development default. Existing plaintext secrets remain readable, and they can be re-encrypted after enabling a key.
+
+API responses for `GET /api/webhooks` and `GET /api/webhooks/{id}` never include `secret`. The secret is returned once in the `POST /api/webhooks` creation response and never returned again.
+
+### Protection
+
+Fernet encryption provides confidentiality and authenticity. If ciphertext is tampered with, decryption fails with `InvalidToken`.
+
+The encryption key is held in the `FLOW_WEBHOOK_ENCRYPTION_KEY` environment variable and is not persisted in the database. An attacker with database access alone cannot decrypt encrypted webhook secrets without the key.
+
+### Backup
+
+Back up the SQLite database file. Encrypted webhook secrets decrypt correctly from a restored database as long as the same Fernet key is provided through `FLOW_WEBHOOK_ENCRYPTION_KEY`.
+
+Back up the Fernet key securely alongside other deployment secrets, such as in a secrets manager or environment configuration. Losing the key means losing the ability to decrypt stored webhook secrets.
+
+If both the database and the key are lost, create new webhook configs. There is no recovery path for encrypted secrets without the key.
+
+### Rotation
+
+Rotate the webhook encryption key with the CLI:
+
+```bash
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+python -m flow_app.webhook_cli rotate-key --old-key <OLD_KEY> --new-key <NEW_KEY>
+```
+
+Then update `FLOW_WEBHOOK_ENCRYPTION_KEY` in the deployment environment to the new key and restart the Flow service.
+
+To preview how many encrypted secrets would be rotated without changing the database:
+
+```bash
+python -m flow_app.webhook_cli rotate-key --old-key <OLD_KEY> --new-key <NEW_KEY> --dry-run
+```
+
+To transition from plaintext storage to encrypted storage after setting `FLOW_WEBHOOK_ENCRYPTION_KEY`, run:
+
+```bash
+python -m flow_app.webhook_cli re-encrypt
+```
+
+Without the CLI, rotation can be done by deleting webhook configs and recreating them, or by setting the new key and updating each config through `PATCH /api/webhooks/{id}` with a new URL to trigger re-encryption. Recreated webhook secrets are returned once at creation.
+
+### Loss/Recovery
+
+If `FLOW_WEBHOOK_ENCRYPTION_KEY` is lost, encrypted secrets cannot be decrypted. `get_webhook_secret()` returns `None`, and webhook delivery signing fails with `Webhook secret could not be decrypted.` Delete and recreate affected webhook configs.
+
+If the database is lost but the key is available, restore the database from backup and ensure the same `FLOW_WEBHOOK_ENCRYPTION_KEY` is configured.
+
+If the key is compromised, rotate immediately with `rotate-key`. Existing encrypted secrets are decrypted with the old key and re-encrypted with the new key.
+
 ## SSRF Protection
 
 Webhook URLs are user-supplied and cross a trust boundary. Flow validates all webhook URLs at create/update time and re-validates them at delivery time.

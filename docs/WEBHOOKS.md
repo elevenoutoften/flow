@@ -104,7 +104,7 @@ Webhook URLs are user-supplied and cross a trust boundary. Flow validates all we
 
 Only absolute `http://` or `https://` URLs with hostnames that resolve to public IP addresses are accepted.
 
-Blocked ranges include localhost (`127.0.0.0/8`, `::1`), RFC 1918 private addresses (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), link-local addresses (`169.254.0.0/16`, `fe80::/10`), carrier-grade NAT (`100.64.0.0/10`), IPv6 unique local addresses (`fc00::/7`), IPv4-mapped IPv6 addresses (`::ffff:0:0/96`), the zero network (`0.0.0.0/8`), and the cloud metadata address (`169.254.169.254`).
+The policy rejects every resolved address that is not a global unicast (public) IP address, using `ipaddress.is_global`. Explicit guards also reject IPv4-mapped IPv6 addresses (even if the mapped IPv4 is global) and the zero network (`0.0.0.0/8`). This covers localhost, RFC 1918 private, link-local, carrier-grade NAT, IPv6 unique local, IPv6 unspecified, multicast, reserved, documentation, and cloud metadata addresses.
 
 At delivery time, Flow resolves the hostname again, validates every returned address, and pins the request transport to the validated IP. The outbound TCP connection is made to that pinned IP instead of doing another DNS lookup, which prevents TOCTOU attacks where DNS is rebound between validation and request.
 

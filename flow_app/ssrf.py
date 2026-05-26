@@ -1,10 +1,12 @@
 """SSRF protection for user-provided webhook target URLs.
 
 Webhook URLs cross a trust boundary: they are supplied by users, then fetched by
-the server. Only absolute http/https URLs whose hostnames resolve to public IP
-targets are allowed. Delivery revalidates and pins the resolved IP in the HTTP
-transport so DNS rebinding is blocked while HTTPS SNI and certificate
-verification still use the original hostname.
+the server. Only absolute http/https URLs whose hostnames resolve to global
+unicast (public) IP addresses are allowed. The check uses ipaddress.is_global
+plus explicit guards for IPv4-mapped IPv6 and the zero network. Delivery
+revalidates and pins the resolved IP in the HTTP transport so DNS rebinding is
+blocked while HTTPS SNI and certificate verification still use the original
+hostname.
 """
 
 from __future__ import annotations
@@ -14,21 +16,18 @@ import socket
 from urllib.parse import urlparse
 
 
-BLOCKED_PREFIXES = (
-    ipaddress.ip_network("127.0.0.0/8"),
-    ipaddress.ip_network("::1/128"),
-    ipaddress.ip_network("10.0.0.0/8"),
-    ipaddress.ip_network("172.16.0.0/12"),
-    ipaddress.ip_network("192.168.0.0/16"),
-    ipaddress.ip_network("169.254.0.0/16"),
-    ipaddress.ip_network("100.64.0.0/10"),
-    ipaddress.ip_network("0.0.0.0/8"),
-    ipaddress.ip_network("fc00::/7"),
-    ipaddress.ip_network("fe80::/10"),
-    ipaddress.ip_network("::ffff:0:0/96"),
-)
-
 SSRF_ERROR_MSG = "Webhook URL targets a private or reserved address."
+
+
+def _is_public_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Check that an IP is a globally routable address (public IP)."""
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        return False
+    if ip in ipaddress.ip_network("0.0.0.0/8"):
+        return False
+    if ip.is_multicast:
+        return False
+    return ip.is_global
 
 
 def resolve_webhook_target(url: str) -> tuple[str, str]:
@@ -51,7 +50,7 @@ def resolve_webhook_target(url: str) -> tuple[str, str]:
 
     resolved_ips = [ipaddress.ip_address(addrinfo[4][0]) for addrinfo in addrinfos]
     for ip in resolved_ips:
-        if any(ip in network for network in BLOCKED_PREFIXES):
+        if not _is_public_ip(ip):
             raise ValueError(SSRF_ERROR_MSG)
 
     return str(resolved_ips[0]), url

@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from dataclasses import replace
 import json
+import logging
 from pathlib import Path
 
 from fastapi import FastAPI, Header, Request, status
@@ -30,6 +31,7 @@ from .routes.workspace import router as workspace_router
 from .security import SESSION_COOKIE_NAME, resolve_actor
 
 PACKAGE_DIR = Path(__file__).resolve().parent
+_LOGGER = logging.getLogger(__name__)
 
 
 def create_app(
@@ -132,7 +134,8 @@ def create_app(
         except JsonRpcError as exc:
             response_payload = error_response(request_id, exc)
         except Exception as exc:
-            response_payload = exception_response(request_id, str(exc))
+            _LOGGER.exception("Unexpected error while handling MCP request")
+            response_payload = exception_response(request_id, "Internal server error.")
         finally:
             db.close()
 

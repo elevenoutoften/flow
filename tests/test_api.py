@@ -6,6 +6,8 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 from sqlalchemy import event
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
 from flow_app.config import FLOW_VERSION
 from flow_app.main import create_app
@@ -28,6 +30,59 @@ def create_task(client, **overrides):
     response = client.post("/api/tasks", json=payload)
     assert response.status_code == 201, response.text
     return response.json()
+
+
+def test_integrity_error_returns_generic_message(client, monkeypatch):
+    def fail_commit(self):
+        raise IntegrityError(
+            "INSERT INTO tasks (id, title) VALUES (?, ?)",
+            ("flow_000001", "Conflict Test"),
+            Exception("sqlite UNIQUE constraint failed: tasks.id"),
+        )
+
+    monkeypatch.setattr(Session, "commit", fail_commit)
+
+    response = client.post(
+        "/api/tasks",
+        json={
+            "title": "Conflict Test",
+            "status": "todo",
+            "priority": 50,
+            "project": "default",
+            "description": "Trigger integrity conflict.",
+            "acceptance_criteria": "No SQL detail is exposed.",
+        },
+    )
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail == "Database conflict: the record already exists or violates a constraint."
+    leaked_terms = ["sqlite", "IntegrityError", "UNIQUE", "INSERT INTO", "UPDATE", "projects", "tasks"]
+    for term in leaked_terms:
+        assert term not in detail
+    assert "constraint" in detail or "conflict" in detail.lower()
+
+
+def test_generic_error_returns_no_details(client, monkeypatch):
+    def fail_commit(self):
+        raise RuntimeError("secret internal detail")
+
+    monkeypatch.setattr(Session, "commit", fail_commit)
+
+    response = client.post(
+        "/api/tasks",
+        json={
+            "title": "Generic error task",
+            "status": "todo",
+            "priority": 50,
+            "project": "default",
+            "description": "Trigger commit failure.",
+            "acceptance_criteria": "No internal detail is exposed.",
+        },
+    )
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == "Internal server error."
 
 
 def test_flow_version_is_static_content_hash():

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import HTTPException, Request
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -12,6 +14,7 @@ from ..services.task import TaskService
 from ..services.webhook import WebhookNotFoundError, WebhookService
 from ..telegram import TelegramNotificationProvider
 
+_LOGGER = logging.getLogger(__name__)
 _webhook_notifier = WebhookNotificationProvider()
 _telegram_notifier = TelegramNotificationProvider()
 
@@ -58,7 +61,12 @@ def _commit(db: Session) -> None:
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=409, detail=f"Database conflict: {exc.orig}")
-    except Exception:
+        _LOGGER.warning("Integrity constraint violation: %s", exc.orig)
+        raise HTTPException(
+            status_code=409,
+            detail="Database conflict: the record already exists or violates a constraint.",
+        )
+    except Exception as exc:
         db.rollback()
-        raise HTTPException(status_code=500, detail="Internal server error.")
+        _LOGGER.exception("Unexpected error during database commit")
+        raise HTTPException(status_code=500, detail="Internal server error.") from exc

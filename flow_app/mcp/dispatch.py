@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from importlib.metadata import PackageNotFoundError, version
+import logging
 from typing import Any
 
 from pydantic import ValidationError
@@ -105,6 +106,8 @@ from ..services.workspace import WorkspaceConfigNotFoundError, WorkspaceService
 from ..telegram import TelegramNotificationProvider
 from ..webhooks import WEBHOOK_EVENTS
 
+_LOGGER = logging.getLogger(__name__)
+
 
 def _authorize_task_update_mcp(actor: Actor | None, task: Task, payload) -> None:
     try:
@@ -129,9 +132,14 @@ def _commit(db: Session) -> None:
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise JsonRpcError(-32603, f"Database conflict: {exc.orig}") from exc
+        _LOGGER.warning("Integrity constraint violation: %s", exc.orig)
+        raise JsonRpcError(
+            -32603,
+            "Database conflict: the record already exists or violates a constraint.",
+        ) from exc
     except Exception as exc:
         db.rollback()
+        _LOGGER.exception("Unexpected error during database commit")
         raise JsonRpcError(-32603, "Internal server error.") from exc
 
 

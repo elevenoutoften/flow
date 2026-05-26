@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import logging
+
+from flow_app.mcp import dispatch
 
 
 def rpc(client, method, params=None, request_id=1):
@@ -205,6 +208,38 @@ def test_mcp_flow_create_task_creates_task(client):
     assert task["title"] == "Create task through MCP"
     assert task["acceptance_criteria"] == "Task is persisted."
     assert client.get(f"/api/tasks/{task['id']}").json()["title"] == "Create task through MCP"
+
+
+def test_mcp_unexpected_error_logged(client, monkeypatch, caplog):
+    def fail_commit(_db):
+        raise Exception("unexpected db failure")
+
+    monkeypatch.setattr(dispatch, "_commit", fail_commit)
+
+    with caplog.at_level(logging.ERROR):
+        response = rpc(
+            client,
+            "tools/call",
+            {
+                "name": "flow_create_task",
+                "arguments": {
+                    "title": "Create task through MCP",
+                    "status": "backlog",
+                    "priority": 80,
+                    "project": "default",
+                    "description": "Created over JSON-RPC.",
+                    "acceptance_criteria": "Task is persisted.",
+                },
+            },
+        )
+
+    assert response.status_code == 200
+    error = response.json()["error"]
+    assert error["code"] == -32603
+    assert error["message"] == "Internal server error."
+    assert "unexpected db failure" not in error["message"]
+    assert "Unexpected error while handling MCP request" in caplog.text
+    assert "unexpected db failure" in caplog.text
 
 
 def test_mcp_flow_create_and_update_agent_command_allowlist(client):

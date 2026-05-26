@@ -11,7 +11,6 @@ from sqlalchemy.orm import Session
 
 from .models import ApiKeyRole, AutomationRule, Task, WebhookDelivery
 from .repository import (
-    _split_comma_list,
     add_note,
     get_agent,
     get_agent_by_name,
@@ -22,6 +21,7 @@ from .repository import (
 )
 from .schemas import STATUSES, TaskUpdate
 from .security import Actor, is_valid_transition
+from .storage_helpers import get_agent_capabilities
 
 CONDITION_FIELDS = {
     "status",
@@ -351,7 +351,7 @@ def _first_enabled_agent(session: Session, capability: str | None):
     for agent in list_agents(session, enabled_only=True):
         if capability is None:
             return agent
-        capabilities = set(_split_comma_list(agent.capabilities))
+        capabilities = set(get_agent_capabilities(agent))
         if capability in capabilities:
             return agent
     return None

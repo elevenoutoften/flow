@@ -11,8 +11,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .models import Task, WebhookConfig, WebhookDelivery, utcnow
-from .repository import _split_comma_list, create_webhook_delivery, get_webhook_secret, update_webhook_delivery
+from .repository import create_webhook_delivery, get_webhook_secret, update_webhook_delivery
 from .ssrf import resolve_webhook_target
+from .storage_helpers import get_webhook_events
 
 WEBHOOK_EVENTS = [
     "task_created",
@@ -170,4 +171,4 @@ def _record_failure(
 
 
 def _config_events(config: WebhookConfig) -> set[str]:
-    return set(_split_comma_list(config.events))
+    return set(get_webhook_events(config))

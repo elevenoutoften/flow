@@ -20,6 +20,7 @@ from flow_app.repository import (
 )
 from flow_app.schemas import HandoffRequest, TaskCreate, TaskUpdate
 from flow_app.security import Actor, can_note_task, is_valid_transition
+from flow_app.storage_helpers import get_bool_field
 
 
 class TaskError(Exception):
@@ -129,7 +130,7 @@ class TaskService:
     def update_task(self, task_id: str, payload: TaskUpdate, actor: Actor) -> Task:
         task = self._require_task(task_id)
         expected_version = task.version
-        was_human_required = bool(task.human_required)
+        was_human_required = get_bool_field(task.human_required)
         if payload.human_required is False:
             payload = payload.model_copy(update={"blocker_reason": ""})
         changes = task_update_changes(payload)
@@ -137,7 +138,7 @@ class TaskService:
             self.db.rollback()
             raise TaskConcurrentModificationError(task_id)
         task = self._require_task(task_id)
-        if not was_human_required and bool(task.human_required):
+        if not was_human_required and get_bool_field(task.human_required):
             self._emit_rule(self.db, "task_blocked", task_id=task.id, actor=actor)
             self._webhook.send(
                 self.db,

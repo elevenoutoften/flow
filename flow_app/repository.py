@@ -28,6 +28,16 @@ from .models import (
     WorkspaceConfig,
     utcnow,
 )
+from .storage_helpers import (
+    get_active_bool,
+    get_agent_capabilities,
+    get_agent_dispatch_statuses,
+    get_bool_field,
+    get_comma_list,
+    get_handoff_json_field,
+    get_webhook_events,
+    set_comma_list,
+)
 from .schemas import (
     AgentCreate,
     AgentApiKeyCreate,
@@ -318,9 +328,9 @@ def serialize_agent(agent: Agent) -> AgentResponse:
         id=agent.id,
         name=agent.name,
         description=agent.description,
-        enabled=bool(agent.enabled),
+        enabled=get_bool_field(agent.enabled),
         agent_type=agent.agent_type,
-        capabilities=agent.capabilities,
+        capabilities=set_comma_list(get_agent_capabilities(agent)),
         command=agent.command,
         command_allowlist=agent.command_allowlist,
         env_allowlist=agent.env_allowlist,
@@ -328,7 +338,7 @@ def serialize_agent(agent: Agent) -> AgentResponse:
         max_concurrency=agent.max_concurrency,
         heartbeat_timeout_seconds=agent.heartbeat_timeout_seconds,
         stale_claim_timeout_seconds=agent.stale_claim_timeout_seconds,
-        dispatch_statuses=agent.dispatch_statuses,
+        dispatch_statuses=set_comma_list(get_agent_dispatch_statuses(agent)),
         created_at=_ensure_datetime(agent.created_at),
         updated_at=_ensure_datetime(agent.updated_at),
     )
@@ -457,7 +467,7 @@ def find_capable_agents(session: Session, task: Task) -> list[Agent]:
     keywords = _task_keywords(task)
     capable = []
     for agent in list_agents(session, enabled_only=True):
-        capabilities = [item.lower() for item in _split_comma_list(agent.capabilities)]
+        capabilities = [item.lower() for item in get_comma_list(agent.capabilities)]
         if not capabilities or any(capability in keywords for capability in capabilities):
             capable.append(agent)
     return capable
@@ -528,7 +538,7 @@ def serialize_automation_rule(rule: AutomationRule) -> AutomationRuleResponse:
         id=rule.id,
         name=rule.name,
         description=rule.description,
-        enabled=bool(rule.enabled),
+        enabled=get_bool_field(rule.enabled),
         priority=rule.priority,
         trigger=rule.trigger,
         trigger_config=rule.trigger_config,
@@ -608,7 +618,7 @@ def serialize_workspace_config(config: WorkspaceConfig) -> WorkspaceConfigRespon
         root_dir=config.root_dir,
         scratch_root=config.scratch_root,
         description=config.description,
-        enabled=bool(config.enabled),
+        enabled=get_bool_field(config.enabled),
         created_at=_ensure_datetime(config.created_at),
         updated_at=_ensure_datetime(config.updated_at),
     )
@@ -687,8 +697,8 @@ def serialize_webhook_config(config: WebhookConfig) -> WebhookConfigResponse:
         id=config.id,
         name=config.name,
         url=config.url,
-        events=_split_webhook_events(config.events),
-        active=config.active,
+        events=get_webhook_events(config),
+        active=int(get_active_bool(config.active)),
         max_retries=config.max_retries,
         retry_backoff_seconds=config.retry_backoff_seconds,
         project=config.project,
@@ -899,7 +909,7 @@ def serialize_task_list(task: Task) -> TaskListResponse:
         priority=task.priority,
         project=task.project,
         assignee=task.assignee,
-        human_required=bool(task.human_required),
+        human_required=get_bool_field(task.human_required),
         assignee_type=task.assignee_type,
         blocker_reason=task.blocker_reason,
         complexity=task.complexity,
@@ -1385,15 +1395,15 @@ def serialize_task_handoff(handoff: TaskHandoff) -> HandoffResponse:
         task_id=handoff.task_id,
         author=handoff.author,
         summary=handoff.summary,
-        changed_files=_load_json_list(handoff.changed_files),
-        commands_run=_load_json_list(handoff.commands_run),
-        tests_run=_load_json_list(handoff.tests_run),
-        artifacts=_load_json_list(handoff.artifacts),
-        attempted_but_failed=_load_json_list(handoff.attempted_but_failed),
+        changed_files=get_handoff_json_field(handoff, "changed_files"),
+        commands_run=get_handoff_json_field(handoff, "commands_run"),
+        tests_run=get_handoff_json_field(handoff, "tests_run"),
+        artifacts=get_handoff_json_field(handoff, "artifacts"),
+        attempted_but_failed=get_handoff_json_field(handoff, "attempted_but_failed"),
         remaining_work=handoff.remaining_work,
         outcome=handoff.outcome,
         next_recommended_agent=handoff.next_recommended_agent,
-        capabilities=_load_json_list(handoff.capabilities),
+        capabilities=get_handoff_json_field(handoff, "capabilities"),
         created_at=_ensure_datetime(handoff.created_at),
     )
 
@@ -1419,7 +1429,7 @@ def serialize_task(task: Task) -> TaskResponse:
         priority=task.priority,
         project=task.project,
         assignee=task.assignee,
-        human_required=bool(task.human_required),
+        human_required=get_bool_field(task.human_required),
         assignee_type=task.assignee_type,
         blocker_reason=task.blocker_reason,
         complexity=task.complexity,
@@ -1560,11 +1570,11 @@ def _join_webhook_events(events: list[str]) -> str:
 
 
 def _split_webhook_events(events: str) -> list[str]:
-    return _split_comma_list(events)
+    return get_comma_list(events)
 
 
 def get_webhook_secret(config: WebhookConfig) -> str | None:
-    if config.secret_encrypted:
+    if get_bool_field(config.secret_encrypted):
         from .security import decrypt_secret
 
         return decrypt_secret(config.secret)
@@ -1572,7 +1582,7 @@ def get_webhook_secret(config: WebhookConfig) -> str | None:
 
 
 def _migrate_webhook_secret_if_possible(session: Session, config: WebhookConfig) -> None:
-    if config.secret_encrypted or not _webhook_encryption_enabled():
+    if get_bool_field(config.secret_encrypted) or not _webhook_encryption_enabled():
         return
     plaintext = config.secret
     config.secret = _encrypt_webhook_secret_for_storage(plaintext)
@@ -1620,15 +1630,14 @@ def _truncate_utf8(value: str, max_bytes: int, suffix: str = "") -> str:
 
 
 def _load_json_list(value: str) -> list:
-    try:
-        parsed = json.loads(value or "[]")
-    except json.JSONDecodeError:
-        _logger.warning("Malformed JSON list in stored data, returning empty list: %r", (value or "")[:100])
-        return []
-    return parsed if isinstance(parsed, list) else []
+    # Deprecated: prefer flow_app.storage_helpers.get_json_list for typed reads.
+    from .storage_helpers import get_json_list
+
+    return get_json_list(value)
 
 
 def _split_comma_list(value: str | None) -> list[str]:
+    # Deprecated: prefer flow_app.storage_helpers.get_comma_list for typed reads.
     """Parse a comma-separated string into a list of stripped, non-empty items."""
     if not value:
         return []

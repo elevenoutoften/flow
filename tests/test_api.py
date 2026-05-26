@@ -10,6 +10,7 @@ from sqlalchemy import event
 from flow_app.config import FLOW_VERSION
 from flow_app.main import create_app
 from flow_app.models import Task
+from flow_app.repository import create_agent_run, create_webhook_delivery
 from flow_app.schemas import ApiKeyRole
 from flow_app.security import SESSION_COOKIE_NAME, Actor, Permission, ROLE_PERMISSIONS, sign_session
 
@@ -135,6 +136,110 @@ def test_list_tasks_pagination_metadata_and_bounds(client):
     assert beyond.json()["items"] == []
 
     assert client.get("/api/tasks", params={"limit": 501}).status_code == 422
+
+
+def test_list_ideas_pagination_metadata_and_bounds(client):
+    for index in range(105):
+        response = client.post("/api/ideas", json={"title": f"Page idea {index:03d}"})
+        assert response.status_code == 201, response.text
+
+    default_page = client.get("/api/ideas")
+    assert default_page.status_code == 200
+    default_body = default_page.json()
+    assert len(default_body["items"]) == 100
+    assert default_body["total"] == 105
+    assert default_body["limit"] == 100
+    assert default_body["offset"] == 0
+
+    page = client.get("/api/ideas", params={"limit": 3, "offset": 2})
+    assert page.status_code == 200
+    body = page.json()
+    assert body["total"] == 105
+    assert body["limit"] == 3
+    assert body["offset"] == 2
+    assert len(body["items"]) == 3
+
+    beyond = client.get("/api/ideas", params={"limit": 10, "offset": 999})
+    assert beyond.status_code == 200
+    assert beyond.json()["items"] == []
+
+    assert client.get("/api/ideas", params={"limit": 501}).status_code == 422
+
+
+def test_list_agent_runs_pagination_metadata_and_bounds(client):
+    agent_response = client.post("/api/agents", json={"name": "pagination-agent", "command": "echo"})
+    assert agent_response.status_code == 201, agent_response.text
+    agent_id = agent_response.json()["id"]
+
+    task = create_task(client, title="Run task", project="default")
+
+    with client.app.state.SessionLocal() as db:
+        for _ in range(105):
+            create_agent_run(db, agent_id=agent_id, task_id=task["id"], status="running")
+        db.commit()
+
+    default_page = client.get("/api/agent-runs")
+    assert default_page.status_code == 200
+    default_body = default_page.json()
+    assert len(default_body["items"]) == 100
+    assert default_body["total"] == 105
+    assert default_body["limit"] == 100
+    assert default_body["offset"] == 0
+
+    page = client.get("/api/agent-runs", params={"limit": 3, "offset": 2})
+    assert page.status_code == 200
+    body = page.json()
+    assert body["total"] == 105
+    assert body["limit"] == 3
+    assert body["offset"] == 2
+    assert len(body["items"]) == 3
+
+    beyond = client.get("/api/agent-runs", params={"limit": 10, "offset": 999})
+    assert beyond.status_code == 200
+    assert beyond.json()["items"] == []
+
+    assert client.get("/api/agent-runs", params={"limit": 501}).status_code == 422
+
+
+def test_list_webhook_deliveries_pagination_metadata_and_bounds(client):
+    webhook_response = client.post(
+        "/api/webhooks",
+        json={
+            "name": "pagination-wh",
+            "url": "https://example.com/hook",
+            "events": ["task_created"],
+            "project": "default",
+        },
+    )
+    assert webhook_response.status_code == 201, webhook_response.text
+    webhook_id = webhook_response.json()["id"]
+
+    with client.app.state.SessionLocal() as db:
+        for index in range(105):
+            create_webhook_delivery(db, webhook_id, "task_created", f'{{"i":{index}}}')
+        db.commit()
+
+    default_page = client.get(f"/api/webhooks/{webhook_id}/deliveries")
+    assert default_page.status_code == 200
+    default_body = default_page.json()
+    assert len(default_body["items"]) == 100
+    assert default_body["total"] == 105
+    assert default_body["limit"] == 100
+    assert default_body["offset"] == 0
+
+    page = client.get(f"/api/webhooks/{webhook_id}/deliveries", params={"limit": 3, "offset": 2})
+    assert page.status_code == 200
+    body = page.json()
+    assert body["total"] == 105
+    assert body["limit"] == 3
+    assert body["offset"] == 2
+    assert len(body["items"]) == 3
+
+    beyond = client.get(f"/api/webhooks/{webhook_id}/deliveries", params={"limit": 10, "offset": 999})
+    assert beyond.status_code == 200
+    assert beyond.json()["items"] == []
+
+    assert client.get(f"/api/webhooks/{webhook_id}/deliveries", params={"limit": 501}).status_code == 422
 
 
 def test_api_key_create_list_and_revoke(client):

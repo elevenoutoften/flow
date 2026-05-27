@@ -89,3 +89,53 @@ This read tool requires `handoff:read`.
 `read_only` can read handoff records but cannot create them.
 
 `implementer` and `reviewer` can create handoffs with `handoff:create`. This lets ordinary worker agents preserve context while still preventing them from creating tasks, managing keys, or bypassing normal task transition rules.
+
+## Dispatched Agent Context
+
+When an agent is dispatched to work on a task, the wrapper (e.g. `hermes_wrapper`) injects structured context into the agent's prompt. This context is built by `build_task_context_bundle()` and appended to the task's title, description, and acceptance criteria.
+
+The context bundle is transport-agnostic: any wrapper or agent client can call the same REST endpoints (`GET /api/tasks/{task_id}/dependencies` and `GET /api/tasks/{task_id}/handoffs`) and use the same formatting logic.
+
+### Dependency Context (`## Dependency Context`)
+
+Shown when the task has blocking dependencies:
+
+```
+## Dependency Context
+Blocked by:
+  - flow_000001 (Some parent task) — status: done
+Blocking:
+  - flow_000003 (Some child task) — status: todo
+```
+
+- **Blocked by**: Tasks that this task depends on. Lists up to 10, with a truncation marker if there are more.
+- **Blocking**: Tasks that depend on this task. Lists up to 10, with a truncation marker if there are more.
+- Each entry shows task ID, title, and current status.
+- If no dependencies exist, the entire section is omitted.
+
+### Handoff Context (`## Handoff Context`)
+
+Shown when at least one handoff record exists for the task:
+
+```
+## Handoff Context
+Latest handoff by hermes:
+  Outcome: success
+  Summary: Implemented the API route.
+  Remaining work: Fix the migration and add remaining API routes.
+  Attempted but failed: Database migration failed
+  Tests run: tests/test_api.py
+  Next recommended agent: reviewer
+  Changed files: flow_app/main.py
+  (2 earlier handoff(s) not shown)
+```
+
+- Shows only the **latest** handoff (newest first from the API).
+- Individual field values are capped at 500 characters with a `…[truncated]` marker.
+- The entire handoff block is bounded at 4000 total characters with a `[context truncated]` marker.
+- Lists up to 5 items for multi-value fields (tests_run, changed_files, attempted_but_failed) before truncating.
+- If no handoffs exist, the entire section is omitted.
+
+### Graceful Fallback
+
+If the dependency or handoff API endpoints are unavailable, return empty data, or the task has no records, the corresponding section is omitted from the prompt. The dispatch still proceeds normally — context is additive, never blocking.

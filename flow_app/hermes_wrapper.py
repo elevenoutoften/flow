@@ -28,6 +28,10 @@ REQUIRED_ENV_VARS = ("FLOW_TASK_ID", "FLOW_PROJECT", "FLOW_BASE_URL", "FLOW_API_
 DEFAULT_HERMES_COMMAND = "hermes run"
 DEFAULT_HERMES_TIMEOUT = 600
 MAX_NOTE_CHARS = 12000
+MAX_CONTEXT_CHARS = 4000
+MAX_DEPENDENCY_ITEMS = 10
+MAX_HANDOFF_ITEMS = 5
+MAX_HANDOFF_FIELD_CHARS = 500
 
 
 @dataclass(frozen=True)
@@ -93,6 +97,136 @@ def get_task(task_id: str) -> dict[str, Any]:
     return flow_request("GET", f"/api/tasks/{task_id}")
 
 
+def get_dependency_summary(task_id: str) -> dict[str, Any] | None:
+    """Fetch dependency summary via the REST API. Returns None on failure."""
+    try:
+        return flow_request("GET", f"/api/tasks/{task_id}/dependencies")
+    except Exception:
+        return None
+
+
+def get_task_handoffs(task_id: str) -> list[dict[str, Any]] | None:
+    """Fetch handoff list via the REST API. Returns None on failure."""
+    try:
+        return flow_request("GET", f"/api/tasks/{task_id}/handoffs")
+    except Exception:
+        return None
+
+
+def _truncate_context(value: str, limit: int = MAX_HANDOFF_FIELD_CHARS) -> str:
+    """Truncate a single text field value with a visible marker."""
+    if len(value) <= limit:
+        return value
+    return value[:limit].rstrip() + "…[truncated]"
+
+
+def _format_dependency_block(dep: dict[str, Any] | None) -> str:
+    """Build a dependency context block for the dispatched agent prompt."""
+    if dep is None:
+        return ""
+    lines: list[str] = []
+    blocked_by = dep.get("blocked_by_tasks") or []
+    blocking = dep.get("blocking_tasks") or []
+
+    if blocked_by:
+        lines.append("Blocked by:")
+        for task in blocked_by[:MAX_DEPENDENCY_ITEMS]:
+            lines.append(
+                f"  - {task.get('id', '?')} ({task.get('title', '?')}) — status: {task.get('status', '?')}"
+            )
+        if len(blocked_by) > MAX_DEPENDENCY_ITEMS:
+            lines.append(f"  … and {len(blocked_by) - MAX_DEPENDENCY_ITEMS} more blocked-by tasks [truncated]")
+
+    if blocking:
+        lines.append("Blocking:")
+        for task in blocking[:MAX_DEPENDENCY_ITEMS]:
+            lines.append(
+                f"  - {task.get('id', '?')} ({task.get('title', '?')}) — status: {task.get('status', '?')}"
+            )
+        if len(blocking) > MAX_DEPENDENCY_ITEMS:
+            lines.append(f"  … and {len(blocking) - MAX_DEPENDENCY_ITEMS} more blocking tasks [truncated]")
+
+    return "\n".join(lines)
+
+
+def _format_handoff_block(handoffs: list[dict[str, Any]] | None) -> str:
+    """Build the latest handoff context block for the dispatched agent prompt."""
+    if not handoffs:
+        return ""
+    lines: list[str] = []
+    latest = handoffs[0]  # newest first from API
+
+    lines.append(f"Latest handoff by {latest.get('author', '?')}:")
+    lines.append(f"  Outcome: {latest.get('outcome', '?')}")
+    summary = latest.get("summary", "")
+    if summary:
+        lines.append(f"  Summary: {_truncate_context(summary)}")
+
+    remaining = latest.get("remaining_work", "")
+    if remaining:
+        lines.append(f"  Remaining work: {_truncate_context(remaining)}")
+
+    attempted = latest.get("attempted_but_failed") or []
+    if attempted:
+        lines.append(f"  Attempted but failed: {_truncate_context(', '.join(attempted))}")
+
+    tests_run = latest.get("tests_run") or []
+    if tests_run:
+        lines.append(f"  Tests run: {', '.join(tests_run[:MAX_HANDOFF_ITEMS])}")
+        if len(tests_run) > MAX_HANDOFF_ITEMS:
+            lines.append(f"    … and {len(tests_run) - MAX_HANDOFF_ITEMS} more [truncated]")
+
+    next_agent = latest.get("next_recommended_agent")
+    if next_agent:
+        lines.append(f"  Next recommended agent: {next_agent}")
+
+    changed_files = latest.get("changed_files") or []
+    if changed_files:
+        lines.append(f"  Changed files: {', '.join(changed_files[:MAX_HANDOFF_ITEMS])}")
+        if len(changed_files) > MAX_HANDOFF_ITEMS:
+            lines.append(f"    … and {len(changed_files) - MAX_HANDOFF_ITEMS} more [truncated]")
+
+    # Show previous handoffs count if there are more
+    if len(handoffs) > 1:
+        lines.append(f"  ({len(handoffs) - 1} earlier handoff(s) not shown)")
+
+    result = "\n".join(lines)
+    return _truncate_to(result, MAX_CONTEXT_CHARS)
+
+
+def _truncate_to(value: str, limit: int) -> str:
+    """Bound the entire block to a max character count with a visible marker."""
+    if len(value) <= limit:
+        return value
+    return value[:limit].rstrip() + "\n…[context truncated]"
+
+
+def build_task_context_bundle(task: dict[str, Any]) -> str:
+    """Build a transport-agnostic context bundle with dependencies and handoff info.
+
+    This helper is designed to be reusable by any wrapper/agent client, not just
+    the Hermes wrapper. It fetches dependency summaries and handoff records via
+    the Flow REST API and returns a formatted string ready to be injected into a
+    dispatched agent prompt.
+
+    Gracefully falls back when dependencies or handoffs are absent or unavailable.
+    """
+    task_id = task.get("id", "?")
+    dep = get_dependency_summary(task_id)
+    handoffs = get_task_handoffs(task_id)
+
+    parts: list[str] = []
+    dep_block = _format_dependency_block(dep)
+    if dep_block:
+        parts.extend(["## Dependency Context", dep_block, ""])
+
+    handoff_block = _format_handoff_block(handoffs)
+    if handoff_block:
+        parts.extend(["## Handoff Context", handoff_block, ""])
+
+    return "\n".join(parts).strip()
+
+
 def claim_task(task_id: str, assignee: str) -> dict[str, Any]:
     return flow_request("POST", f"/api/tasks/{task_id}/claim", {"agent_name": assignee})
 
@@ -147,22 +281,27 @@ def build_prompt(task: dict[str, Any], config: WrapperConfig) -> str:
     title = task.get("title") or config.task_id
     description = task.get("description") or "(none)"
     acceptance = task.get("acceptance_criteria") or "(none)"
-    return "\n".join(
-        [
-            "You are Hermes running inside Flow's dogfood dispatcher.",
-            f"Task ID: {config.task_id}",
-            f"Project: {config.project}",
-            f"Title: {title}",
-            "",
-            "Description:",
-            description,
-            "",
-            "Acceptance Criteria:",
-            acceptance,
-            "",
-            "Implement the task in the current workspace. When finished, leave a concise summary of the work performed.",
-        ]
+    parts = [
+        "You are Hermes running inside Flow's dogfood dispatcher.",
+        f"Task ID: {config.task_id}",
+        f"Project: {config.project}",
+        f"Title: {title}",
+        "",
+        "Description:",
+        description,
+        "",
+        "Acceptance Criteria:",
+        acceptance,
+        "",
+    ]
+    ctx = build_task_context_bundle(task)
+    if ctx:
+        parts.append(ctx)
+        parts.append("")
+    parts.append(
+        "Implement the task in the current workspace. When finished, leave a concise summary of the work performed."
     )
+    return "\n".join(parts)
 
 
 def run_hermes(command: str, prompt: str, timeout: int) -> subprocess.CompletedProcess[str]:

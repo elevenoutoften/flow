@@ -78,7 +78,7 @@ def decrypt_secret(ciphertext: str) -> str | None:
     key = get_settings().webhook_encryption_key
     if not key:
         _warn_plaintext_webhook_secret()
-        return ciphertext
+        return None
     try:
         return Fernet(key.encode("utf-8")).decrypt(ciphertext.encode("utf-8")).decode("utf-8")
     except InvalidToken:

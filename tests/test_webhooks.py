@@ -304,6 +304,77 @@ def test_webhook_secret_encrypted_round_trip_and_signing(tmp_path, monkeypatch):
         client.__exit__(None, None, None)
 
 
+def test_webhook_secret_decrypt_fails_when_key_missing(tmp_path, monkeypatch):
+    key = Fernet.generate_key().decode("utf-8")
+    client = configured_client(tmp_path, monkeypatch, FLOW_WEBHOOK_ENCRYPTION_KEY=key)
+    try:
+        config_data = create_webhook(client, max_retries=1)
+        raw_secret = config_data["secret"]
+
+        with client.app.state.SessionLocal() as db:
+            config = get_webhook_config(db, config_data["id"])
+            assert config is not None
+            assert config.secret_encrypted == 1
+            assert get_webhook_secret(config) == raw_secret
+
+            monkeypatch.setenv("FLOW_WEBHOOK_ENCRYPTION_KEY", "")
+            reset_settings_cache()
+            assert get_webhook_secret(config) is None
+
+            delivery = create_webhook_delivery(db, config.id, "task_created", '{"ok":true}')
+            db.commit()
+            delivery_id = delivery.id
+
+            with patch("flow_app.webhooks.httpx.Client") as client_cls:
+                deliver_webhook(db, delivery, config)
+                db.commit()
+
+            saved = get_webhook_delivery(db, delivery_id)
+            assert saved is not None
+            assert saved.status == "failed"
+            assert saved.attempts == 1
+            assert saved.last_response_code is None
+            assert saved.last_response_body == "Webhook secret could not be decrypted."
+            client_cls.assert_not_called()
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_webhook_secret_decrypt_fails_with_wrong_key(tmp_path, monkeypatch):
+    key_a = Fernet.generate_key().decode("utf-8")
+    key_b = Fernet.generate_key().decode("utf-8")
+    client = configured_client(tmp_path, monkeypatch, FLOW_WEBHOOK_ENCRYPTION_KEY=key_a)
+    try:
+        config_data = create_webhook(client, max_retries=1)
+
+        monkeypatch.setenv("FLOW_WEBHOOK_ENCRYPTION_KEY", key_b)
+        reset_settings_cache()
+
+        with client.app.state.SessionLocal() as db:
+            config = get_webhook_config(db, config_data["id"])
+            assert config is not None
+            assert config.secret_encrypted == 1
+            assert get_webhook_secret(config) is None
+
+            delivery = create_webhook_delivery(db, config.id, "task_created", '{"ok":true}')
+            db.commit()
+            delivery_id = delivery.id
+
+            with patch("flow_app.webhooks.httpx.Client") as client_cls:
+                deliver_webhook(db, delivery, config)
+                db.commit()
+
+            saved = get_webhook_delivery(db, delivery_id)
+            assert saved is not None
+            assert saved.status == "failed"
+            assert saved.attempts == 1
+            assert saved.last_response_code is None
+            assert saved.last_response_body == "Webhook secret could not be decrypted."
+            client_cls.assert_not_called()
+    finally:
+        client.__exit__(None, None, None)
+
+
 def test_webhook_key_rotation_re_encrypts_secrets(tmp_path, monkeypatch):
     old_key = Fernet.generate_key().decode("utf-8")
     new_key = Fernet.generate_key().decode("utf-8")

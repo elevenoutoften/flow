@@ -4,11 +4,17 @@ import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+from sqlalchemy.orm import Session
+
 from flow_app.models import ApiKeyRole, AutomationRule
+from flow_app.models import Task
+from flow_app.notifications import NotificationProvider, RulesNotifyProvider
+from flow_app.notifications import _registry as notification_registry
 from flow_app.repository import get_task
 from flow_app.runner import _run_cron_rules
 from flow_app.rules_engine import emit_event
 from flow_app.rules_engine import evaluate_conditions
+from flow_app.rules_engine import set_notify_provider
 from flow_app.security import Actor
 
 
@@ -42,6 +48,24 @@ def create_rule(client, **overrides):
 
 def bearer_headers(api_key: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {api_key}"}
+
+
+class RecordingNotificationProvider(NotificationProvider):
+    def __init__(self) -> None:
+        self.calls = []
+
+    def send(self, db: Session, event: str, task: Task, changes: dict | None = None) -> None:
+        self.calls.append({"event": event, "task_id": task.id, "changes": changes})
+
+
+class FailingNotificationProvider(NotificationProvider):
+    def send(self, db: Session, event: str, task: Task, changes: dict | None = None) -> None:
+        raise RuntimeError("provider unavailable")
+
+
+def reset_notify_provider() -> None:
+    set_notify_provider(None)
+    notification_registry.clear()
 
 
 def test_rule_crud_create_list_get_update_enable_disable(client):
@@ -357,6 +381,88 @@ def test_rule_add_note_and_notify_actions_execute_once(client):
     bodies = [note["body"] for note in notes]
     assert bodies.count("Escalated by automation.") == 1
     assert bodies.count("[notification:ops] High priority task.") == 1
+
+
+def test_notify_action_routes_through_telegram_provider(client):
+    reset_notify_provider()
+    provider = RecordingNotificationProvider()
+    set_notify_provider(RulesNotifyProvider(telegram_provider=provider))
+    task = create_task(client)
+    create_rule(client, actions=json.dumps([{"type": "notify", "channel": "telegram", "message": "Alert!"}]))
+
+    try:
+        response = client.post("/api/automation-rules/evaluate", json={"trigger": "task_created", "task_id": task["id"]})
+    finally:
+        reset_notify_provider()
+
+    result = response.json()["matches"][0]["action_results"][0]
+    provider_result = result["details"]["provider_result"]
+    assert provider.calls == [
+        {"event": "automation_notify", "task_id": task["id"], "changes": {"notify_message": "Alert!"}}
+    ]
+    assert provider_result["provider"] == "telegram"
+    assert provider_result["status"] == "sent"
+
+
+def test_notify_action_falls_back_to_note_when_no_provider(client):
+    reset_notify_provider()
+    set_notify_provider(RulesNotifyProvider())
+    task = create_task(client)
+    create_rule(client, actions=json.dumps([{"type": "notify", "channel": "slack", "message": "Ping"}]))
+
+    try:
+        response = client.post("/api/automation-rules/evaluate", json={"trigger": "task_created", "task_id": task["id"]})
+    finally:
+        reset_notify_provider()
+
+    result = response.json()["matches"][0]["action_results"][0]
+    provider_result = result["details"]["provider_result"]
+    assert provider_result["provider"] == "note_fallback"
+    assert provider_result["status"] == "no_provider"
+
+    notes = client.get(f"/api/tasks/{task['id']}").json()["notes"]
+    assert "[notification:slack] Ping" in [note["body"] for note in notes]
+
+
+def test_notify_action_handles_provider_failure(client):
+    reset_notify_provider()
+    set_notify_provider(RulesNotifyProvider(telegram_provider=FailingNotificationProvider()))
+    task = create_task(client)
+    create_rule(client, actions=json.dumps([{"type": "notify", "channel": "telegram", "message": "Oops"}]))
+
+    try:
+        response = client.post("/api/automation-rules/evaluate", json={"trigger": "task_created", "task_id": task["id"]})
+    finally:
+        reset_notify_provider()
+
+    result = response.json()["matches"][0]["action_results"][0]
+    provider_result = result["details"]["provider_result"]
+    assert result["success"] is True
+    assert provider_result["status"] == "failed"
+    assert provider_result["details"]["error"] == "provider unavailable"
+
+    notes = client.get(f"/api/tasks/{task['id']}").json()["notes"]
+    assert "[notification:telegram] Oops" in [note["body"] for note in notes]
+
+
+def test_notify_action_idempotent_does_not_recall_provider(client):
+    reset_notify_provider()
+    provider = RecordingNotificationProvider()
+    set_notify_provider(RulesNotifyProvider(telegram_provider=provider))
+    task = create_task(client)
+    create_rule(client, actions=json.dumps([{"type": "notify", "channel": "telegram", "message": "Alert!"}]))
+
+    try:
+        first = client.post("/api/automation-rules/evaluate", json={"trigger": "task_created", "task_id": task["id"]})
+        second = client.post("/api/automation-rules/evaluate", json={"trigger": "task_created", "task_id": task["id"]})
+    finally:
+        reset_notify_provider()
+
+    first_result = first.json()["matches"][0]["action_results"][0]
+    second_result = second.json()["matches"][0]["action_results"][0]
+    assert first_result["details"]["provider_result"]["status"] == "sent"
+    assert second_result["details"]["idempotent"] is True
+    assert len(provider.calls) == 1
 
 
 def test_rule_spawn_action_dispatches_agent_and_reports_failures(client, monkeypatch):

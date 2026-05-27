@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .models import ApiKeyRole, AutomationRule, Task, WebhookDelivery
+from .notifications import RulesNotifyProvider
 from .repository import (
     add_note,
     get_agent,
@@ -35,6 +36,7 @@ CONDITION_FIELDS = {
 }
 CONDITION_OPERATORS = {"eq", "ne", "in", "not_in", "contains", "gt", "lt", "gte", "lte", "exists", "not_exists"}
 TRIGGERS = {"task_created", "task_moved", "task_claimed", "task_completed", "task_blocked", "cron"}
+_notify_provider: RulesNotifyProvider | None = None
 
 
 @dataclass
@@ -57,6 +59,11 @@ class ActionResult:
         if self.details:
             payload["details"] = self.details
         return payload
+
+
+def set_notify_provider(provider: RulesNotifyProvider | None) -> None:
+    global _notify_provider
+    _notify_provider = provider
 
 
 def evaluate_conditions(conditions: list[dict], task_data: dict) -> bool:
@@ -318,8 +325,20 @@ def _execute_notify(session: Session, task: Task | None, action: dict) -> Action
     body = f"[notification:{channel}] {message}"
     if _has_note(task, body, "automation"):
         return ActionResult("notify", True, "Notification already recorded.", {"channel": channel, "idempotent": True})
+
     note = add_note(session, task, body, author="automation")
-    return ActionResult("notify", True, "Notification recorded.", {"channel": channel, "note_id": note.id})
+    details: dict[str, Any] = {"channel": channel, "note_id": note.id}
+    if _notify_provider is not None:
+        result = _notify_provider.send(session, channel, "automation_notify", task, message)
+        details["provider_result"] = result
+        if result["status"] == "sent":
+            return ActionResult("notify", True, f"Notification sent via {result['provider']}.", details)
+        if result["status"] == "failed":
+            error = (result.get("details") or {}).get("error", "unknown")
+            return ActionResult("notify", True, f"Notification note recorded; provider failed: {error}", details)
+        return ActionResult("notify", True, f"Notification recorded as note (no provider for '{channel}').", details)
+
+    return ActionResult("notify", True, "Notification recorded.", details)
 
 
 def _execute_webhook(session: Session, task: Task | None, action: dict, trigger: str, data: dict) -> ActionResult:

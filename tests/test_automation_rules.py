@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from flow_app.models import ApiKeyRole, AutomationRule
 from flow_app.models import Task
-from flow_app.notifications import NotificationProvider, RulesNotifyProvider
+from flow_app.notifications import NotificationProvider, RulesNotifyProvider, register_notification_provider
 from flow_app.notifications import _registry as notification_registry
 from flow_app.repository import get_task
 from flow_app.runner import _run_cron_rules
@@ -401,6 +401,28 @@ def test_notify_action_routes_through_telegram_provider(client):
         {"event": "automation_notify", "task_id": task["id"], "changes": {"notify_message": "Alert!"}}
     ]
     assert provider_result["provider"] == "telegram"
+    assert provider_result["status"] == "sent"
+
+
+def test_notify_action_routes_through_discord_provider(client):
+    reset_notify_provider()
+    set_notify_provider(RulesNotifyProvider(telegram_provider=RecordingNotificationProvider()))
+    discord_provider = RecordingNotificationProvider()
+    register_notification_provider("discord", discord_provider)
+    task = create_task(client)
+    create_rule(client, actions=json.dumps([{"type": "notify", "channel": "discord", "message": "Deploy done!"}]))
+
+    try:
+        response = client.post("/api/automation-rules/evaluate", json={"trigger": "task_created", "task_id": task["id"]})
+    finally:
+        reset_notify_provider()
+
+    result = response.json()["matches"][0]["action_results"][0]
+    provider_result = result["details"]["provider_result"]
+    assert discord_provider.calls == [
+        {"event": "automation_notify", "task_id": task["id"], "changes": {"notify_message": "Deploy done!"}}
+    ]
+    assert provider_result["provider"] == "discord"
     assert provider_result["status"] == "sent"
 
 

@@ -7,7 +7,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..models import Task
-from ..notifications import RulesNotifyProvider, WebhookNotificationProvider
+from ..discord import DiscordNotificationProvider
+from ..notifications import RulesNotifyProvider, WebhookNotificationProvider, register_notification_provider
 from ..repository import require_task
 from ..rules_engine import emit_event as emit_rule_event
 from ..rules_engine import set_notify_provider
@@ -18,7 +19,9 @@ from ..telegram import TelegramNotificationProvider
 _LOGGER = logging.getLogger(__name__)
 _webhook_notifier = WebhookNotificationProvider()
 _telegram_notifier = TelegramNotificationProvider()
+_discord_notifier = DiscordNotificationProvider()
 _notify_provider = RulesNotifyProvider(telegram_provider=_telegram_notifier)
+register_notification_provider("discord", _discord_notifier)
 set_notify_provider(_notify_provider)
 
 
@@ -36,6 +39,7 @@ def _make_task_service(db: Session) -> TaskService:
         commit_fn=_commit,
         webhook_notifier=_webhook_notifier,
         telegram_notifier=_telegram_notifier,
+        discord_notifier=_discord_notifier,
         rule_emitter=emit_rule_event,
     )
 

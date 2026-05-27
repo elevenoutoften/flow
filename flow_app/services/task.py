@@ -93,11 +93,20 @@ class TaskService:
     not be committed unless its associated delivery rows are committed too.
     """
 
-    def __init__(self, db: Session, commit_fn: Callable[[Session], None], webhook_notifier, telegram_notifier, rule_emitter):
+    def __init__(
+        self,
+        db: Session,
+        commit_fn: Callable[[Session], None],
+        webhook_notifier,
+        telegram_notifier,
+        discord_notifier=None,
+        rule_emitter=None,
+    ):
         self.db = db
         self._commit = commit_fn
         self._webhook = webhook_notifier
         self._telegram = telegram_notifier
+        self._discord = discord_notifier
         self._emit_rule = rule_emitter
 
     def create_task(self, payload: TaskCreate, actor: Actor | None = None) -> Task:
@@ -105,6 +114,8 @@ class TaskService:
         self._emit_rule(self.db, "task_created", task_id=task.id, actor=actor)
         self._webhook.send(self.db, "task_created", task)
         self._telegram.send(self.db, "task_created", task)
+        if self._discord is not None:
+            self._discord.send(self.db, "task_created", task)
         self._commit(self.db)
         return task
 
@@ -152,6 +163,13 @@ class TaskService:
                 task,
                 {"human_required": True, "blocker_reason": task.blocker_reason},
             )
+            if self._discord is not None:
+                self._discord.send(
+                    self.db,
+                    "task_blocked",
+                    task,
+                    {"human_required": True, "blocker_reason": task.blocker_reason},
+                )
         self._commit(self.db)
         return task
 
@@ -184,6 +202,8 @@ class TaskService:
         data = {"status": {"from": old_status, "to": task.status}, "assignee": task.assignee}
         self._webhook.send(self.db, "task_claimed", task, data)
         self._telegram.send(self.db, "task_claimed", task, data)
+        if self._discord is not None:
+            self._discord.send(self.db, "task_claimed", task, data)
         self._commit(self.db)
         return task
 
@@ -237,6 +257,8 @@ class TaskService:
         data = {"status": {"from": old_status, "to": task.status}}
         self._webhook.send(self.db, "task_moved", task, data)
         self._telegram.send(self.db, "task_moved", task, data)
+        if self._discord is not None:
+            self._discord.send(self.db, "task_moved", task, data)
         self._commit(self.db)
         return task
 
@@ -289,6 +311,8 @@ class TaskService:
         data = {"status": {"from": old_status, "to": "done"}}
         self._webhook.send(self.db, "task_completed", task, data)
         self._telegram.send(self.db, "task_completed", task, data)
+        if self._discord is not None:
+            self._discord.send(self.db, "task_completed", task, data)
         self._commit(self.db)
         return self._require_task(task_id)
 

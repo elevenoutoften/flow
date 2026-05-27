@@ -82,6 +82,7 @@ class FlowSettings:
     session_cookie_secure: bool
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
+    discord_webhook_url: str = ""
     webhook_encryption_key: str | None = None
     max_webhook_payload_bytes: int = 65536
     max_webhook_response_bytes: int = 4096
@@ -120,6 +121,7 @@ def get_settings() -> FlowSettings:
         session_cookie_secure=_env_bool("FLOW_SESSION_COOKIE_SECURE", default=False),
         telegram_bot_token=_env("FLOW_TELEGRAM_BOT_TOKEN", ""),
         telegram_chat_id=_env("FLOW_TELEGRAM_CHAT_ID", ""),
+        discord_webhook_url=_env("FLOW_DISCORD_WEBHOOK_URL", ""),
         webhook_encryption_key=_validate_fernet_key(_env_optional("FLOW_WEBHOOK_ENCRYPTION_KEY")),
         max_webhook_payload_bytes=_env_int("FLOW_MAX_WEBHOOK_PAYLOAD_BYTES", 65536),
         max_webhook_response_bytes=_env_int("FLOW_MAX_WEBHOOK_RESPONSE_BYTES", 4096),

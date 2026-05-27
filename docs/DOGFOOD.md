@@ -170,12 +170,16 @@ Set these environment variables to notify humans in Telegram when task events fi
 | --- | --- |
 | `FLOW_TELEGRAM_BOT_TOKEN` | Bot token from @BotFather. |
 | `FLOW_TELEGRAM_CHAT_ID` | Chat ID for notifications, either a DM or group. |
+| `FLOW_DISCORD_WEBHOOK_URL` | Discord webhook URL for notifications on the `discord` channel. |
 
 ```bash
 export FLOW_TELEGRAM_BOT_TOKEN="123456:ABC-DEF..."
 export FLOW_TELEGRAM_CHAT_ID="-1001234567890"
+export FLOW_DISCORD_WEBHOOK_URL="https://discord.com/api/webhooks/..."
 uvicorn flow_app.main:app --port 8100
 ```
+
+Discord notifications are optional deployment setup. Local tests do not require a real webhook URL.
 
 Dogfood rule examples:
 

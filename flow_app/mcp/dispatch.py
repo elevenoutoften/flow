@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..config import DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT, default_project
+from ..discord import DiscordNotificationProvider
 from ..dispatcher import DispatchError
 from ..models import ApiKeyRole, Idea, Task
 from ..repository import (
@@ -125,6 +126,7 @@ WORKSPACE_CONFIG_UPDATE_FIELDS = set(WorkspaceConfigUpdate.model_fields)
 WEBHOOK_UPDATE_FIELDS = {"url", "events", "active", "project"}
 _webhook_notifier = WebhookNotificationProvider()
 _telegram_notifier = TelegramNotificationProvider()
+_discord_notifier = DiscordNotificationProvider()
 
 
 def _commit(db: Session) -> None:
@@ -149,6 +151,7 @@ def _make_task_service(db: Session) -> TaskService:
         commit_fn=_commit,
         webhook_notifier=_webhook_notifier,
         telegram_notifier=_telegram_notifier,
+        discord_notifier=_discord_notifier,
         rule_emitter=emit_rule_event,
     )
 

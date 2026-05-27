@@ -23,6 +23,7 @@ def _service(db):
         commit_fn=lambda session: session.commit(),
         webhook_notifier=_NoopNotifier(),
         telegram_notifier=_NoopNotifier(),
+        discord_notifier=_NoopNotifier(),
         rule_emitter=lambda *args, **kwargs: None,
     )
 

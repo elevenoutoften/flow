@@ -880,6 +880,26 @@ def list_task_links(
     return list(session.scalars(stmt).all())
 
 
+def is_dispatch_ready(session: Session, task: Task, *, allowed_statuses: set[str] | None = None) -> bool:
+    """Return True when a task is ready for autonomous dispatch paths."""
+    if task.assignee is not None:
+        return False
+    if task.human_required:
+        return False
+    if allowed_statuses is not None and task.status not in allowed_statuses:
+        return False
+
+    blocking_parents = [
+        link for link in list_task_links(session, child_id=task.id)
+        if link.link_type in BLOCKING_TASK_LINK_TYPES
+    ]
+    for link in blocking_parents:
+        parent = get_task(session, link.parent_id)
+        if parent is None or parent.status != "done":
+            return False
+    return True
+
+
 def serialize_task_link(link: TaskLink) -> TaskLinkResponse:
     return TaskLinkResponse(
         id=link.id,
@@ -1283,19 +1303,21 @@ def cas_update_task(session: Session, task_id: str, expected_version: int, updat
     return (result.rowcount or 0) > 0
 
 
-def next_task(session: Session, *, project: str | None = None) -> Task | None:
+def next_task(session: Session, *, project: str | None = None, check_dependencies: bool = True) -> Task | None:
     for status in NEXT_STATUS_ORDER:
         stmt = (
             task_query()
             .where(Task.status == status)
             .where(Task.assignee.is_(None))
+            .where(Task.human_required == 0)
             .order_by(Task.priority.desc(), Task.created_at.asc(), Task.id.asc())
         )
         if project:
             stmt = stmt.where(Task.project == project)
-        task = session.scalars(stmt).first()
-        if task:
-            return task
+        candidates = session.scalars(stmt).all()
+        for task in candidates:
+            if not check_dependencies or is_dispatch_ready(session, task):
+                return task
     return None
 
 

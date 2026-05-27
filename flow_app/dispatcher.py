@@ -34,6 +34,7 @@ from .repository import (
     get_agent_by_name,
     get_project,
     get_task,
+    is_dispatch_ready,
     list_agent_runs,
     list_tasks,
     list_workspace_configs,
@@ -75,6 +76,10 @@ def dispatch_one(
         raise DispatchError(f"Task requires a human: {task.id}")
     if task.assignee and task.assignee != agent.name:
         raise DispatchError(f"Task is already claimed by {task.assignee}.")
+    if not is_dispatch_ready(session, task):
+        if task.assignee:
+            raise DispatchError(f"Task is already claimed by {task.assignee}.")
+        raise DispatchError("Task has unresolved blocking dependencies.")
 
     running = list_agent_runs(session, agent_id=agent.id, status="running")
     if len(running) >= agent.max_concurrency:
@@ -224,9 +229,7 @@ def _next_capable_task(session: Session, agent: Agent) -> Task | None:
         else {"backlog", "todo"}
     )
     for task in list_tasks(session, unclaimed=True):
-        if task.status not in agent_statuses:
-            continue
-        if task.human_required:
+        if not is_dispatch_ready(session, task, allowed_statuses=agent_statuses):
             continue
         if agent in find_capable_agents(session, task):
             return task

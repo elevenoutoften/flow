@@ -8,13 +8,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 from flow_app.database import Base, build_engine, build_session_factory
-from flow_app.dispatcher import DispatchError, dispatch_loop, dispatch_one
+from flow_app.dispatcher import DispatchError, _next_capable_task, dispatch_loop, dispatch_one
 from flow_app.main import create_app
 from flow_app.models import AgentRun, Task
 from flow_app.repository import create_agent as repo_create_agent
 from flow_app.repository import create_task as repo_create_task
+from flow_app.repository import create_task_link as repo_create_task_link
 from flow_app.repository import create_workspace_config as repo_create_workspace_config
-from flow_app.schemas import AgentCreate, TaskCreate, WorkspaceConfigCreate
+from flow_app.repository import is_dispatch_ready, next_task
+from flow_app.schemas import AgentCreate, TaskCreate, TaskLinkCreate, WorkspaceConfigCreate
 
 
 # ---------- helpers ----------
@@ -90,6 +92,13 @@ class _NoopThread:
 
     def start(self):
         pass
+
+
+def _link_tasks(db, parent_id: str, child_id: str, link_type: str = "blocks"):
+    return repo_create_task_link(
+        db,
+        TaskLinkCreate(parent_id=parent_id, child_id=child_id, link_type=link_type),
+    )
 
 
 # ---------- Agent CRUD ----------
@@ -222,6 +231,105 @@ class TestDispatchStatuses:
 
             assert [run.task_id for run in impl_runs] == [todo_task.id]
             assert [run.task_id for run in review_runs] == [review_task.id]
+        finally:
+            db.close()
+
+
+class TestDispatchDependencies:
+    def test_next_task_skips_blocked_child(self, tmp_path):
+        db = _db(tmp_path)
+        try:
+            parent = repo_create_task(db, TaskCreate(title="Parent", status="todo", assignee="human"))
+            child = repo_create_task(db, TaskCreate(title="Child", status="todo"))
+            _link_tasks(db, parent.id, child.id, "blocks")
+
+            assert next_task(db) is None
+
+            parent.status = "done"
+            db.flush()
+
+            assert next_task(db).id == child.id
+        finally:
+            db.close()
+
+    def test_next_task_skips_human_required(self, tmp_path):
+        db = _db(tmp_path)
+        try:
+            task = repo_create_task(db, TaskCreate(title="Needs human", status="todo", human_required=True))
+
+            assert next_task(db) is None
+
+            task.human_required = 0
+            db.flush()
+
+            assert next_task(db).id == task.id
+        finally:
+            db.close()
+
+    def test_next_capable_task_respects_dependencies(self, tmp_path):
+        db = _db(tmp_path)
+        try:
+            agent = repo_create_agent(db, AgentCreate(name="worker", command=_success_command()))
+            parent = repo_create_task(db, TaskCreate(title="Parent", status="todo", assignee="human"))
+            child = repo_create_task(db, TaskCreate(title="Child", status="todo"))
+            _link_tasks(db, parent.id, child.id, "depends_on")
+
+            assert _next_capable_task(db, agent) is None
+
+            parent.status = "done"
+            db.flush()
+
+            assert _next_capable_task(db, agent).id == child.id
+        finally:
+            db.close()
+
+    def test_dispatch_one_rejects_blocked_task(self, tmp_path, monkeypatch):
+        db = _db(tmp_path)
+
+        def fake_popen(args, **kwargs):
+            return SimpleNamespace(pid=12345)
+
+        monkeypatch.setattr("flow_app.dispatcher.subprocess.Popen", fake_popen)
+        monkeypatch.setattr("flow_app.dispatcher.threading.Thread", _NoopThread)
+        try:
+            agent = repo_create_agent(db, AgentCreate(name="worker", command=_success_command()))
+            parent = repo_create_task(db, TaskCreate(title="Parent", status="todo"))
+            child = repo_create_task(db, TaskCreate(title="Child", status="todo"))
+            _link_tasks(db, parent.id, child.id, "blocks")
+
+            with pytest.raises(DispatchError, match="unresolved blocking dependencies"):
+                dispatch_one(db, agent, child, api_key="key", base_url="http://flow.test")
+
+            parent.status = "done"
+            db.flush()
+
+            run = dispatch_one(db, agent, child, api_key="key", base_url="http://flow.test")
+
+            assert run.task_id == child.id
+        finally:
+            db.close()
+
+    def test_is_dispatch_ready_with_related_link(self, tmp_path):
+        db = _db(tmp_path)
+        try:
+            parent = repo_create_task(db, TaskCreate(title="Parent", status="todo"))
+            child = repo_create_task(db, TaskCreate(title="Child", status="todo"))
+            _link_tasks(db, parent.id, child.id, "related")
+
+            assert is_dispatch_ready(db, child) is True
+        finally:
+            db.close()
+
+    def test_is_dispatch_ready_all_blocking_parents_done(self, tmp_path):
+        db = _db(tmp_path)
+        try:
+            first = repo_create_task(db, TaskCreate(title="First parent", status="done"))
+            second = repo_create_task(db, TaskCreate(title="Second parent", status="done"))
+            child = repo_create_task(db, TaskCreate(title="Child", status="todo"))
+            _link_tasks(db, first.id, child.id, "depends_on")
+            _link_tasks(db, second.id, child.id, "depends_on")
+
+            assert is_dispatch_ready(db, child) is True
         finally:
             db.close()
 

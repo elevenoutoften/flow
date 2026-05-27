@@ -106,13 +106,26 @@ def dispatch_one(
     command = _substitute_command(command_template, agent=agent, task=task, run=run)
     env = _build_env(agent, task, run, api_key=api_key, base_url=base_url)
     workspace = _provision_run_workspace(session, task, run)
+    if workspace is not None and not workspace.ready:
+        run.status = "crashed"
+        run.finished_at = utcnow()
+        run.updated_at = run.finished_at
+        error_msg = workspace.error or "Workspace provisioning failed."
+        add_note(session, task, f"Workspace provisioning failed for {agent.name}: {error_msg}", author="dispatcher")
+        _cleanup_run_workspace(session, run)
+        session.add(run)
+        session.flush()
+        raise DispatchError(error_msg)
+
+    run_cwd = None
     if workspace is not None and workspace.ready:
         env["FLOW_WORKSPACE_DIR"] = workspace.path
+        run_cwd = workspace.path
 
     try:
         process = subprocess.Popen(
             shlex.split(command),
-            cwd=agent.working_directory or None,
+            cwd=run_cwd or agent.working_directory or None,
             env=env,
         )
     except OSError as exc:

@@ -1,6 +1,7 @@
 """Tests for Agent Registry, Dispatcher, AgentRun lifecycle, and permissions."""
 from __future__ import annotations
 
+import json
 import sys
 from types import SimpleNamespace
 
@@ -656,6 +657,115 @@ class TestAgentRunLifecycle:
 
             assert "FLOW_WORKSPACE_DIR" not in captured["env"]
             assert run.workspace_state == ""
+        finally:
+            db.close()
+
+    def test_dispatch_uses_workspace_path_as_cwd(self, tmp_path, monkeypatch):
+        db = _db(tmp_path)
+        captured = {}
+        agent_cwd = tmp_path / "agent-cwd"
+
+        def fake_popen(args, **kwargs):
+            captured["cwd"] = kwargs["cwd"]
+            captured["env"] = kwargs["env"]
+            return SimpleNamespace(pid=12345)
+
+        monkeypatch.setattr("flow_app.dispatcher.subprocess.Popen", fake_popen)
+        monkeypatch.setattr("flow_app.dispatcher.threading.Thread", _NoopThread)
+        try:
+            agent = repo_create_agent(
+                db,
+                AgentCreate(
+                    name="worker",
+                    command=_success_command(),
+                    working_directory=str(agent_cwd),
+                ),
+            )
+            task = repo_create_task(db, TaskCreate(title="Needs workspace cwd", project="default"))
+            repo_create_workspace_config(
+                db,
+                WorkspaceConfigCreate(
+                    name="default",
+                    strategy="scratch_dir",
+                    scratch_root=str(tmp_path / "scratch"),
+                ),
+            )
+
+            dispatch_one(db, agent, task, api_key="key", base_url="http://flow.test")
+
+            workspace_path = str(tmp_path / "scratch" / task.id)
+            assert captured["cwd"] == workspace_path
+            assert captured["cwd"] != str(agent_cwd)
+            assert captured["env"]["FLOW_WORKSPACE_DIR"] == workspace_path
+        finally:
+            db.close()
+
+    def test_dispatch_fails_closed_when_workspace_not_ready(self, tmp_path, monkeypatch):
+        db = _db(tmp_path)
+        popen_called = False
+
+        def fake_popen(args, **kwargs):
+            nonlocal popen_called
+            popen_called = True
+            return SimpleNamespace(pid=12345)
+
+        monkeypatch.setattr("flow_app.dispatcher.subprocess.Popen", fake_popen)
+        monkeypatch.setattr("flow_app.dispatcher.threading.Thread", _NoopThread)
+        try:
+            agent = repo_create_agent(db, AgentCreate(name="worker", command=_success_command()))
+            task = repo_create_task(db, TaskCreate(title="Bad workspace", project="default"))
+            repo_create_workspace_config(
+                db,
+                WorkspaceConfigCreate(
+                    name="default",
+                    strategy="git_worktree",
+                    root_dir=str(tmp_path / "outside-cwd"),
+                ),
+            )
+
+            with pytest.raises(DispatchError):
+                dispatch_one(db, agent, task, api_key="key", base_url="http://flow.test")
+
+            db.expire_all()
+            run = db.query(AgentRun).one()
+            refreshed_task = db.get(Task, task.id)
+            workspace_state = json.loads(run.workspace_state)
+            assert popen_called is False
+            assert run.status == "crashed"
+            assert workspace_state["ready"] is False
+            assert workspace_state["error"]
+            assert refreshed_task is not None
+            assert any("Workspace provisioning failed for worker:" in note.body for note in refreshed_task.notes)
+        finally:
+            db.close()
+
+    def test_dispatch_uses_agent_cwd_when_no_workspace_config(self, tmp_path, monkeypatch):
+        db = _db(tmp_path)
+        captured = {}
+        agent_cwd = tmp_path / "agent-cwd"
+
+        def fake_popen(args, **kwargs):
+            captured["cwd"] = kwargs["cwd"]
+            captured["env"] = kwargs["env"]
+            return SimpleNamespace(pid=12345)
+
+        monkeypatch.setattr("flow_app.dispatcher.subprocess.Popen", fake_popen)
+        monkeypatch.setattr("flow_app.dispatcher.threading.Thread", _NoopThread)
+        try:
+            agent = repo_create_agent(
+                db,
+                AgentCreate(
+                    name="worker",
+                    command=_success_command(),
+                    working_directory=str(agent_cwd),
+                ),
+            )
+            task = repo_create_task(db, TaskCreate(title="No workspace cwd", project="default"))
+
+            dispatch_one(db, agent, task, api_key="key", base_url="http://flow.test")
+
+            assert captured["cwd"] == str(agent_cwd)
+            assert "FLOW_WORKSPACE_DIR" not in captured["env"]
         finally:
             db.close()
 

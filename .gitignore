@@ -45,3 +45,11 @@ uv.lock
 # OS
 .DS_Store
 Thumbs.db
+
+# flow2 UI design prototypes (standalone reference, integrated into flow_app/)
+flow2/
+
+# Local demo database (scripts/demo.py)
+.flow-demo.db
+.flow-demo.db-wal
+.flow-demo.db-shm

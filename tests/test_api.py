@@ -1606,8 +1606,8 @@ def test_board_renders_drag_and_drop_hooks(client):
     html = response.text
     assert 'data-drop-zone' in html
     assert 'data-column-count' in html
-    assert f'data-task-id="{task["id"]}"' in html
-    assert 'data-task-priority="80"' in html
+    assert f'data-id="{task["id"]}"' in html
+    assert 'data-priority="80"' in html
 
 
 def test_validation_errors(client):

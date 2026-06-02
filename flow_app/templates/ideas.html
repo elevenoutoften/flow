@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Flow - Ideas</title>
+<meta name="flow-api-base" content="">
+<link rel="stylesheet" href="/static/flow-ideas.css?v={{ asset_version }}">
+  <script src="/static/flow-scroll.js?v={{ asset_version }}" defer></script>
+  <script src="/static/flow-ideas.js?v={{ asset_version }}" defer></script>
+</head>
+<body>
+<button class="close-btn" type="button" onclick="closeIdeasSurface()" aria-label="Close ideas popup">&times;</button>
+
+<div class="ideas-viewport flow-scroll flow-scroll-auto">
+<main class="page-content" aria-label="Ideas">
+  <section class="idea-wall" id="ideaWall" aria-label="Idea wall">
+    <article class="idea-card is-template" data-id="new-idea-template" data-project="{{ selected_project }}" aria-label="Add new idea">
+      <div class="template-mark" aria-hidden="true">+</div>
+      <h2 class="idea-title">Add new idea</h2>
+      <p class="idea-preview">Capture a title, description, and project without leaving the wall.</p>
+      <div class="idea-footer"><span class="date">NEW DRAFT</span></div>
+    </article>
+
+    {% if not can_create_ideas %}
+    <article class="idea-card wide" aria-label="Authentication required">
+      <div class="project-name">flow</div>
+      <h2 class="idea-title">Sign in to manage ideas</h2>
+      <p class="idea-preview">The wall is ready, but the API needs an authenticated Flow session.</p>
+      <div class="idea-footer"><span class="date">READ ONLY</span></div>
+    </article>
+    {% endif %}
+
+    {% for idea in ideas %}
+    {% set title_len = idea.title | length %}
+    <article class="idea-card{% if title_len > 80 %} wide{% elif title_len < 28 %} narrow{% endif %}" data-project="{{ idea.project }}" data-id="{{ idea.id }}" data-author="{{ idea.author or 'unknown' }}">
+      <div class="project-name">{{ idea.project or "unassigned" }}</div>
+      <h2 class="idea-title">{{ idea.title }}</h2>
+      <p class="idea-preview">{{ idea.description or "No description." }}</p>
+      <div class="idea-footer">
+        <span class="author" title="{{ idea.author or 'unknown' }}">{{ idea.author or "unknown" }}</span>
+        <span class="date">{{ idea.created_at.strftime("%Y-%m-%d") }}</span>
+        {% if idea.archived_at %}<span class="date">archived</span>{% endif %}
+      </div>
+    </article>
+    {% endfor %}
+  </section>
+</main>
+</div>
+
+<div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+<script>
+window.FlowIdeas = {
+  canCreate: {{ can_create_ideas | tojson }},
+  canEdit: {{ can_edit_ideas | tojson }},
+  selectedProject: {{ selected_project | tojson }},
+  showArchived: {{ show_archived | tojson }},
+  projects: [
+    {% for project in projects %}
+    { value: {{ project.slug | tojson }}, label: {{ project.name | tojson }} }{% if not loop.last %},{% endif %}
+    {% endfor %}
+  ]
+};
+</script>
+</body>
+</html>

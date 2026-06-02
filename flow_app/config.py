@@ -115,7 +115,7 @@ def get_settings() -> FlowSettings:
         port=_env_int("FLOW_PORT", 8100),
         debug=_env_bool("FLOW_DEBUG"),
         cors_origins=cors_origins,
-        theme=_env("FLOW_THEME", "neutral"),
+        theme=_env("FLOW_THEME", "love"),
         trusted_headers=_env_bool("FLOW_TRUSTED_HEADERS", default=False),
         session_secret=_env("FLOW_SESSION_SECRET", ""),
         session_cookie_secure=_env_bool("FLOW_SESSION_COOKIE_SECURE", default=False),

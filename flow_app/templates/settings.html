@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Flow - Settings</title>
+<meta name="flow-api-base" content="">
+<link rel="stylesheet" href="/static/flow-settings.css?v={{ asset_version }}">
+<script src="/static/flow-scroll.js?v={{ asset_version }}" defer></script>
+<script src="/static/flow-settings.js?v={{ asset_version }}" defer></script>
+</head>
+<body data-theme="{{ theme }}">
+<button class="close-btn" type="button" onclick="closeSettingsSurface()" aria-label="Close settings">&times;</button>
+<header class="topbar">
+  <div class="topbar-brand">
+    <span class="dot"></span>
+    <a href="/" class="wordmark">Flow</a>
+  </div>
+  <nav class="topbar-nav">
+    <a href="/" class="nav-link">Board</a>
+    <a href="/settings.html" class="nav-link active">Settings</a>
+  </nav>
+</header>
+
+<div class="layout">
+  <nav class="sidebar flow-scroll flow-scroll-auto" aria-label="Settings sections">
+    <div class="sidebar-section">
+      <div class="sidebar-label">Core settings</div>
+      <a href="#projects" class="sidebar-link active"><span class="icon">&#9672;</span> Projects</a>
+      <a href="#appearance" class="sidebar-link"><span class="icon">&#9680;</span> Appearance</a>
+      <a href="#api-keys" class="sidebar-link"><span class="icon">&#9671;</span> API Keys</a>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-label">Execution</div>
+      <a href="#agents" class="sidebar-link"><span class="icon">&#9670;</span> Agents</a>
+      <a href="#workspaces" class="sidebar-link"><span class="icon">&#9636;</span> Workspaces</a>
+      <a href="#agent-runs" class="sidebar-link"><span class="icon">&#9655;</span> Agent Runs</a>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-label">Automation</div>
+      <a href="#automation-rules" class="sidebar-link"><span class="icon">&#9881;</span> Automation Rules</a>
+      <a href="#schedules" class="sidebar-link"><span class="icon">&#9719;</span> Schedules</a>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-label">Integrations</div>
+      <a href="#webhooks" class="sidebar-link"><span class="icon">&#8599;</span> Webhooks</a>
+      <a href="#notifications" class="sidebar-link"><span class="icon">&#9830;</span> Notifications</a>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-label">System</div>
+      <a href="#secrets" class="sidebar-link"><span class="icon">&#10022;</span> Secrets</a>
+      <a href="#adapters" class="sidebar-link"><span class="icon">&#8853;</span> Adapters</a>
+      <a href="#remote-runners" class="sidebar-link"><span class="icon">&#8644;</span> Remote Runners</a>
+      <a href="#ops-audit" class="sidebar-link"><span class="icon">&#9678;</span> Ops / Audit</a>
+      <a href="#backup-restore" class="sidebar-link"><span class="icon">&#8595;</span> Backup / Restore</a>
+      <a href="#overview" class="sidebar-link"><span class="icon">&#9635;</span> Overview</a>
+    </div>
+  </nav>
+
+  <main class="content flow-scroll flow-scroll-auto">
+    <div class="content-inner">
+      <div class="page-head">
+        <h1>Settings</h1>
+        <p>Every Flow parameter, grouped and editable. Live sections are wired to today's API, and upcoming surfaces keep the same Flow2 shape until UI and backend wiring lands.</p>
+      </div>
+
+      <section id="projects">
+        <div class="section-head">
+          <div>
+            <div class="sec-kicker">01 - Projects</div>
+            <h3 class="sec-title">Repositories &amp; defaults</h3>
+            <p class="sec-sub">Map Flow tasks to real repositories and default project settings.</p>
+          </div>
+          <div class="section-actions"><button class="btn btn-primary" type="button" data-project-new>Create project</button></div>
+        </div>
+
+        <div class="table-wrap flow-scroll flow-scroll-auto">
+          <table class="data-table">
+            <thead><tr><th>Name</th><th>Slug</th><th>Repository</th><th>Default branch</th><th class="actions">Actions</th></tr></thead>
+            <tbody id="project-list">
+              {% for project in projects %}
+              <tr data-project-card="{{ project.slug }}">
+                <td class="cell-name">{{ project.name }}</td>
+                <td><code>{{ project.slug }}</code></td>
+                <td><code>{{ project.repo_url or project.repo_path or "-" }}</code></td>
+                <td><code>{{ project.default_branch or "-" }}</code></td>
+                <td class="actions"><button class="btn btn-ghost btn-sm" type="button" data-edit-project="{{ project.slug }}">Edit</button></td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+
+        <form class="panel revealable" id="project-form" hidden>
+          <div class="panel-title" id="project-form-title">Create project</div>
+          <div class="form-grid">
+            <div class="field"><label class="form-label">Project name</label><input class="form-input" name="name" placeholder="Flow"></div>
+            <div class="field"><label class="form-label">Slug</label><input class="form-input mono" name="slug" placeholder="{{ default_project }}" required><div class="form-hint" id="project-slug-hint" hidden>Slug is fixed after creation.</div></div>
+            <div class="field full"><label class="form-label">Description</label><textarea class="form-input" name="description"></textarea></div>
+            <div class="field full"><label class="form-label">Repository URL</label><input class="form-input mono" name="repo_url" placeholder="https://github.com/org/repo.git"></div>
+            <div class="field"><label class="form-label">Repository path</label><input class="form-input mono" name="repo_path" placeholder="/repos/flow"></div>
+            <div class="field"><label class="form-label">Default branch</label><input class="form-input mono" name="default_branch" value="main"></div>
+          </div>
+          <div class="row-actions">
+            <button class="btn btn-ghost" id="project-form-cancel" type="button">Cancel</button>
+            <button class="btn btn-primary" id="project-submit-button" type="submit">Create project</button>
+          </div>
+        </form>
+
+        <form class="panel" id="import-form">
+          <div class="panel-title">Import Markdown</div>
+          <div class="form-grid">
+            <div class="field"><label class="form-label">Source filename</label><input class="form-input mono" name="source_filename" placeholder="tasks.md"></div>
+            <div class="field"><label class="form-label">Default project</label><select class="form-input" name="default_project">{% for project in projects %}<option value="{{ project.slug }}" {% if project.slug == default_project %}selected{% endif %}>{{ project.name }}</option>{% endfor %}</select></div>
+            <div class="field"><label class="form-label">Default status</label><select class="form-input" name="default_status">{% for status in ["backlog", "todo", "doing", "review", "done"] %}<option value="{{ status }}">{{ status }}</option>{% endfor %}</select></div>
+            <div class="field">
+              <label class="form-label">Default priority</label>
+              <div class="priority-counter" data-min="0" data-max="1000">
+                <button type="button" class="priority-dec" aria-label="Decrease default priority"><svg viewBox="0 0 14 14" fill="none"><path d="M3 7h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+                <input name="default_priority" type="number" value="50" min="0" max="1000" aria-label="Default priority value">
+                <button type="button" class="priority-inc" aria-label="Increase default priority"><svg viewBox="0 0 14 14" fill="none"><path d="M3 7h8M7 3v8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+              </div>
+            </div>
+            <div class="field full"><label class="form-label">Markdown</label><textarea class="form-input" name="markdown" rows="8" placeholder="- [ ] Build a thing priority: 80"></textarea></div>
+          </div>
+          <div class="row-actions">
+            <button class="btn btn-secondary" type="submit">Preview import</button>
+            <button class="btn btn-primary" id="import-commit-button" type="button" disabled>Commit import</button>
+          </div>
+          <div class="output flow-scroll flow-scroll-auto" id="import-preview" hidden></div>
+        </form>
+      </section>
+
+      <hr class="section-divider">
+
+      <section id="appearance">
+        <div class="section-head">
+          <div>
+            <div class="sec-kicker">02 - Appearance</div>
+            <h3 class="sec-title">Theme</h3>
+            <p class="sec-sub">Personalize Flow's readability and visual accent.</p>
+          </div>
+        </div>
+        <div class="theme-grid">
+          {% for t in available_themes %}
+          <label class="theme-option">
+            <input type="radio" name="theme" value="{{ t.value }}" {% if t.value == theme %}checked{% endif %}>
+            <div class="swatch swatch-{{ t.value }}"></div>
+            <div class="t-name">{{ t.label }} <span class="t-check"></span></div>
+            <div class="t-desc">{{ t.desc }}</div>
+          </label>
+          {% endfor %}
+        </div>
+        <p class="form-hint" style="margin-top:var(--space-4)">Themes change the accent color only — surfaces, type, and layout stay identical. The change applies live across the board and is saved in this browser.</p>
+      </section>
+
+      <hr class="section-divider">
+
+      <section id="api-keys">
+        <div class="section-head">
+          <div>
+            <div class="sec-kicker">03 - API Keys</div>
+            <h3 class="sec-title">Access &amp; roles</h3>
+            <p class="sec-sub">Control agent and user access with scoped roles.</p>
+          </div>
+          <div class="section-actions">
+            <button class="btn btn-secondary" type="button" data-refresh-api-keys {% if not can_manage_api_keys %}disabled{% endif %}>Refresh</button>
+            <button class="btn btn-primary" type="button" data-open-key-form {% if not can_manage_api_keys %}disabled{% endif %}>Generate API key</button>
+          </div>
+        </div>
+
+        <div class="table-wrap flow-scroll flow-scroll-auto">
+          <table class="data-table">
+            <thead><tr><th>Name</th><th>Role</th><th>Key prefix</th><th>State</th><th>Created</th><th class="actions">Actions</th></tr></thead>
+            <tbody id="api-key-list">
+              {% if can_manage_api_keys %}
+              {% for api_key in api_keys %}
+              <tr class="{% if api_key.revoked_at %}is-revoked{% endif %}">
+                <td class="cell-name">{{ api_key.name }}</td>
+                <td><span class="api-key-role {{ api_key.role.replace('_', '-') }}">{{ api_key.role }}</span></td>
+                <td><code>{{ api_key.key_prefix }}...</code></td>
+                <td><span class="flow-chip {% if api_key.revoked_at %}chip-error{% else %}chip-positive{% endif %}">{{ "Revoked" if api_key.revoked_at else "Active" }}</span></td>
+                <td><code>{{ api_key.created_at.strftime("%Y-%m-%d") }}</code></td>
+                <td class="actions">{% if api_key.revoked_at %}-{% else %}<button class="btn btn-danger btn-sm" type="button" data-revoke-api-key="{{ api_key.id }}">Revoke</button>{% endif %}</td>
+              </tr>
+              {% endfor %}
+              {% else %}
+              <tr><td colspan="6">Admin session required to manage API keys.</td></tr>
+              {% endif %}
+            </tbody>
+          </table>
+        </div>
+
+        <div class="grid-2 revealable" id="key-gen" hidden>
+          <form class="panel" id="api-key-form">
+            <div class="panel-title">Generate new key</div>
+            <div class="field"><label class="form-label">Name</label><input class="form-input" name="name" placeholder="Hermes Agent" required></div>
+            <div class="field"><label class="form-label">Role</label><select class="form-input" name="role"><option value="read_only">read_only</option><option value="implementer">implementer</option><option value="reviewer">reviewer</option><option value="architect">architect</option><option value="admin">admin</option></select></div>
+            <div class="field"><label class="form-label">Description</label><textarea class="form-input" name="description"></textarea></div>
+            <div class="row-actions"><button class="btn btn-ghost" type="button" data-close-key-form>Cancel</button><button class="btn btn-primary" type="submit">Generate key</button></div>
+          </form>
+          <div class="panel" id="generated-api-key" hidden>
+            <div class="panel-title">One-time key</div>
+            <div class="note">Shown once. Copy it now because it cannot be retrieved later.</div>
+            <div class="field" style="margin-top:var(--space-4)"><label class="form-label">Key</label><input class="form-input mono" id="generated-api-key-value" readonly></div>
+            <button class="btn btn-secondary" type="button" data-copy-api-key>Copy key</button>
+          </div>
+        </div>
+      </section>
+
+      {% set disabled_sections = [
+        ("agents", "04 - Agents", "Workers & adapters", "Define runnable workers and LLM/script adapters.", "API available", "UI wiring pending"),
+        ("workspaces", "05 - Workspaces", "Run isolation", "Keep agent runs isolated from shared repositories.", "API available", "UI wiring pending"),
+        ("agent-runs", "06 - Agent Runs", "Dispatch history", "Inspect active and previous worker runs.", "API available", "UI wiring pending"),
+        ("automation-rules", "07 - Automation Rules", "Rules engine", "Create event-driven automation policies.", "API available", "UI wiring pending"),
+        ("schedules", "08 - Schedules", "Recurring task templates", "Materialize repeated Flow work.", "Backend pending", "UI and API wiring pending"),
+        ("webhooks", "09 - Webhooks", "HTTP integrations", "Deliver task events to external systems.", "API available", "UI wiring pending"),
+        ("notifications", "10 - Notifications", "Human alerts", "Route notifications to Telegram, Discord, and email.", "Backend pending", "UI and API wiring pending"),
+        ("secrets", "11 - Secrets", "Secret references", "Reference credentials without exposing raw secrets.", "Backend pending", "UI and API wiring pending"),
+        ("adapters", "12 - Adapters", "Agent templates", "Create workers from adapter presets.", "Backend pending", "UI and API wiring pending"),
+        ("remote-runners", "13 - Remote Runners", "Runner fleet", "Track external runner leases and heartbeat.", "Backend pending", "UI and API wiring pending"),
+        ("ops-audit", "14 - Ops / Audit", "Safety & audit", "Production metrics, limits, and audit visibility.", "Backend pending", "UI and API wiring pending"),
+        ("backup-restore", "15 - Backup / Restore", "Export & import", "Export, restore, and validate Flow configuration safely.", "Backend pending", "UI and API wiring pending")
+      ] %}
+      {% for section_id, kicker, title, subtitle, backend_state, implementation_state in disabled_sections %}
+      <hr class="section-divider">
+      <section id="{{ section_id }}" class="disabled-section" aria-disabled="true">
+        <div class="section-head">
+          <div>
+            <div class="sec-kicker">{{ kicker }}</div>
+            <h3 class="sec-title">{{ title }}</h3>
+            <p class="sec-sub">{{ subtitle }}</p>
+          </div>
+          <div class="section-actions"><button class="btn btn-secondary" type="button" disabled>Configure</button></div>
+        </div>
+        <div class="panel">
+          <div class="panel-title">Coming soon</div>
+          <div class="system-table" style="margin-top:0">
+            <div class="system-row"><span class="system-label">state</span><span class="flow-chip chip-neutral">Disabled</span></div>
+            <div class="system-row"><span class="system-label">backend</span><span class="flow-chip {{ 'chip-positive' if backend_state == 'API available' else 'chip-warning' }}">{{ backend_state }}</span></div>
+            <div class="system-row"><span class="system-label">surface</span><span class="system-value">{{ implementation_state }}</span></div>
+          </div>
+        </div>
+      </section>
+      {% endfor %}
+
+      <hr class="section-divider">
+      <section id="overview">
+        <div class="section-head">
+          <div>
+            <div class="sec-kicker">16 - Overview</div>
+            <h3 class="sec-title">Operator summary</h3>
+            <p class="sec-sub">A roll-up of counts and warnings across all sections.</p>
+          </div>
+        </div>
+        <div class="grid-3">
+          <div class="stat-card"><div class="stat-label">Projects</div><div class="stat-value">{{ projects | length }}</div><div class="stat-sub">Configured</div><a class="btn btn-ghost btn-sm" href="#projects">Open projects</a></div>
+          <div class="stat-card"><div class="stat-label">API keys</div><div class="stat-value">{{ api_keys | length if can_manage_api_keys else 0 }}</div><div class="stat-sub">{{ "Visible" if can_manage_api_keys else "Admin required" }}</div><a class="btn btn-ghost btn-sm" href="#api-keys">Open API keys</a></div>
+          <div class="stat-card"><div class="stat-label">Upcoming</div><div class="stat-value">12</div><div class="stat-sub">Disabled sections</div></div>
+        </div>
+      </section>
+    </div>
+  </main>
+</div>
+
+<div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+<script>
+window.FlowSettings = { canManageApiKeys: {{ can_manage_api_keys | tojson }} };
+</script>
+</body>
+</html>

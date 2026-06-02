@@ -93,13 +93,19 @@ curl -H "Authorization: Bearer YOUR_KEY" \
 
 ## Documentation
 
+Full documentation is in the [Documentation wiki](Documentation/README.md).
+
 | Document | Description |
 |----------|-------------|
-| [docs/API.md](docs/API.md) | Complete REST API reference |
-| [docs/MCP.md](docs/MCP.md) | MCP interface for LLM agents |
-| [docs/ROLES.md](docs/ROLES.md) | Roles, permissions, and API key management |
-| [docs/MIGRATION.md](docs/MIGRATION.md) | Backup, restore, and schema migration |
+| [Documentation/](Documentation/README.md) | Wiki index — architecture, operations, all modules |
+| [Documentation/Architecture.md](Documentation/Architecture.md) | System design, data model, lifecycle |
+| [Documentation/Operations.md](Documentation/Operations.md) | Setup, deployment, backup, runner |
+| [Documentation/Modules/REST-API.md](Documentation/Modules/REST-API.md) | Complete REST API reference |
+| [Documentation/Modules/MCP.md](Documentation/Modules/MCP.md) | MCP interface for LLM agents |
+| [Documentation/Modules/Security.md](Documentation/Modules/Security.md) | Roles, permissions, and API key management |
+| [Documentation/Modules/Web-UI.md](Documentation/Modules/Web-UI.md) | Browser board, ideas/settings overlays, theme, and engine-vs-UI gaps |
 | [docs/RELEASE-CHECKLIST.md](docs/RELEASE-CHECKLIST.md) | Public release checklist |
+| [docs/UPGRADE.md](docs/UPGRADE.md) | Live upgrade and key-rotation runbook |
 
 ## Architecture
 
@@ -109,11 +115,11 @@ curl -H "Authorization: Bearer YOUR_KEY" \
 │  ┌───────────┬───────────┬───────────┐  │
 │  │ REST API  │  MCP API  │  HTML UI  │  │
 │  └─────┬─────┴─────┬─────┴─────┬─────┘  │
-│        │           │           │         │
+│        │           │           │        │
 │  ┌─────┴───────────┴───────────┴─────┐  │
 │  │         Repository Layer          │  │
 │  └─────────────────┬─────────────────┘  │
-│                    │                     │
+│                    │                    │
 │  ┌─────────────────┴─────────────────┐  │
 │  │      SQLAlchemy + SQLite          │  │
 │  └───────────────────────────────────┘  │

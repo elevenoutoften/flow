@@ -8,7 +8,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from ..config import FLOW_VERSION
-from ..repository import batch_dependency_summaries, list_agent_api_keys, list_projects, list_tasks
+from ..repository import batch_dependency_summaries, list_agent_api_keys, list_projects, list_tasks, serialize_idea
 from ..schemas import STATUSES
 from ..security import (
     SESSION_COOKIE_NAME,
@@ -18,12 +18,49 @@ from ..security import (
     resolve_actor,
     sign_session,
 )
+from ..services.idea import IdeaService
 from .dependencies import get_db
 
 PACKAGE_DIR = Path(__file__).resolve().parent.parent
 templates = Jinja2Templates(directory=str(PACKAGE_DIR / "templates"))
 
 router = APIRouter()
+
+
+def _resolve_web_actor(
+    request: Request,
+    db: Session,
+    authorization: str | None,
+    x_axis_admin: str | None,
+    x_axis_user: str | None,
+    x_axis_agent: str | None,
+):
+    return resolve_actor(
+        db,
+        authorization,
+        x_axis_admin,
+        x_axis_user,
+        x_axis_agent,
+        trusted_headers=request.app.state.settings.trusted_headers,
+        session_cookie=request.cookies.get(SESSION_COOKIE_NAME),
+        session_secret=request.app.state.settings.session_secret or None,
+    )
+
+
+def _maybe_set_session_cookie(request: Request, response, actor) -> None:
+    if (
+        actor is not None
+        and actor.source in {"admin_header", "browser", "session_cookie"}
+        and request.app.state.settings.session_secret
+    ):
+        response.set_cookie(
+            SESSION_COOKIE_NAME,
+            sign_session(actor, request.app.state.settings.session_secret),
+            max_age=SESSION_MAX_AGE,
+            httponly=True,
+            samesite="strict",
+            secure=request.app.state.settings.session_cookie_secure,
+        )
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -42,18 +79,25 @@ def board(
     tasks_by_status = {status_name: [] for status_name in STATUSES}
     for task in tasks:
         tasks_by_status.setdefault(task.status, []).append(task)
+    human_required_count = sum(1 for task in tasks if task.human_required)
+    unclaimed_count = sum(1 for task in tasks if not task.assignee)
+    counts_by_project: dict[str, int] = {}
+    for task in tasks:
+        counts_by_project[task.project] = counts_by_project.get(task.project, 0) + 1
     dependencies_by_task = batch_dependency_summaries(db, [task.id for task in tasks])
-    actor = resolve_actor(
-        db,
-        authorization,
-        x_axis_admin,
-        x_axis_user,
-        x_axis_agent,
-        trusted_headers=request.app.state.settings.trusted_headers,
-        session_cookie=request.cookies.get(SESSION_COOKIE_NAME),
-        session_secret=request.app.state.settings.session_secret or None,
+    dependency_edges = sorted(
+        {
+            (parent.id, task_id)
+            for task_id, summary in dependencies_by_task.items()
+            for parent in summary.parent_tasks
+        }
+        | {
+            (task_id, child.id)
+            for task_id, summary in dependencies_by_task.items()
+            for child in summary.child_tasks
+        }
     )
-    can_manage_api_keys = actor is not None and actor.role.value == "admin"
+    actor = _resolve_web_actor(request, db, authorization, x_axis_admin, x_axis_user, x_axis_agent)
     can_set_human_required = actor is not None and has_permission(actor, Permission.TASKS_SET_HUMAN_REQUIRED)
     response = templates.TemplateResponse(
         request,
@@ -64,30 +108,88 @@ def board(
             "selected_project": selected_project,
             "tasks_by_status": tasks_by_status,
             "dependencies_by_task": dependencies_by_task,
+            "dependency_edges": dependency_edges,
             "task_count": len(tasks),
-            "can_manage_api_keys": can_manage_api_keys,
+            "human_required_count": human_required_count,
+            "unclaimed_count": unclaimed_count,
+            "counts_by_project": counts_by_project,
             "can_set_human_required": can_set_human_required,
-            "api_keys": list_agent_api_keys(db) if can_manage_api_keys else [],
             "default_project": request.app.state.settings.default_project,
             "theme": request.app.state.settings.theme,
-            "available_themes": [
-                {"value": "neutral", "label": "Neutral"},
-                {"value": "axis-love", "label": "Axis Love"},
-            ],
             "asset_version": FLOW_VERSION,
         },
     )
-    if (
-        actor is not None
-        and actor.source in {"admin_header", "browser", "session_cookie"}
-        and request.app.state.settings.session_secret
-    ):
-        response.set_cookie(
-            SESSION_COOKIE_NAME,
-            sign_session(actor, request.app.state.settings.session_secret),
-            max_age=SESSION_MAX_AGE,
-            httponly=True,
-            samesite="strict",
-            secure=request.app.state.settings.session_cookie_secure,
-        )
+    _maybe_set_session_cookie(request, response, actor)
+    return response
+
+
+@router.get("/ideas.html", response_class=HTMLResponse)
+def ideas_surface(
+    request: Request,
+    db: Session = Depends(get_db),
+    project: str | None = Query(default=None),
+    archived: bool = Query(default=False),
+    authorization: str | None = Header(default=None),
+    x_axis_admin: str | None = Header(default=None),
+    x_axis_user: str | None = Header(default=None),
+    x_axis_agent: str | None = Header(default=None),
+):
+    selected_project = project.strip() if project else ""
+    projects = list_projects(db)
+    actor = _resolve_web_actor(request, db, authorization, x_axis_admin, x_axis_user, x_axis_agent)
+    ideas = []
+    if actor is not None and has_permission(actor, Permission.TASKS_READ):
+        svc = IdeaService(db)
+        ideas = [
+            serialize_idea(idea, db)
+            for idea in svc.list_ideas(project=selected_project or None, archived=archived, limit=200, offset=0)
+        ]
+    response = templates.TemplateResponse(
+        request,
+        "ideas.html",
+        {
+            "ideas": ideas,
+            "projects": projects,
+            "selected_project": selected_project,
+            "show_archived": archived,
+            "can_edit_ideas": actor is not None and has_permission(actor, Permission.TASKS_EDIT),
+            "can_create_ideas": actor is not None and has_permission(actor, Permission.TASKS_CREATE),
+            "asset_version": FLOW_VERSION,
+        },
+    )
+    _maybe_set_session_cookie(request, response, actor)
+    return response
+
+
+@router.get("/settings.html", response_class=HTMLResponse)
+def settings_surface(
+    request: Request,
+    db: Session = Depends(get_db),
+    authorization: str | None = Header(default=None),
+    x_axis_admin: str | None = Header(default=None),
+    x_axis_user: str | None = Header(default=None),
+    x_axis_agent: str | None = Header(default=None),
+):
+    projects = list_projects(db)
+    actor = _resolve_web_actor(request, db, authorization, x_axis_admin, x_axis_user, x_axis_agent)
+    can_manage_api_keys = actor is not None and actor.role.value == "admin"
+    response = templates.TemplateResponse(
+        request,
+        "settings.html",
+        {
+            "projects": projects,
+            "can_manage_api_keys": can_manage_api_keys,
+            "api_keys": list_agent_api_keys(db) if can_manage_api_keys else [],
+            "theme": request.app.state.settings.theme,
+            "available_themes": [
+                {"value": "love", "label": "Axis Love", "desc": "Rose / pink accent."},
+                {"value": "teal", "label": "Axis Teal", "desc": "Cyan / tiffany accent."},
+                {"value": "leaf", "label": "Axis Leaf", "desc": "Green / chartreuse accent."},
+                {"value": "neutral", "label": "Neutral", "desc": "Grey accent."},
+            ],
+            "default_project": request.app.state.settings.default_project,
+            "asset_version": FLOW_VERSION,
+        },
+    )
+    _maybe_set_session_cookie(request, response, actor)
     return response

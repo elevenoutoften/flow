@@ -1,89 +1,74 @@
-# Flow
+<div align="center">
 
-Flow is an agent-first Kanban/task board service. It is intentionally self-contained — a single FastAPI application backed by SQLite — so it can be deployed anywhere as a standalone binary or Docker container.
+  <img src="assets/logo.svg" alt="Flow" width="120"/>
 
-**Flow is a task board**, not a full project management suite. It focuses on: giving agents a reliable source of truth for work items, enforcing role-scoped API keys, tracking human-required blockers, and providing an MCP interface for LLM agents.
+  # Flow
+
+  **Agent-first Kanban board — self-contained, single-binary, SQLite-backed**
+
+  [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+</div>
+
+---
+
+<div align="center">
+  <img src="assets/board.png" alt="Board view" width="800"/>
+</div>
+
+<div align="center">
+  <img src="assets/ideas.png" alt="Ideas overlay" width="380"/>
+  &nbsp;
+  <img src="assets/settings.png" alt="Settings — API keys" width="380"/>
+</div>
+
+## Why Flow?
+
+Task boards built for humans assume a person is always in the loop. Flow is different — it treats **agents as first-class users**. Role-scoped API keys, an MCP endpoint, and human-required flags mean LLM agents can pick up work, move tasks, and signal blockers without stepping on each other or silently drifting past decisions that need a human.
+
+Under the hood it's a single FastAPI app backed by SQLite. No database server, no Docker dependency for local dev, no external auth service. Deploy it as a binary, a container, or just `uvicorn flow_app.main:app`.
 
 ## Features
 
-- **Kanban board** with five columns: `backlog` → `todo` → `doing` → `review` → `done`
+- **Kanban board** — five columns (`backlog` → `todo` → `doing` → `review` → `done`) with enforced role transitions
 - **Role-scoped API keys** — admin, architect, implementer, reviewer, read_only
-- **Human-required flag** — tasks can be marked as requiring human intervention with a blocker reason
+- **Dependency graph** — hover any card to see parent/child lines across columns
+- **Human-required flag** — mark tasks that need a human decision, with blocker reason
 - **Qualification fields** — complexity, impact, effort, risk on every task
 - **Ideas intake** — capture ideas and promote them into linked tasks
 - **MCP interface** — JSON-RPC 2.0 endpoint for LLM agents at `POST /mcp`
 - **Markdown import** — preview and commit tasks from Markdown files
-- **HTML board UI** — lightweight browser interface at `/`
-- **Health check** — `GET /healthz`
+- **Two built-in themes** — Neutral (default) and Axis Love
+- **Single-binary deployment** — FastAPI + SQLite, zero external dependencies
 
 ## Quick Start
 
-### Install
-
 ```bash
+# Install
 pip install .
-```
 
-Or run from source:
-
-```bash
-python -m venv .venv
-. .venv/bin/activate
-pip install -e ".[test]"
-```
-
-### Configure
-
-Flow reads configuration from environment variables:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `FLOW_DATA_DIR` | `./data` | Directory for SQLite database |
-| `FLOW_DATABASE_URL` | `sqlite:///{data_dir}/flow.sqlite` | Full database URL |
-| `FLOW_DEFAULT_PROJECT` | `default` | Default project slug |
-| `FLOW_HOST` | `0.0.0.0` | Bind address |
-| `FLOW_PORT` | `8100` | Bind port |
-| `FLOW_DEBUG` | `false` | Debug mode |
-| `FLOW_TRUSTED_HEADERS` | `false` | Trust proxy-set X-Axis-* headers (enable only behind a stripping proxy) |
-| `FLOW_SESSION_SECRET` | *(empty)* | Secret key for browser session cookies; must be set to enable web UI login |
-| `FLOW_SESSION_COOKIE_SECURE` | `false` | Set to `true` in production (HTTPS) to mark session cookies as Secure |
-
-### Run locally
-
-```bash
+# Run
 uvicorn flow_app.main:app --host 0.0.0.0 --port 8100
 ```
 
-Open `http://localhost:8100` in your browser.
+Open `http://localhost:8100` — the board UI is ready.
 
-## Docker Compose Quick Start
-
-A `docker-compose.yml` is included.
-
-Start only the Flow web service:
+### Docker
 
 ```bash
+# Web service only
 docker compose up -d
-```
 
-Start the web service and the automation runner together:
-
-```bash
+# Web service + automation runner
 docker compose --profile runner up -d
 ```
 
-The web service is available at `http://localhost:8100`. The runner is opt-in and shares the same `flow-data` volume and `FLOW_DATABASE_URL` as the web service so both processes use the same SQLite database.
+### First API Key
 
-Before enabling the runner, set `FLOW_API_KEY` in `docker-compose.yml` or an override file to a valid implementer-role key. Use `flow-bootstrap` or the web UI to create the key, then replace the placeholder value.
-
-## Creating Your First API Key
-
-1. Open `http://localhost:8100` in your browser
+1. Open `http://localhost:8100`
 2. Click **API keys** in the board UI
-3. Create a key with the desired role (start with `admin` for setup)
-4. Copy the key — it is shown only once
-
-## Making a Request
+3. Create a key (start with `admin` for setup)
+4. Copy it — shown only once
 
 ```bash
 curl -H "Authorization: Bearer YOUR_KEY" \
@@ -93,32 +78,29 @@ curl -H "Authorization: Bearer YOUR_KEY" \
 
 ## Documentation
 
-Full documentation is in the [Documentation wiki](Documentation/README.md).
+Full docs are in [Documentation/](Documentation/README.md).
 
 | Document | Description |
 |----------|-------------|
-| [Documentation/](Documentation/README.md) | Wiki index — architecture, operations, all modules |
-| [Documentation/Architecture.md](Documentation/Architecture.md) | System design, data model, lifecycle |
-| [Documentation/Operations.md](Documentation/Operations.md) | Setup, deployment, backup, runner |
-| [Documentation/Modules/REST-API.md](Documentation/Modules/REST-API.md) | Complete REST API reference |
-| [Documentation/Modules/MCP.md](Documentation/Modules/MCP.md) | MCP interface for LLM agents |
-| [Documentation/Modules/Security.md](Documentation/Modules/Security.md) | Roles, permissions, and API key management |
-| [Documentation/Modules/Web-UI.md](Documentation/Modules/Web-UI.md) | Browser board, ideas/settings overlays, theme, and engine-vs-UI gaps |
-| [docs/RELEASE-CHECKLIST.md](docs/RELEASE-CHECKLIST.md) | Public release checklist |
-| [docs/UPGRADE.md](docs/UPGRADE.md) | Live upgrade and key-rotation runbook |
+| [Architecture](Documentation/Architecture.md) | System design, data model, lifecycle |
+| [Operations](Documentation/Operations.md) | Setup, deployment, backup, runner |
+| [REST API](Documentation/Modules/REST-API.md) | Complete REST API reference |
+| [MCP](Documentation/Modules/MCP.md) | MCP interface for LLM agents |
+| [Security](Documentation/Modules/Security.md) | Roles, permissions, API key management |
+| [Web UI](Documentation/Modules/Web-UI.md) | Board, themes, overlays |
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────┐
 │  FastAPI Application (flow_app.main)    │
-│  ┌───────────┬───────────┬───────────┐  │
-│  │ REST API  │  MCP API  │  HTML UI  │  │
-│  └─────┬─────┴─────┬─────┴─────┬─────┘  │
+│  ┌───────────┬───────────┬───────────┐ │
+│  │ REST API  │  MCP API  │  HTML UI  │ │
+│  └─────┬─────┴─────┬─────┴─────┬─────┘ │
 │        │           │           │        │
 │  ┌─────┴───────────┴───────────┴─────┐  │
 │  │         Repository Layer          │  │
-│  └─────────────────┬─────────────────┘  │
+│  └─────────────────┬─────────────────┘ │
 │                    │                    │
 │  ┌─────────────────┴─────────────────┐  │
 │  │      SQLAlchemy + SQLite          │  │
@@ -126,32 +108,14 @@ Full documentation is in the [Documentation wiki](Documentation/README.md).
 └─────────────────────────────────────────┘
 ```
 
-- **FastAPI** — HTTP routing, validation, and serialization
-- **SQLite** — embedded database, zero external dependencies
-- **Single-binary deployment** — no separate database server needed
-- **Agent-native** — MCP endpoint and role-scoped API keys built in from day one
+Single process. SQLite file on disk. No external database, no auth service, no broker. One binary, one container, one `uvicorn` command.
 
-## Core Board Columns
+## Contributing
 
-| Column | Purpose |
-|--------|---------|
-| `backlog` | Unprioritized work — agents cannot claim from here |
-| `todo` | Ready for work — agents can claim and move to `doing` |
-| `doing` | Actively being worked on |
-| `review` | Waiting for review |
-| `done` | Completed |
+Contributions welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
-Valid transitions are enforced by role. See [docs/ROLES.md](docs/ROLES.md) for the full matrix.
-
-## Themes
-
-Flow ships with two built-in themes:
-
-- **Neutral** - the default. Clean dark theme with sky-blue accents.
-- **Axis Love** - warm dark theme with pink/magenta accents and monospace typography.
-
-The server default theme is set via the `FLOW_THEME` environment variable (defaults to `neutral`). Users can switch themes at runtime using the theme selector in the topbar - this preference is stored in the browser's `localStorage` and persists across reloads. On a fresh session, the server-configured theme is used as the initial value.
+**Good first issues**: Search for [`good first issue`](../../issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) or [`help wanted`](../../issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22).
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE) © Nyx Prime

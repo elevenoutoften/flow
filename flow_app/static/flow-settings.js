@@ -10,6 +10,7 @@
     runs: [],
     rules: [],
     webhooks: [],
+    notifications: { providers: [], deliveries: [] },
     selectedWorkspaceId: "",
     selectedRunId: "",
     selectedWebhookId: "",
@@ -509,11 +510,14 @@
     document.getElementById("webhook-list")?.addEventListener("click", handleWebhookTableClick);
     document.getElementById("webhook-list")?.addEventListener("change", handleWebhookToggle);
     document.getElementById("webhook-delivery-list")?.addEventListener("click", handleWebhookDeliveryClick);
+
+    document.querySelector("[data-refresh-notifications]")?.addEventListener("click", loadNotifications);
+    document.querySelector("[data-test-notification]")?.addEventListener("click", testNotification);
   }
 
   async function loadLiveSettingsData() {
     await loadAgents();
-    await Promise.allSettled([loadWorkspaces(), loadAgentRuns(), loadAutomationRules(), loadWebhooks()]);
+    await Promise.allSettled([loadWorkspaces(), loadAgentRuns(), loadAutomationRules(), loadWebhooks(), loadNotifications()]);
   }
 
   async function loadAgents() {
@@ -1402,6 +1406,98 @@
       }
     } catch (error) {
       showOutput("webhook-delivery-detail", error.message);
+    }
+  }
+
+  async function loadNotifications() {
+    const providersBody = document.getElementById("notification-provider-list");
+    const deliveriesBody = document.getElementById("notification-delivery-list");
+    if (providersBody) providersBody.innerHTML = loadingRow(4, "Loading providers...");
+    if (deliveriesBody) deliveriesBody.innerHTML = loadingRow(6, "Loading deliveries...");
+    try {
+      liveState.notifications = await requestJson("/api/notifications");
+      renderNotifications();
+    } catch (error) {
+      if (providersBody) providersBody.innerHTML = errorRow(4, error.message);
+      if (deliveriesBody) deliveriesBody.innerHTML = errorRow(6, error.message);
+    }
+  }
+
+  function renderNotifications() {
+    const providersBody = document.getElementById("notification-provider-list");
+    const deliveriesBody = document.getElementById("notification-delivery-list");
+    const providers = liveState.notifications.providers || [];
+    const deliveries = liveState.notifications.deliveries || [];
+    if (providersBody) {
+      providersBody.innerHTML = providers.length
+        ? providers
+            .map((provider) => {
+              const state = provider.configured && provider.registered ? "Ready" : provider.registered ? "Needs config" : "Unavailable";
+              const chip = provider.configured && provider.registered ? "chip-positive" : "chip-warning";
+              return (
+                "<tr><td><code>" +
+                escapeHtml(provider.channel) +
+                "</code></td><td>" +
+                escapeHtml(provider.label || provider.provider) +
+                '</td><td><span class="flow-chip ' +
+                chip +
+                '">' +
+                state +
+                "</span></td><td>" +
+                escapeHtml((provider.config_keys || []).join(", ")) +
+                '<div class="form-hint-spaced">' +
+                escapeHtml(provider.detail || "") +
+                "</div></td></tr>"
+              );
+            })
+            .join("")
+        : emptyRow(4, "No notification providers.");
+    }
+    if (deliveriesBody) {
+      deliveriesBody.innerHTML = deliveries.length
+        ? deliveries
+            .map((delivery) => {
+              return (
+                "<tr><td><code>" +
+                escapeHtml(formatDate(delivery.created_at)) +
+                "</code></td><td>" +
+                escapeHtml(delivery.provider) +
+                "</td><td>" +
+                escapeHtml(delivery.event) +
+                "</td><td><code>" +
+                escapeHtml(delivery.task_id) +
+                '</code></td><td><span class="flow-chip ' +
+                statusChip(delivery.status) +
+                '">' +
+                escapeHtml(delivery.status) +
+                "</span></td><td>" +
+                escapeHtml(delivery.attempts) +
+                "</td></tr>"
+              );
+            })
+            .join("")
+        : emptyRow(6, "No notification deliveries.");
+    }
+  }
+
+  async function testNotification() {
+    const payload = {
+      channel: valueById("notification-test-channel") || "telegram",
+      task_id: valueById("notification-test-task"),
+      message: valueById("notification-test-message") || "Flow notification test.",
+    };
+    if (!payload.task_id) {
+      showOutput("notification-output", "Enter a task ID.");
+      return;
+    }
+    try {
+      showOutput("notification-output", "Sending notification test...");
+      const result = await requestJson("/api/notifications/test", jsonOptions("POST", payload));
+      showOutput("notification-output", JSON.stringify(result, null, 2));
+      await loadNotifications();
+      showToast("Notification test finished.");
+    } catch (error) {
+      showOutput("notification-output", error.message);
     }
   }
 

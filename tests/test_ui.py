@@ -41,6 +41,7 @@ def test_settings_surface_wires_api_ready_segments(client):
         ("agent-runs", "run-test", "agent-run-list"),
         ("automation-rules", "rule-form", "automation-rule-list"),
         ("webhooks", "webhook-form", "webhook-list"),
+        ("notifications", "notification-output", "notification-delivery-list"),
     ):
         assert f'id="{section}" data-settings-live="{section}"' in html
         assert f'id="{form_id}"' in html
@@ -52,6 +53,7 @@ def test_settings_surface_wires_api_ready_segments(client):
     assert "Dispatch history" in html
     assert "Rules engine" in html
     assert "HTTP integrations" in html
+    assert "Human alerts" in html
 
 
 def test_settings_live_segments_call_real_apis_and_preserve_rule_json():
@@ -62,6 +64,8 @@ def test_settings_live_segments_call_real_apis_and_preserve_rule_json():
         '"/api/agent-runs',
         '"/api/automation-rules',
         '"/api/webhooks"',
+        '"/api/notifications"',
+        '"/api/notifications/test"',
     ):
         assert endpoint in script
     assert "bindLiveSettingsControls()" in script
@@ -71,6 +75,15 @@ def test_settings_live_segments_call_real_apis_and_preserve_rule_json():
     save_body = script.split("async function saveAutomationRule", 1)[1].split("function openRuleTest", 1)[0]
     assert "buildRuleJsonFromControls();" not in save_body
     assert "normalizeJsonText" in save_body
+
+
+def test_board_realtime_stream_and_fragment_refresh_are_wired():
+    script = Path("flow_app/static/flow.js").read_text(encoding="utf-8")
+    assert "new EventSource(resolveApiUrl(\"/api/events/board\"))" in script
+    assert "function refreshBoardFromServer" in script
+    assert "replaceFromDocument(doc, \"#boardArea\")" in script
+    assert "startBoardPolling()" in script
+    assert "window.location.reload();" not in script
 
 
 def test_board_renders_handoff_section(client):

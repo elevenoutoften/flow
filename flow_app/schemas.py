@@ -543,6 +543,59 @@ class WebhookDeliveryRetryResponse(BaseModel):
     message: str
 
 
+class NotificationProviderStatus(BaseModel):
+    channel: str
+    provider: str
+    label: str
+    configured: bool
+    registered: bool
+    config_keys: list[str]
+    detail: str
+
+
+class NotificationDeliveryResponse(BaseModel):
+    id: str
+    provider: str
+    event: str
+    task_id: str
+    payload: str
+    status: str
+    attempts: int
+    max_retries: int
+    next_attempt_at: datetime | None
+    last_response_code: int | None
+    last_response_body: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class NotificationOverviewResponse(BaseModel):
+    providers: list[NotificationProviderStatus]
+    deliveries: list[NotificationDeliveryResponse]
+
+
+class NotificationTestRequest(BaseModel):
+    channel: str = "telegram"
+    task_id: str
+    message: str = "Flow notification test."
+
+    @field_validator("channel", "task_id", "message")
+    @classmethod
+    def require_text(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Field is required.")
+        return cleaned
+
+
+class NotificationTestResponse(BaseModel):
+    channel: str
+    provider: str
+    status: str
+    message: str
+    delivery: NotificationDeliveryResponse | None = None
+
+
 class WorkspaceInfo(BaseModel):
     workspace_id: str
     strategy: str

@@ -21,6 +21,7 @@ from flow_app.repository import (
     list_agents,
     update_agent,
 )
+from flow_app.realtime import publish_board_event
 from flow_app.schemas import AgentCreate, AgentUpdate
 
 
@@ -99,6 +100,9 @@ class AgentService:
             raise AgentError("No eligible task found for agent dispatch_statuses.", "not_found")
         run = dispatch_one(self.db, agent, task, api_key=api_key_value, base_url=base_url)
         self._commit()
+        refreshed = get_task(self.db, run.task_id)
+        if refreshed is not None:
+            publish_board_event("task_claimed", refreshed, run_id=run.id)
         return run
 
     def heartbeat(self, run_id: str) -> AgentRun:
@@ -109,11 +113,19 @@ class AgentService:
     def complete_run(self, run_id: str, exit_code: int) -> AgentRun:
         run = complete_run(self.db, self._require_run(run_id), exit_code)
         self._commit()
+        task = get_task(self.db, run.task_id)
+        if task is not None:
+            publish_board_event("task_updated", task, run_id=run.id, exit_code=exit_code)
         return run
 
     def stale_recovery(self) -> list[str]:
         recovered = stale_recovery(self.db)
+        task_ids = [run.task_id for run_id in recovered if (run := get_agent_run(self.db, run_id)) is not None]
         self._commit()
+        for task_id in task_ids:
+            task = get_task(self.db, task_id)
+            if task is not None:
+                publish_board_event("task_updated", task, changed="stale_recovery")
         return recovered
 
     def _require_agent(self, agent_id: str) -> Agent:

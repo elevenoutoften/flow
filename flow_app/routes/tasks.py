@@ -24,6 +24,7 @@ from ..repository import (
     serialize_task_link,
     serialize_task_list,
 )
+from ..realtime import publish_board_event
 from ..schemas import (
     MarkdownImportCommitRequest,
     MarkdownImportCommitResponse,
@@ -100,6 +101,7 @@ def api_commit_markdown_import(
     ):
         batch_id = f"import_{uuid4().hex[:12]}"
         created = []
+        created_tasks = []
         skipped = []
         for item in payload.items:
             duplicate = find_import_duplicate(
@@ -131,9 +133,12 @@ def api_commit_markdown_import(
                     source_title=item.source_title,
                 ),
             )
+            created_tasks.append(task)
             created.append(serialize_task(task))
 
         _commit(db)
+        for task in created_tasks:
+            publish_board_event("task_created", task, import_batch_id=batch_id)
         return MarkdownImportCommitResponse(import_batch_id=batch_id, created=created, skipped=skipped)
 
 @router.get("/tasks/next", response_model=TaskResponse)
@@ -239,6 +244,7 @@ def api_create_task_handoff(
             author_key_id=actor.key_id,
         )
         _commit(db)
+        publish_board_event("task_updated", _require_task(db, task_id), changed="handoff")
         return serialize_task_handoff(handoff)
 
 @router.get("/tasks/{task_id}/links", response_model=list[TaskLinkResponse])
@@ -277,6 +283,7 @@ def api_link_task(
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
         _commit(db)
+        publish_board_event("task_updated", _require_task(db, task_id), changed="dependencies")
         return serialize_task_link(link)
 
 @router.delete("/tasks/{task_id}/link/{link_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -292,6 +299,7 @@ def api_unlink_task(
             raise HTTPException(status_code=404, detail="Task link not found.")
         delete_task_link(db, link_id)
         _commit(db)
+        publish_board_event("task_updated", _require_task(db, task_id), changed="dependencies")
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 @router.patch("/tasks/{task_id}", response_model=TaskResponse)

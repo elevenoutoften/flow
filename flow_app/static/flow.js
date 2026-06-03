@@ -9,14 +9,18 @@
     hoveredCardId: null,
     depLinesVisible: true,
     boardDirty: false,
+    realtimePollTimer: null,
+    refreshInFlight: null,
+    lastRealtimeToastAt: 0,
+    depGlobalsBound: false,
   };
 
   const apiBaseUrl = getApiBaseUrl();
-  const boardArea = document.getElementById("boardArea");
+  let boardArea = document.getElementById("boardArea");
   const createForm = document.getElementById("create-form");
   const detailOverlay = document.getElementById("detail-drawer");
   const noteForm = document.getElementById("note-form");
-  const searchInput = document.getElementById("searchInput");
+  let searchInput = document.getElementById("searchInput");
   const depSvg = document.getElementById("depSvg");
   const toastStack = document.getElementById("toastStack");
   let depFrame = null;
@@ -63,7 +67,7 @@
 
   if (createForm) createForm.addEventListener("submit", handleCreate);
   if (noteForm) noteForm.addEventListener("submit", handleNoteSubmit);
-  if (searchInput) searchInput.addEventListener("input", applyBoardFilters);
+  bindSearchInput();
   window.addEventListener("flow-scroll:init", function () {
     resetDepLayoutSignature();
     initDepHover();
@@ -99,6 +103,7 @@
   initTooltips();
   initDepLines();
   applyBoardFilters();
+  initBoardRealtime();
 
   window.switchColumn = switchColumn;
   window.setFilter = setFilter;
@@ -143,6 +148,13 @@
     const saved = localStorage.getItem("flow-active-column") || "backlog";
     const tab = document.querySelector('.mobile-tab[data-column="' + cssEscape(saved) + '"]');
     if (tab) switchColumn(tab);
+  }
+
+  function bindSearchInput() {
+    searchInput = document.getElementById("searchInput");
+    if (!searchInput || searchInput.dataset.bound === "true") return;
+    searchInput.dataset.bound = "true";
+    searchInput.addEventListener("input", applyBoardFilters);
   }
 
   function initFlowDropdowns(scope) {
@@ -280,7 +292,8 @@
         body: JSON.stringify(payload),
       });
       showToast("Task created.");
-      window.location.reload();
+      closeNewTask();
+      await refreshBoardFromServer({ event: "task_created" });
     } catch (error) {
       showToast(error.message, "error");
     }
@@ -596,7 +609,7 @@
         body: JSON.stringify(payload || {}),
       });
       showToast("Task updated.");
-      window.location.reload();
+      await refreshBoardFromServer({ event: "task_updated", task_id: state.currentTask.id });
     } catch (error) {
       showToast(error.message, "error");
     }
@@ -747,7 +760,7 @@
       scheduleDepRender();
     } catch (error) {
       showToast(error.message, "error");
-      window.location.reload();
+      refreshBoardFromServer({ event: "task_updated" }, { silent: true });
     }
   }
 
@@ -841,10 +854,9 @@
         initDepHover();
       });
     }
-    if (boardArea) boardArea.addEventListener("scroll", scheduleDepRender, { passive: true });
-    document.querySelectorAll(".card-list").forEach(function (list) {
-      list.addEventListener("scroll", scheduleDepRender, { passive: true });
-    });
+    bindDepScrollTargets();
+    if (state.depGlobalsBound) return;
+    state.depGlobalsBound = true;
     window.addEventListener("resize", scheduleDepRender);
     if (window.visualViewport) window.visualViewport.addEventListener("resize", scheduleDepRender);
     startDepLiveRender();
@@ -856,6 +868,18 @@
       renderDepDots();
       clearHighlight();
       if (state.depLinesVisible) startDepLiveRender();
+    });
+  }
+
+  function bindDepScrollTargets() {
+    if (boardArea && boardArea.dataset.depScrollBound !== "true") {
+      boardArea.dataset.depScrollBound = "true";
+      boardArea.addEventListener("scroll", scheduleDepRender, { passive: true });
+    }
+    document.querySelectorAll(".card-list").forEach(function (list) {
+      if (list.dataset.depScrollBound === "true") return;
+      list.dataset.depScrollBound = "true";
+      list.addEventListener("scroll", scheduleDepRender, { passive: true });
     });
   }
 
@@ -1165,8 +1189,149 @@
   function flushBoardDirty() {
     if (!state.boardDirty) return false;
     state.boardDirty = false;
-    window.location.reload();
-    return true;
+    refreshBoardFromServer({ event: "overlay_mutated" });
+    return false;
+  }
+
+  function initBoardRealtime() {
+    if ("EventSource" in window) {
+      try {
+        const source = new EventSource(resolveApiUrl("/api/events/board"));
+        source.addEventListener("message", handleRealtimeMessage);
+        ["task_created", "task_moved", "task_claimed", "task_completed", "task_blocked", "task_updated", "idea_promoted"].forEach(
+          (eventName) => source.addEventListener(eventName, handleRealtimeMessage)
+        );
+        source.onerror = function () {
+          source.close();
+          startBoardPolling();
+        };
+        return;
+      } catch (_error) {}
+    }
+    startBoardPolling();
+  }
+
+  function startBoardPolling() {
+    if (state.realtimePollTimer) return;
+    state.realtimePollTimer = window.setInterval(() => {
+      refreshBoardFromServer({ event: "poll" }, { silent: true });
+    }, 15000);
+  }
+
+  function handleRealtimeMessage(event) {
+    let payload = { event: event.type || "task_updated" };
+    try {
+      payload = JSON.parse(event.data || "{}") || payload;
+    } catch (_error) {}
+    refreshBoardFromServer(payload);
+  }
+
+  async function refreshBoardFromServer(payload, options) {
+    if (state.drag || document.body.classList.contains("is-card-dragging")) {
+      window.setTimeout(() => refreshBoardFromServer(payload, options), 600);
+      return;
+    }
+    if (state.refreshInFlight) return state.refreshInFlight;
+    const selectedFilter = state.filter;
+    const searchValue = searchInput?.value || "";
+    const projectValue = document.querySelector('#projectFilter input[type="hidden"]')?.value || "";
+    const currentTaskId = state.currentTask?.id || "";
+    const detailWasOpen = detailOverlay?.classList.contains("active");
+    state.refreshInFlight = (async () => {
+      try {
+        const response = await fetch(window.location.pathname + window.location.search, {
+          headers: { Accept: "text/html", "X-Flow-Board-Refresh": "1" },
+        });
+        if (!response.ok) throw new Error("Board refresh failed with HTTP " + response.status + ".");
+        const html = await response.text();
+        const doc = new DOMParser().parseFromString(html, "text/html");
+        replaceFromDocument(doc, ".project-filter");
+        replaceFromDocument(doc, ".secondary-bar");
+        replaceFromDocument(doc, "#mobileTabs");
+        replaceFromDocument(doc, "#boardArea");
+        boardArea = document.getElementById("boardArea");
+        searchInput = document.getElementById("searchInput");
+        bindSearchInput();
+        restoreBoardControls({ selectedFilter, searchValue, projectValue });
+        document.getElementById("hover-tip")?.remove();
+        initFlowDropdowns();
+        initCardDrag();
+        initTooltips();
+        bindDepScrollTargets();
+        resetDepLayoutSignature();
+        initDepHover();
+        applyBoardFilters();
+        if (detailWasOpen && currentTaskId) await refreshCurrentDetail(currentTaskId);
+        if (!options?.silent) showRealtimeToast(payload);
+      } catch (error) {
+        if (!options?.silent) showToast(error.message, "error");
+      } finally {
+        state.refreshInFlight = null;
+      }
+    })();
+    return state.refreshInFlight;
+  }
+
+  function replaceFromDocument(doc, selector) {
+    const fresh = doc.querySelector(selector);
+    const current = document.querySelector(selector);
+    if (fresh && current) current.replaceWith(fresh);
+  }
+
+  function restoreBoardControls(values) {
+    if (searchInput) searchInput.value = values.searchValue || "";
+    const projectFilter = document.getElementById("projectFilter");
+    if (projectFilter) {
+      const option = projectFilter.querySelector('.flow-select-option[data-value="' + cssEscape(values.projectValue || "") + '"]');
+      if (option) setFlowDropdownValue(projectFilter, values.projectValue || "", option.textContent.trim());
+    }
+    const filter = values.selectedFilter || "all";
+    const pill = document.querySelector('.filter-pill[data-filter="' + cssEscape(filter) + '"]') || document.querySelector('.filter-pill[data-filter="all"]');
+    if (pill) {
+      document.querySelectorAll(".filter-pill").forEach((item) => item.classList.remove("active"));
+      pill.classList.add("active");
+      state.filter = pill.dataset.filter || "all";
+    }
+  }
+
+  async function refreshCurrentDetail(taskId) {
+    try {
+      const [task, dependencies, handoffs] = await Promise.all([
+        requestJson("/api/tasks/" + encodeURIComponent(taskId)),
+        requestJson("/api/tasks/" + encodeURIComponent(taskId) + "/dependencies"),
+        requestJson("/api/tasks/" + encodeURIComponent(taskId) + "/handoffs"),
+      ]);
+      state.currentTask = task;
+      state.currentDependencies = dependencies;
+      state.currentHandoffs = handoffs || [];
+      renderDetail(task, dependencies, handoffs || []);
+    } catch (_error) {
+      closeDetail();
+    }
+  }
+
+  function showRealtimeToast(payload) {
+    const now = nowMs();
+    if (now - state.lastRealtimeToastAt < 5000) return;
+    state.lastRealtimeToastAt = now;
+    const id = payload?.task_id || "";
+    const label = payload?.event ? formatRealtimeEvent(payload.event) : "Board updated";
+    showToast(id ? label + ": " + id : label);
+  }
+
+  function formatRealtimeEvent(eventName) {
+    const labels = {
+      task_created: "Task created",
+      task_moved: "Task moved",
+      task_claimed: "Task claimed",
+      task_completed: "Task completed",
+      task_blocked: "Task blocked",
+      task_updated: "Task updated",
+      idea_promoted: "Idea promoted",
+      overlay_mutated: "Board updated",
+      poll: "Board synced",
+    };
+    return labels[eventName] || "Board updated";
   }
 
   function applyTheme(theme) {

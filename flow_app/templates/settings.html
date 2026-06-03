@@ -520,9 +520,52 @@
         </div>
       </section>
 
+      <hr class="section-divider">
+      <section id="notifications" data-settings-live="notifications">
+        <div class="section-head">
+          <div>
+            <div class="sec-kicker">10 - Notifications</div>
+            <h3 class="sec-title">Human alerts</h3>
+            <p class="sec-sub">Check provider status and send safe test notifications.</p>
+          </div>
+          <div class="section-actions">
+            <button class="btn btn-secondary" type="button" data-refresh-notifications>Refresh</button>
+          </div>
+        </div>
+        <div class="grid-2">
+          <div class="panel">
+            <div class="panel-title">Providers</div>
+            <div class="table-wrap flow-scroll flow-scroll-auto">
+              <table class="data-table">
+                <thead><tr><th>Channel</th><th>Provider</th><th>State</th><th>Config</th></tr></thead>
+                <tbody id="notification-provider-list"><tr><td colspan="4">Loading providers...</td></tr></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-title">Test notification</div>
+            <div class="form-grid">
+              <div class="field"><label class="form-label">Channel</label><select class="form-input" id="notification-test-channel"><option value="telegram">telegram</option><option value="ops">ops</option><option value="discord">discord</option></select></div>
+              <div class="field"><label class="form-label">Task ID</label><input class="form-input mono" id="notification-test-task" placeholder="flow_000123"></div>
+              <div class="field full"><label class="form-label">Message</label><textarea class="form-input" id="notification-test-message">Flow notification test.</textarea></div>
+            </div>
+            <div class="row-actions"><button class="btn btn-primary" type="button" data-test-notification>Send test</button></div>
+            <div class="output flow-scroll flow-scroll-auto" id="notification-output" hidden></div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-title">Recent deliveries</div>
+          <div class="table-wrap flow-scroll flow-scroll-auto">
+            <table class="data-table">
+              <thead><tr><th>Time</th><th>Provider</th><th>Event</th><th>Task</th><th>Status</th><th>Attempts</th></tr></thead>
+              <tbody id="notification-delivery-list"><tr><td colspan="6">Loading deliveries...</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
       {% set disabled_sections = [
         ("schedules", "08 - Schedules", "Recurring task templates", "Materialize repeated Flow work.", "Backend pending", "UI and API wiring pending"),
-        ("notifications", "10 - Notifications", "Human alerts", "Route notifications to Telegram, Discord, and email.", "Backend pending", "UI and API wiring pending"),
         ("secrets", "11 - Secrets", "Secret references", "Reference credentials without exposing raw secrets.", "Backend pending", "UI and API wiring pending"),
         ("adapters", "12 - Adapters", "Agent templates", "Create workers from adapter presets.", "Backend pending", "UI and API wiring pending"),
         ("remote-runners", "13 - Remote Runners", "Runner fleet", "Track external runner leases and heartbeat.", "Backend pending", "UI and API wiring pending"),
@@ -563,7 +606,7 @@
         <div class="grid-3">
           <div class="stat-card"><div class="stat-label">Projects</div><div class="stat-value">{{ projects | length }}</div><div class="stat-sub">Configured</div><a class="btn btn-ghost btn-sm" href="#projects">Open projects</a></div>
           <div class="stat-card"><div class="stat-label">API keys</div><div class="stat-value">{{ api_keys | length if can_manage_api_keys else 0 }}</div><div class="stat-sub">{{ "Visible" if can_manage_api_keys else "Admin required" }}</div><a class="btn btn-ghost btn-sm" href="#api-keys">Open API keys</a></div>
-          <div class="stat-card"><div class="stat-label">Upcoming</div><div class="stat-value">7</div><div class="stat-sub">Disabled sections</div></div>
+          <div class="stat-card"><div class="stat-label">Upcoming</div><div class="stat-value">6</div><div class="stat-sub">Disabled sections</div></div>
         </div>
       </section>
     </div>

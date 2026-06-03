@@ -57,6 +57,7 @@ from .schemas import (
     IdeaUpdate,
     HandoffResponse,
     NEXT_STATUS_ORDER,
+    NotificationDeliveryResponse,
     PromoteTaskSpec,
     STATUSES,
     ProjectCreate,
@@ -811,6 +812,41 @@ def update_notification_delivery(session: Session, delivery: NotificationDeliver
     session.add(delivery)
     session.flush()
     return delivery
+
+
+def list_notification_deliveries(
+    session: Session,
+    *,
+    provider: str | None = None,
+    task_id: str | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+) -> list[NotificationDelivery]:
+    stmt = select(NotificationDelivery).order_by(NotificationDelivery.created_at.desc(), NotificationDelivery.id)
+    if provider:
+        stmt = stmt.where(NotificationDelivery.provider == provider)
+    if task_id:
+        stmt = stmt.where(NotificationDelivery.task_id == task_id)
+    stmt = _apply_pagination(stmt, limit=limit, offset=offset)
+    return list(session.scalars(stmt).all())
+
+
+def serialize_notification_delivery(delivery: NotificationDelivery) -> NotificationDeliveryResponse:
+    return NotificationDeliveryResponse(
+        id=delivery.id,
+        provider=delivery.provider,
+        event=delivery.event,
+        task_id=delivery.task_id,
+        payload=delivery.payload,
+        status=delivery.status,
+        attempts=delivery.attempts,
+        max_retries=delivery.max_retries,
+        next_attempt_at=_ensure_optional_datetime(delivery.next_attempt_at),
+        last_response_code=delivery.last_response_code,
+        last_response_body=delivery.last_response_body,
+        created_at=_ensure_datetime(delivery.created_at),
+        updated_at=_ensure_datetime(delivery.updated_at),
+    )
 
 
 def serialize_webhook_delivery(delivery: WebhookDelivery) -> WebhookDeliveryResponse:

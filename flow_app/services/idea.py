@@ -15,6 +15,7 @@ from flow_app.repository import (
     unarchive_idea,
     update_idea,
 )
+from flow_app.realtime import publish_board_event
 from flow_app.schemas import IdeaCreate, IdeaUpdate, PromoteTaskSpec
 
 
@@ -77,6 +78,13 @@ class IdeaService:
         for task in tasks:
             webhook_notifier.send(session, "idea_promoted", task, {"idea_id": idea.id})
         self._commit(session)
+        publish_board_event(
+            "idea_promoted",
+            task=tasks[0] if tasks else None,
+            idea_id=idea.id,
+            task_ids=[task.id for task in tasks],
+            project=idea.project,
+        )
         return idea
 
     def serialize_idea(self, idea: Idea):

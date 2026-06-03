@@ -18,6 +18,7 @@ from flow_app.repository import (
     list_task_handoffs,
     task_update_changes,
 )
+from flow_app.realtime import publish_board_event
 from flow_app.schemas import HandoffRequest, TaskCreate, TaskUpdate
 from flow_app.security import Actor, can_note_task, is_valid_transition
 from flow_app.storage_helpers import get_bool_field
@@ -117,6 +118,7 @@ class TaskService:
         if self._discord is not None:
             self._discord.send(self.db, "task_created", task)
         self._commit(self.db)
+        publish_board_event("task_created", task)
         return task
 
     def list_tasks(
@@ -170,7 +172,9 @@ class TaskService:
                     task,
                     {"human_required": True, "blocker_reason": task.blocker_reason},
                 )
+        event_name = "task_blocked" if not was_human_required and get_bool_field(task.human_required) else "task_updated"
         self._commit(self.db)
+        publish_board_event(event_name, task)
         return task
 
     def claim_task(self, task_id: str, actor: Actor, agent_name: str | None = None) -> Task:
@@ -205,6 +209,7 @@ class TaskService:
         if self._discord is not None:
             self._discord.send(self.db, "task_claimed", task, data)
         self._commit(self.db)
+        publish_board_event("task_claimed", task)
         return task
 
     def release_task(self, task_id: str) -> Task:
@@ -223,6 +228,7 @@ class TaskService:
             raise TaskConcurrentModificationError(task_id)
         task = self._require_task(task_id)
         self._commit(self.db)
+        publish_board_event("task_updated", task)
         return task
 
     def move_task(self, task_id: str, target_status: str, actor: Actor) -> Task:
@@ -260,6 +266,7 @@ class TaskService:
         if self._discord is not None:
             self._discord.send(self.db, "task_moved", task, data)
         self._commit(self.db)
+        publish_board_event("task_moved", task)
         return task
 
     def add_note(self, task_id: str, note_text: str, actor: Actor, author: str | None = None) -> Task:
@@ -268,7 +275,9 @@ class TaskService:
             raise NotePermissionError()
         add_note(self.db, task, note_text, author=author or actor.name, author_key_id=actor.key_id)
         self._commit(self.db)
-        return self._require_task(task_id)
+        task = self._require_task(task_id)
+        publish_board_event("task_updated", task)
+        return task
 
     def done_task(
         self,
@@ -314,7 +323,9 @@ class TaskService:
         if self._discord is not None:
             self._discord.send(self.db, "task_completed", task, data)
         self._commit(self.db)
-        return self._require_task(task_id)
+        task = self._require_task(task_id)
+        publish_board_event("task_completed", task)
+        return task
 
     def set_human_required(
         self,
@@ -340,6 +351,7 @@ class TaskService:
             raise TaskConcurrentModificationError(task_id)
         task = self._require_task(task_id)
         self._commit(self.db)
+        publish_board_event("task_blocked" if human_required else "task_updated", task)
         return task
 
     def _require_task(self, task_id: str) -> Task:

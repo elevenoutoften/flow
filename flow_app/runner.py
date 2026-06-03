@@ -16,7 +16,8 @@ from sqlalchemy.orm import Session
 from .database import build_engine, build_session_factory, default_database_url
 from .dispatcher import DispatchError, _next_capable_task, complete_run, dispatch_one, stale_recovery
 from .main import ensure_compatible_schema
-from .models import Agent, AutomationRule, utcnow
+from .models import Agent, AutomationRule, Task, utcnow
+from .realtime import publish_board_event
 from .rules_engine import emit_event
 from .storage_helpers import get_comma_list
 from .webhook_cli import run_deliveries
@@ -70,8 +71,11 @@ def run_pass(
         session.commit()
         return result
 
-    result.dispatched = _run_dispatch(config, session, session_factory)
+    dispatched_tasks = _run_dispatch(config, session, session_factory)
+    result.dispatched = len(dispatched_tasks)
     session.commit()
+    for task in dispatched_tasks:
+        publish_board_event("task_claimed", task)
 
     result.stale_recovered = _run_stale_recovery(session, dry_run=config.dry_run)
     session.commit()
@@ -148,8 +152,8 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _run_dispatch(config: RunnerConfig, session: Session, session_factory: Callable[[], Session]) -> int:
-    dispatched = 0
+def _run_dispatch(config: RunnerConfig, session: Session, session_factory: Callable[[], Session]) -> list[Task]:
+    dispatched: list[Task] = []
     for profile in config.profiles:
         agent = session.scalars(select(Agent).where(Agent.name == profile)).first()
         if agent is None:
@@ -177,7 +181,7 @@ def _run_dispatch(config: RunnerConfig, session: Session, session_factory: Calla
         except DispatchError as exc:
             logger.info("Skipping dispatch for agent %s: %s", agent.name, exc)
             continue
-        dispatched += 1
+        dispatched.append(task)
         logger.info("Dispatched task %s to agent %s as run %s", task.id, agent.name, run.id)
     return dispatched
 

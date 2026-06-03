@@ -151,7 +151,7 @@
           </label>
           {% endfor %}
         </div>
-        <p class="form-hint" style="margin-top:var(--space-4)">Themes change the accent color only — surfaces, type, and layout stay identical. The change applies live across the board and is saved in this browser.</p>
+        <p class="form-hint form-hint-spaced">Themes change the accent color only — surfaces, type, and layout stay identical. The change applies live across the board and is saved in this browser.</p>
       </section>
 
       <hr class="section-divider">
@@ -202,19 +202,326 @@
           <div class="panel" id="generated-api-key" hidden>
             <div class="panel-title">One-time key</div>
             <div class="note">Shown once. Copy it now because it cannot be retrieved later.</div>
-            <div class="field" style="margin-top:var(--space-4)"><label class="form-label">Key</label><input class="form-input mono" id="generated-api-key-value" readonly></div>
+            <div class="field field-spaced"><label class="form-label">Key</label><input class="form-input mono" id="generated-api-key-value" readonly></div>
             <button class="btn btn-secondary" type="button" data-copy-api-key>Copy key</button>
           </div>
         </div>
       </section>
 
+      <hr class="section-divider">
+      <section id="agents" data-settings-live="agents">
+        <div class="section-head">
+          <div>
+            <div class="sec-kicker">04 - Agents</div>
+            <h3 class="sec-title">Workers &amp; adapters</h3>
+            <p class="sec-sub">Define runnable workers and LLM/script adapters.</p>
+          </div>
+          <div class="section-actions">
+            <button class="btn btn-secondary" type="button" data-refresh-agents>Refresh</button>
+            <button class="btn btn-primary" type="button" data-open-agent-form>Add agent</button>
+          </div>
+        </div>
+        <div class="table-wrap flow-scroll flow-scroll-auto">
+          <table class="data-table">
+            <thead><tr><th>Enabled</th><th>Name</th><th>Type</th><th>Capabilities</th><th>Conc.</th><th>Dispatch</th><th class="actions">Actions</th></tr></thead>
+            <tbody id="agent-list"><tr><td colspan="7">Loading agents...</td></tr></tbody>
+          </table>
+        </div>
+        <form class="panel revealable" id="agent-form" hidden>
+          <div class="panel-title" id="agent-form-title">Add agent</div>
+          <input type="hidden" name="id">
+          <div class="form-grid">
+            <div class="field"><label class="form-label">Name</label><input class="form-input" name="name" required></div>
+            <div class="field"><label class="form-label">Agent type</label><select class="form-input" name="agent_type"><option value="cli">cli</option><option value="hermes">hermes</option><option value="codex">codex</option><option value="claude">claude</option><option value="reviewer">reviewer</option><option value="observer">observer</option><option value="custom">custom</option></select></div>
+            <div class="field full"><label class="form-label">Description</label><textarea class="form-input" name="description"></textarea></div>
+            <div class="field"><label class="form-label">Enabled</label><label class="toggle"><input type="checkbox" name="enabled" checked><span class="toggle-track"></span></label></div>
+            <div class="field">
+              <label class="form-label">Max concurrency</label>
+              <div class="number-stepper" data-min="1">
+                <button type="button" class="stepper-dec" aria-label="Decrease max concurrency"><svg viewBox="0 0 14 14" fill="none"><path d="M3 7h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+                <input class="form-input" name="max_concurrency" type="number" min="1" value="1" aria-label="Max concurrency value">
+                <button type="button" class="stepper-inc" aria-label="Increase max concurrency"><svg viewBox="0 0 14 14" fill="none"><path d="M3 7h8M7 3v8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+              </div>
+            </div>
+            <div class="field full"><label class="form-label">Capabilities</label><div class="check-group cols-3" data-check-list="capabilities">{% for value in ["implement", "plan", "review", "read_only", "architect", "custom"] %}<label class="check"><input type="checkbox" value="{{ value }}"> {{ value }}</label>{% endfor %}</div></div>
+            <div class="field full"><label class="form-label">Dispatch statuses</label><div class="check-group cols-3" data-check-list="dispatch_statuses">{% for status in ["backlog", "todo", "doing", "review", "done"] %}<label class="check"><input type="checkbox" value="{{ status }}"> {{ status }}</label>{% endfor %}</div></div>
+            <div class="field full"><label class="form-label">Working directory</label><input class="form-input mono" name="working_directory" placeholder="/repos/flow"></div>
+          </div>
+          <details class="advanced" open>
+            <summary>Advanced configuration</summary>
+            <div class="advanced-body">
+              <div class="form-grid">
+                <div class="field full"><label class="form-label">Command</label><textarea class="form-input mono form-input-compact" name="command"></textarea></div>
+                <div class="field"><label class="form-label">Command allowlist</label><textarea class="form-input mono" name="command_allowlist"></textarea></div>
+                <div class="field"><label class="form-label">Environment allowlist</label><textarea class="form-input mono" name="env_allowlist"></textarea></div>
+                <div class="field">
+                  <label class="form-label">Heartbeat timeout (s)</label>
+                  <div class="number-stepper" data-min="1">
+                    <button type="button" class="stepper-dec" aria-label="Decrease heartbeat timeout"><svg viewBox="0 0 14 14" fill="none"><path d="M3 7h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+                    <input class="form-input" name="heartbeat_timeout_seconds" type="number" min="1" value="300" aria-label="Heartbeat timeout value">
+                    <button type="button" class="stepper-inc" aria-label="Increase heartbeat timeout"><svg viewBox="0 0 14 14" fill="none"><path d="M3 7h8M7 3v8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+                  </div>
+                </div>
+                <div class="field">
+                  <label class="form-label">Stale claim timeout (s)</label>
+                  <div class="number-stepper" data-min="1">
+                    <button type="button" class="stepper-dec" aria-label="Decrease stale claim timeout"><svg viewBox="0 0 14 14" fill="none"><path d="M3 7h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+                    <input class="form-input" name="stale_claim_timeout_seconds" type="number" min="1" value="600" aria-label="Stale claim timeout value">
+                    <button type="button" class="stepper-inc" aria-label="Increase stale claim timeout"><svg viewBox="0 0 14 14" fill="none"><path d="M3 7h8M7 3v8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </details>
+          <div class="row-actions">
+            <button class="btn btn-ghost" type="button" data-close-agent-form>Cancel</button>
+            <button class="btn btn-secondary" type="button" data-agent-dispatch-selected>Test dispatch</button>
+            <button class="btn btn-primary" type="submit">Save agent</button>
+          </div>
+          <div class="output flow-scroll flow-scroll-auto" id="agent-output" hidden></div>
+        </form>
+      </section>
+
+      <hr class="section-divider">
+      <section id="workspaces" data-settings-live="workspaces">
+        <div class="section-head">
+          <div>
+            <div class="sec-kicker">05 - Workspaces</div>
+            <h3 class="sec-title">Run isolation</h3>
+            <p class="sec-sub">Keep agent runs isolated from shared repositories.</p>
+          </div>
+          <div class="section-actions">
+            <button class="btn btn-secondary" type="button" data-refresh-workspaces>Refresh</button>
+            <button class="btn btn-primary" type="button" data-open-workspace-form>Create workspace</button>
+          </div>
+        </div>
+        <div class="table-wrap flow-scroll flow-scroll-auto">
+          <table class="data-table">
+            <thead><tr><th>Enabled</th><th>Name</th><th>Strategy</th><th>Base branch</th><th>Root dir</th><th>Scratch root</th><th class="actions">Actions</th></tr></thead>
+            <tbody id="workspace-list"><tr><td colspan="7">Loading workspaces...</td></tr></tbody>
+          </table>
+        </div>
+        <div class="grid-2 revealable" id="workspace-panels" hidden>
+          <form class="panel" id="workspace-form">
+            <div class="panel-title" id="workspace-form-title">Create workspace</div>
+            <input type="hidden" name="id">
+            <div class="form-grid">
+              <div class="field"><label class="form-label">Name</label><input class="form-input" name="name" required></div>
+              <div class="field"><label class="form-label">Strategy</label><select class="form-input" name="strategy"><option value="git_worktree">git_worktree</option><option value="shared_dir">shared_dir</option><option value="scratch_dir">scratch_dir</option></select></div>
+              <div class="field full"><label class="form-label">Description</label><textarea class="form-input" name="description"></textarea></div>
+              <div class="field"><label class="form-label">Enabled</label><label class="toggle"><input type="checkbox" name="enabled" checked><span class="toggle-track"></span></label></div>
+              <div class="field"><label class="form-label">Base branch</label><input class="form-input mono" name="base_branch" value="main"></div>
+              <div class="field"><label class="form-label">Branch prefix</label><input class="form-input mono" name="branch_prefix" value="task-"></div>
+              <div class="field"><label class="form-label">Root directory</label><input class="form-input mono" name="root_dir"></div>
+              <div class="field"><label class="form-label">Scratch root</label><input class="form-input mono" name="scratch_root" value="/tmp/flow-scratch"></div>
+            </div>
+            <div class="row-actions"><button class="btn btn-ghost" type="button" data-close-workspace-form>Cancel</button><button class="btn btn-primary" type="submit">Save workspace</button></div>
+          </form>
+          <div class="panel" id="workspace-tools">
+            <div class="panel-title">Provision / cleanup</div>
+            <div class="field"><label class="form-label">Selected workspace</label><input class="form-input mono" id="workspace-tools-id" readonly></div>
+            <div class="field"><label class="form-label">Task ID</label><input class="form-input mono" id="workspace-provision-task" placeholder="flow_000123"></div>
+            <div class="field"><label class="form-label">Repo path override</label><input class="form-input mono" id="workspace-provision-repo"></div>
+            <div class="row-actions"><button class="btn btn-secondary" type="button" data-provision-workspace>Provision workspace</button></div>
+            <div class="subhead">Cleanup</div>
+            <div class="field"><label class="form-label">Path</label><input class="form-input mono" id="workspace-cleanup-path"></div>
+            <div class="field"><label class="form-label">Strategy</label><select class="form-input" id="workspace-cleanup-strategy"><option value="git_worktree">git_worktree</option><option value="shared_dir">shared_dir</option><option value="scratch_dir">scratch_dir</option></select></div>
+            <div class="row-actions"><button class="btn btn-danger" type="button" data-cleanup-workspace>Cleanup workspace</button></div>
+            <div class="output flow-scroll flow-scroll-auto" id="workspace-output" hidden></div>
+          </div>
+        </div>
+      </section>
+
+      <hr class="section-divider">
+      <section id="agent-runs" data-settings-live="agent-runs">
+        <div class="section-head">
+          <div>
+            <div class="sec-kicker">06 - Agent Runs</div>
+            <h3 class="sec-title">Dispatch history</h3>
+            <p class="sec-sub">See and debug dispatcher activity.</p>
+          </div>
+          <div class="section-actions">
+            <button class="btn btn-secondary" type="button" data-refresh-runs>Refresh</button>
+            <button class="btn btn-primary" type="button" data-open-run-test>Safe test dispatch</button>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-title">Filters</div>
+          <div class="form-grid">
+            <div class="field"><label class="form-label">Agent</label><select class="form-input" id="run-agent-filter"><option value="">All agents</option></select></div>
+            <div class="field"><label class="form-label">Status</label><select class="form-input" id="run-status-filter"><option value="">All statuses</option><option value="pending">pending</option><option value="running">running</option><option value="completed">completed</option><option value="failed">failed</option><option value="stale">stale</option></select></div>
+            <div class="field"><label class="form-label">Task ID</label><input class="form-input mono" id="run-task-filter" placeholder="any task"></div>
+          </div>
+          <div class="row-actions"><button class="btn btn-ghost" type="button" data-clear-run-filters>Clear</button><button class="btn btn-secondary" type="button" data-apply-run-filters>Apply filters</button><button class="btn btn-danger" type="button" data-stale-recovery>Recover stale runs</button></div>
+        </div>
+        <div class="table-wrap flow-scroll flow-scroll-auto">
+          <table class="data-table">
+            <thead><tr><th>Status</th><th>Task</th><th>Agent</th><th>Heartbeat</th><th>Workspace</th><th class="actions">Actions</th></tr></thead>
+            <tbody id="agent-run-list"><tr><td colspan="6">Loading runs...</td></tr></tbody>
+          </table>
+        </div>
+        <div class="grid-2">
+          <div class="panel revealable" id="run-selected" hidden></div>
+          <div class="panel revealable" id="run-test" hidden>
+            <div class="panel-title">Safe test dispatch</div>
+            <div class="field"><label class="form-label">Agent</label><select class="form-input" id="run-test-agent"></select></div>
+            <div class="field"><label class="form-label">Task ID</label><input class="form-input mono" id="run-test-task" placeholder="optional; blank picks next eligible task"></div>
+            <label class="check"><input type="checkbox" id="run-test-dry" checked> Dry-run only - do not claim a task</label>
+            <div class="row-actions"><button class="btn btn-ghost" type="button" data-close-run-test>Cancel</button><button class="btn btn-primary" type="button" data-run-test-dispatch>Run test dispatch</button></div>
+            <div class="output flow-scroll flow-scroll-auto" id="run-test-output" hidden></div>
+          </div>
+        </div>
+      </section>
+
+      <hr class="section-divider">
+      <section id="automation-rules" data-settings-live="automation-rules">
+        <div class="section-head">
+          <div>
+            <div class="sec-kicker">07 - Automation Rules</div>
+            <h3 class="sec-title">Rules engine</h3>
+            <p class="sec-sub">Trigger actions when tasks change or on schedules.</p>
+          </div>
+          <div class="section-actions">
+            <button class="btn btn-secondary" type="button" data-refresh-rules>Refresh</button>
+            <button class="btn btn-primary" type="button" data-open-rule-form>Create rule</button>
+          </div>
+        </div>
+        <div class="table-wrap flow-scroll flow-scroll-auto">
+          <table class="data-table">
+            <thead><tr><th>Enabled</th><th>Name</th><th>Trigger</th><th>Priority</th><th>Last run</th><th class="actions">Actions</th></tr></thead>
+            <tbody id="automation-rule-list"><tr><td colspan="6">Loading rules...</td></tr></tbody>
+          </table>
+        </div>
+        <form class="panel revealable" id="rule-form" hidden>
+          <div class="panel-title" id="rule-form-title">Create rule</div>
+          <input type="hidden" name="id">
+          <div class="form-grid">
+            <div class="field"><label class="form-label">Name</label><input class="form-input" name="name" required></div>
+            <div class="field">
+              <label class="form-label">Priority</label>
+              <div class="number-stepper" data-min="0" data-max="1000">
+                <button type="button" class="stepper-dec" aria-label="Decrease rule priority"><svg viewBox="0 0 14 14" fill="none"><path d="M3 7h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+                <input class="form-input" name="priority" type="number" min="0" max="1000" value="50" aria-label="Rule priority value">
+                <button type="button" class="stepper-inc" aria-label="Increase rule priority"><svg viewBox="0 0 14 14" fill="none"><path d="M3 7h8M7 3v8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+              </div>
+            </div>
+            <div class="field full"><label class="form-label">Description</label><textarea class="form-input" name="description"></textarea></div>
+            <div class="field"><label class="form-label">Enabled</label><label class="toggle"><input type="checkbox" name="enabled" checked><span class="toggle-track"></span></label></div>
+            <div class="field"><label class="form-label">Trigger</label><select class="form-input" name="trigger"><option value="task_created">task_created</option><option value="task_moved">task_moved</option><option value="task_claimed">task_claimed</option><option value="task_completed">task_completed</option><option value="task_blocked">task_blocked</option><option value="cron">cron</option></select></div>
+          </div>
+          <div class="subhead">Trigger config</div>
+          <div class="form-grid">
+            <div class="field"><label class="form-label">Project scope</label><select class="form-input" data-rule-project><option value="*">All projects</option>{% for project in projects %}<option value="{{ project.slug }}">{{ project.name }}</option>{% endfor %}</select></div>
+            <div class="field"><label class="form-label">From status</label><select class="form-input" data-rule-from-status><option value="*">Any</option>{% for status in ["backlog", "todo", "doing", "review", "done"] %}<option value="{{ status }}">{{ status }}</option>{% endfor %}</select></div>
+            <div class="field"><label class="form-label">To status</label><select class="form-input" data-rule-to-status><option value="*">Any</option>{% for status in ["backlog", "todo", "doing", "review", "done"] %}<option value="{{ status }}">{{ status }}</option>{% endfor %}</select></div>
+            <div class="field"><label class="form-label">Cron expression</label><input class="form-input mono" data-rule-cron placeholder="0 9 * * *"></div>
+          </div>
+          <div class="grid-2">
+            <div class="panel">
+              <div class="panel-title">Conditions</div>
+              <div class="field"><label class="form-label">Field</label><input class="form-input mono" data-rule-condition-field placeholder="status"></div>
+              <div class="field"><label class="form-label">Operator</label><select class="form-input" data-rule-condition-op><option value="eq">eq</option><option value="ne">ne</option><option value="contains">contains</option><option value="exists">exists</option></select></div>
+              <div class="field"><label class="form-label">Value</label><input class="form-input" data-rule-condition-value placeholder="review"></div>
+            </div>
+            <div class="panel">
+              <div class="panel-title">Actions</div>
+              <div class="field"><label class="form-label">Type</label><select class="form-input" data-rule-action-type><option value="notify">notify</option><option value="dispatch">dispatch</option><option value="move">move</option><option value="add_note">add_note</option><option value="webhook">webhook</option></select></div>
+              <div class="field"><label class="form-label">Target</label><input class="form-input" data-rule-action-target placeholder="telegram"></div>
+              <div class="field"><label class="form-label">Message / value</label><textarea class="form-input" data-rule-action-value></textarea></div>
+            </div>
+          </div>
+          <details class="advanced">
+            <summary>Edit JSON payload</summary>
+            <div class="advanced-body">
+              <div class="form-grid">
+                <div class="field full"><label class="form-label">trigger_config</label><textarea class="form-input mono" name="trigger_config">{}</textarea></div>
+                <div class="field"><label class="form-label">conditions</label><textarea class="form-input mono" name="conditions">[]</textarea></div>
+                <div class="field"><label class="form-label">actions</label><textarea class="form-input mono" name="actions">[]</textarea></div>
+              </div>
+            </div>
+          </details>
+          <div class="row-actions"><button class="btn btn-ghost" type="button" data-close-rule-form>Cancel</button><button class="btn btn-secondary" type="button" data-rule-build-json>Build JSON from controls</button><button class="btn btn-primary" type="submit">Save rule</button></div>
+        </form>
+        <div class="panel revealable" id="rule-test" hidden>
+          <div class="panel-title">Test rule evaluation</div>
+          <div class="form-grid">
+            <div class="field"><label class="form-label">Trigger</label><select class="form-input" id="rule-test-trigger"><option value="task_created">task_created</option><option value="task_moved">task_moved</option><option value="task_claimed">task_claimed</option><option value="task_completed">task_completed</option><option value="task_blocked">task_blocked</option><option value="cron">cron</option></select></div>
+            <div class="field"><label class="form-label">Task ID</label><input class="form-input mono" id="rule-test-task"></div>
+            <div class="field"><label class="form-label">Project</label><input class="form-input mono" id="rule-test-project" value="{{ default_project }}"></div>
+            <div class="field full"><label class="form-label">Data JSON</label><textarea class="form-input mono" id="rule-test-data">{}</textarea></div>
+          </div>
+          <div class="row-actions"><button class="btn btn-ghost" type="button" data-close-rule-test>Close</button><button class="btn btn-primary" type="button" data-evaluate-rule>Evaluate rule</button></div>
+          <div class="output flow-scroll flow-scroll-auto" id="rule-test-output" hidden></div>
+        </div>
+      </section>
+
+      <hr class="section-divider">
+      <section id="webhooks" data-settings-live="webhooks">
+        <div class="section-head">
+          <div>
+            <div class="sec-kicker">09 - Webhooks</div>
+            <h3 class="sec-title">HTTP integrations</h3>
+            <p class="sec-sub">Deliver task events to external systems.</p>
+          </div>
+          <div class="section-actions">
+            <button class="btn btn-secondary" type="button" data-refresh-webhooks>Refresh</button>
+            <button class="btn btn-primary" type="button" data-open-webhook-form>Create webhook</button>
+          </div>
+        </div>
+        <div class="table-wrap flow-scroll flow-scroll-auto">
+          <table class="data-table">
+            <thead><tr><th>Active</th><th>Name</th><th>URL</th><th>Events</th><th>Project</th><th class="actions">Actions</th></tr></thead>
+            <tbody id="webhook-list"><tr><td colspan="6">Loading webhooks...</td></tr></tbody>
+          </table>
+        </div>
+        <div class="grid-2 revealable" id="webhook-panels" hidden>
+          <form class="panel" id="webhook-form">
+            <div class="panel-title" id="webhook-form-title">Create webhook</div>
+            <input type="hidden" name="id">
+            <div class="form-grid">
+              <div class="field"><label class="form-label">Name</label><input class="form-input" name="name" required></div>
+              <div class="field"><label class="form-label">Active</label><label class="toggle"><input type="checkbox" name="active" checked><span class="toggle-track"></span></label></div>
+              <div class="field full"><label class="form-label">URL</label><input class="form-input mono" name="url" required placeholder="https://example.com/flow-webhook"></div>
+              <div class="field"><label class="form-label">Project scope</label><select class="form-input" name="project"><option value="*">All projects</option>{% for project in projects %}<option value="{{ project.slug }}">{{ project.name }}</option>{% endfor %}</select></div>
+              <div class="field">
+                <label class="form-label">Max retries</label>
+                <div class="number-stepper" data-min="0">
+                  <button type="button" class="stepper-dec" aria-label="Decrease max retries"><svg viewBox="0 0 14 14" fill="none"><path d="M3 7h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+                  <input class="form-input" name="max_retries" type="number" min="0" value="3" aria-label="Max retries value">
+                  <button type="button" class="stepper-inc" aria-label="Increase max retries"><svg viewBox="0 0 14 14" fill="none"><path d="M3 7h8M7 3v8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+                </div>
+              </div>
+              <div class="field">
+                <label class="form-label">Retry backoff (s)</label>
+                <div class="number-stepper" data-min="0">
+                  <button type="button" class="stepper-dec" aria-label="Decrease retry backoff"><svg viewBox="0 0 14 14" fill="none"><path d="M3 7h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+                  <input class="form-input" name="retry_backoff_seconds" type="number" min="0" value="60" aria-label="Retry backoff value">
+                  <button type="button" class="stepper-inc" aria-label="Increase retry backoff"><svg viewBox="0 0 14 14" fill="none"><path d="M3 7h8M7 3v8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+                </div>
+              </div>
+              <div class="field full"><label class="form-label">Events</label><div class="check-group cols-3" data-check-list="webhook_events">{% for event in ["task_created", "task_moved", "task_claimed", "task_completed", "task_blocked", "idea_promoted"] %}<label class="check"><input type="checkbox" value="{{ event }}"> {{ event }}</label>{% endfor %}</div></div>
+            </div>
+            <div class="note" id="webhook-secret-note" hidden></div>
+            <div class="row-actions"><button class="btn btn-ghost" type="button" data-close-webhook-form>Cancel</button><button class="btn btn-danger" type="button" data-delete-webhook>Delete webhook</button><button class="btn btn-primary" type="submit">Save webhook</button></div>
+          </form>
+          <div class="panel" id="webhook-deliveries">
+            <div class="panel-title">Deliveries</div>
+            <div class="field"><label class="form-label">Selected webhook</label><input class="form-input mono" id="webhook-delivery-id" readonly></div>
+            <div class="field"><label class="form-label">Status</label><select class="form-input" id="webhook-delivery-status"><option value="">Any</option><option value="pending">pending</option><option value="success">success</option><option value="failed">failed</option><option value="retrying">retrying</option></select></div>
+            <div class="row-actions"><button class="btn btn-secondary" type="button" data-load-webhook-deliveries>Load deliveries</button></div>
+            <div class="table-wrap flow-scroll flow-scroll-auto">
+              <table class="data-table">
+                <thead><tr><th>Time</th><th>Event</th><th>Status</th><th>Response</th><th>Attempts</th><th class="actions">Actions</th></tr></thead>
+                <tbody id="webhook-delivery-list"><tr><td colspan="6">Select a webhook.</td></tr></tbody>
+              </table>
+            </div>
+            <div class="output flow-scroll flow-scroll-auto" id="webhook-delivery-detail" hidden></div>
+          </div>
+        </div>
+      </section>
+
       {% set disabled_sections = [
-        ("agents", "04 - Agents", "Workers & adapters", "Define runnable workers and LLM/script adapters.", "API available", "UI wiring pending"),
-        ("workspaces", "05 - Workspaces", "Run isolation", "Keep agent runs isolated from shared repositories.", "API available", "UI wiring pending"),
-        ("agent-runs", "06 - Agent Runs", "Dispatch history", "Inspect active and previous worker runs.", "API available", "UI wiring pending"),
-        ("automation-rules", "07 - Automation Rules", "Rules engine", "Create event-driven automation policies.", "API available", "UI wiring pending"),
         ("schedules", "08 - Schedules", "Recurring task templates", "Materialize repeated Flow work.", "Backend pending", "UI and API wiring pending"),
-        ("webhooks", "09 - Webhooks", "HTTP integrations", "Deliver task events to external systems.", "API available", "UI wiring pending"),
         ("notifications", "10 - Notifications", "Human alerts", "Route notifications to Telegram, Discord, and email.", "Backend pending", "UI and API wiring pending"),
         ("secrets", "11 - Secrets", "Secret references", "Reference credentials without exposing raw secrets.", "Backend pending", "UI and API wiring pending"),
         ("adapters", "12 - Adapters", "Agent templates", "Create workers from adapter presets.", "Backend pending", "UI and API wiring pending"),
@@ -235,7 +542,7 @@
         </div>
         <div class="panel">
           <div class="panel-title">Coming soon</div>
-          <div class="system-table" style="margin-top:0">
+          <div class="system-table is-flush">
             <div class="system-row"><span class="system-label">state</span><span class="flow-chip chip-neutral">Disabled</span></div>
             <div class="system-row"><span class="system-label">backend</span><span class="flow-chip {{ 'chip-positive' if backend_state == 'API available' else 'chip-warning' }}">{{ backend_state }}</span></div>
             <div class="system-row"><span class="system-label">surface</span><span class="system-value">{{ implementation_state }}</span></div>
@@ -256,7 +563,7 @@
         <div class="grid-3">
           <div class="stat-card"><div class="stat-label">Projects</div><div class="stat-value">{{ projects | length }}</div><div class="stat-sub">Configured</div><a class="btn btn-ghost btn-sm" href="#projects">Open projects</a></div>
           <div class="stat-card"><div class="stat-label">API keys</div><div class="stat-value">{{ api_keys | length if can_manage_api_keys else 0 }}</div><div class="stat-sub">{{ "Visible" if can_manage_api_keys else "Admin required" }}</div><a class="btn btn-ghost btn-sm" href="#api-keys">Open API keys</a></div>
-          <div class="stat-card"><div class="stat-label">Upcoming</div><div class="stat-value">12</div><div class="stat-sub">Disabled sections</div></div>
+          <div class="stat-card"><div class="stat-label">Upcoming</div><div class="stat-value">7</div><div class="stat-sub">Disabled sections</div></div>
         </div>
       </section>
     </div>

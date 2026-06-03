@@ -1071,8 +1071,6 @@
       const dY = dRect.top + dRect.height / 2;
       const isResolved = blockerCol && blockerCol.dataset.column === "done";
       const points = depEdgePoints(bRect, dRect, bY, dY);
-      if (!depPointInsideClip({ x: points.x1, y: points.y1 }, getDepCardClipRect(blocker))) return;
-      if (!depPointInsideClip({ x: points.x2, y: points.y2 }, getDepCardClipRect(blocked))) return;
       depMakePath(svg, points.x1, points.y1, points.x2, points.y2, isResolved, fromId, toId);
     });
 

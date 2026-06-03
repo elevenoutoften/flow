@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 
@@ -28,6 +29,48 @@ def test_settings_surface_renders_live_management_forms(client):
     assert 'id="api-key-form"' in html
     assert 'id="import-form"' in html
     assert "Import Markdown" in html
+
+
+def test_settings_surface_wires_api_ready_segments(client):
+    response = client.get("/settings.html")
+    assert response.status_code == 200
+    html = response.text
+    for section, form_id, table_id in (
+        ("agents", "agent-form", "agent-list"),
+        ("workspaces", "workspace-form", "workspace-list"),
+        ("agent-runs", "run-test", "agent-run-list"),
+        ("automation-rules", "rule-form", "automation-rule-list"),
+        ("webhooks", "webhook-form", "webhook-list"),
+    ):
+        assert f'id="{section}" data-settings-live="{section}"' in html
+        assert f'id="{form_id}"' in html
+        assert f'id="{table_id}"' in html
+
+    assert "Backend API available. Service logic is in place; UI wiring pending." not in html
+    assert "Workers &amp; adapters" in html
+    assert "Run isolation" in html
+    assert "Dispatch history" in html
+    assert "Rules engine" in html
+    assert "HTTP integrations" in html
+
+
+def test_settings_live_segments_call_real_apis_and_preserve_rule_json():
+    script = Path("flow_app/static/flow-settings.js").read_text(encoding="utf-8")
+    for endpoint in (
+        '"/api/agents"',
+        '"/api/workspace-configs"',
+        '"/api/agent-runs',
+        '"/api/automation-rules',
+        '"/api/webhooks"',
+    ):
+        assert endpoint in script
+    assert "bindLiveSettingsControls()" in script
+    assert "loadLiveSettingsData()" in script
+    assert "keepSidebarLinkInView" in script
+    assert 'hidden.id = select.id' in script
+    save_body = script.split("async function saveAutomationRule", 1)[1].split("function openRuleTest", 1)[0]
+    assert "buildRuleJsonFromControls();" not in save_body
+    assert "normalizeJsonText" in save_body
 
 
 def test_board_renders_handoff_section(client):
@@ -265,12 +308,64 @@ def test_settings_surface_uses_flow2_theme_tokens(client):
     assert 'value="love" checked' in html
 
 
+def test_settings_live_numeric_fields_use_token_steppers(client):
+    html = client.get("/settings.html").text
+    for name in (
+        "max_concurrency",
+        "heartbeat_timeout_seconds",
+        "stale_claim_timeout_seconds",
+        "priority",
+        "max_retries",
+        "retry_backoff_seconds",
+    ):
+        assert re.search(r'<div class="number-stepper"[^>]*>.*?<input class="form-input" name="' + name + r'" type="number"', html, re.S)
+
+    script = Path("flow_app/static/flow-settings.js").read_text(encoding="utf-8")
+    assert "initNumberSteppers()" in script
+    assert '".number-stepper, .priority-counter"' in script
+
+
+def test_settings_check_controls_use_flow2_token_styles():
+    css = Path("flow_app/static/flow-settings.css").read_text(encoding="utf-8")
+    checks_block = css.split("/* checks & radios */", 1)[1].split("/*", 1)[0]
+    assert "appearance:none" in checks_block
+    assert ".check:has(input:checked)" in checks_block
+    assert "accent-color" not in checks_block
+    assert ".toggle input:focus-visible+.toggle-track" in css
+
+
+def test_settings_markup_uses_css_classes_for_local_spacing(client):
+    html = client.get("/settings.html").text
+    assert "style=" not in html
+    assert "form-hint-spaced" in html
+    assert "system-table is-flush" in html
+
+
 def test_dependency_overlay_uses_flow2_edge_renderer():
     script = Path("flow_app/static/flow.js").read_text(encoding="utf-8")
     assert "updateDepLinesUI" in script
     assert "flow-dep-lines" in script
     assert "clipPathUnits" in script
     assert "dep-path" in script
+
+
+def test_dependency_hover_lines_allow_offscreen_connected_cards():
+    script = Path("flow_app/static/flow.js").read_text(encoding="utf-8")
+    highlight_body = script.split("function highlightCardDeps", 1)[1].split("function clearHighlight", 1)[0]
+    assert "depMakePath" in highlight_body
+    assert "depPointInsideClip" not in highlight_body
+
+
+def test_wrapped_flow_select_menus_do_not_capture_closed_clicks():
+    for path in (
+        "flow_app/static/flow.css",
+        "flow_app/static/flow-ideas.css",
+        "flow_app/static/flow-settings.css",
+    ):
+        css = Path(path).read_text(encoding="utf-8")
+        assert ".flow-scroll-wrapper-flow-select-menu>.flow-select-menu" in css
+        assert ".flow-select.is-open>.flow-scroll-wrapper-flow-select-menu>.flow-select-menu" in css
+        assert "flow-scroll-wrapper-flow-select-menu>.flow-select-menu" in css and "pointer-events:none" in css
 
 
 def test_settings_selects_are_upgraded_to_flow2_dropdowns():

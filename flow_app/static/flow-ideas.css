@@ -374,7 +374,8 @@ body.is-embedded .idea-editor-panel{
   transition:opacity var(--duration-fast) ease,transform var(--duration-fast) ease;
 }
 .flow-select.is-open>.flow-scroll-wrapper-flow-select-menu{opacity:1;transform:translateY(0) scale(1);pointer-events:auto}
-.flow-scroll-wrapper-flow-select-menu>.flow-select-menu{position:static;max-height:260px;border:0;border-radius:0;background:transparent;box-shadow:none;opacity:1;transform:none;pointer-events:auto}
+.flow-scroll-wrapper-flow-select-menu>.flow-select-menu{position:static;max-height:260px;border:0;border-radius:0;background:transparent;box-shadow:none;opacity:1;transform:none;pointer-events:none}
+.flow-select.is-open>.flow-scroll-wrapper-flow-select-menu>.flow-select-menu{pointer-events:auto}
 .flow-select-option{
   width:100%;
   min-height:34px;

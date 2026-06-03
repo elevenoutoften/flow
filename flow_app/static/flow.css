@@ -202,8 +202,9 @@ a:hover{color:var(--rose-hover)}
   box-shadow:none;
   opacity:1;
   transform:none;
-  pointer-events:auto;
+  pointer-events:none;
 }
+.flow-select.is-open>.flow-scroll-wrapper-flow-select-menu>.flow-select-menu{pointer-events:auto}
 .flow-select-option{
   width:100%;
   min-height:34px;

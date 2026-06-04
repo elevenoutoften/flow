@@ -329,6 +329,64 @@ After any deployment, migration, or restore:
 3. `sqlite3 ./data/flow.sqlite "SELECT count(*) FROM tasks;"` → expected count
 4. `sqlite3 ./data/flow.sqlite "SELECT count(*) FROM api_keys WHERE revoked_at IS NULL;"` → expected count
 
+## Backup and Restore
+
+### `flow-backup backup`
+
+Creates a consistent snapshot of the Flow SQLite database using `VACUUM INTO`, which is WAL-safe and does not require stopping the server.
+
+```bash
+flow-backup backup                     # default: <FLOW_DATA_DIR>/backups/
+flow-backup backup --output-dir /mnt/backups  # custom directory
+```
+
+Backups are named `flow-backup-YYYYMMDD-HHMMSS.db`. The backup path is printed on success.
+
+**Recommended frequency:** daily via cron for production deployments.
+
+### `flow-backup restore <path>`
+
+Restores the database from a backup file. **The server must be stopped first** — a lock file prevents accidental overwrite while running.
+
+```bash
+flow-serve stop                         # stop the server first
+flow-backup restore /path/to/backup.db  # restore
+flow-backup restore --dry-run backup.db  # validate only, no overwrite
+```
+
+Dry-run mode validates the backup file using `PRAGMA integrity_check` and reports what would happen without modifying the database.
+
+## Pack Export/Import
+
+Automation packs bundle rules, agents, webhook configs, and notification channel metadata into a portable JSON file. Secrets are always redacted on export.
+
+### Export
+
+```bash
+curl -H "Authorization: Bearer $KEY" http://localhost:8100/api/packs/export > pack.json
+curl -H "Authorization: Bearer $KEY" "http://localhost:8100/api/packs/export?download=1"  # with Content-Disposition header
+```
+
+### Import
+
+```bash
+curl -X POST -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+  -d @pack.json http://localhost:8100/api/packs/import
+
+# Dry run (validate without writing)
+curl -X POST -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+  -d @pack.json "http://localhost:8100/api/packs/import?dry_run=1"
+```
+
+Import upserts entities by name: existing entities are updated, new ones are created. Notification channel config (Telegram, Discord) is settings-level — set those via environment variables, not pack import.
+
+### MCP Tools
+
+- `flow_pack_export` — returns pack JSON string
+- `flow_pack_import(pack_json, dry_run)` — imports pack from JSON string
+
+Both require `key:manage` permission (admin only).
+
 ## See Also
 
 - [Architecture](Architecture.md) — system design and data model

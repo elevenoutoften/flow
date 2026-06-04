@@ -30,6 +30,7 @@ test = [
 flow-serve = "flow_app.serve:main"
 flow-runner = "flow_app.runner:main"
 flow-bootstrap = "flow_app.bootstrap:main"
+flow-backup = "flow_app.backup:main"
 
 [project.urls]
 Repository = "https://github.com/elevenoutoften/flow"

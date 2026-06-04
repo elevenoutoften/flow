@@ -1021,6 +1021,28 @@ TOOLS: list[dict[str, Any]] = [
             "required": ["trigger"],
         },
     },
+    {
+        "name": "flow_pack_export",
+        "title": "Export Flow Automation Pack",
+        "description": "Export all automation rules, agents, webhook configs, and notification channel metadata as a pack JSON. Secrets are redacted.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "flow_pack_import",
+        "title": "Import Flow Automation Pack",
+        "description": "Import an automation pack, upserting rules/agents/webhooks by name. Set dry_run to validate without writing.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "pack_json": {"type": "string", "description": "Pack JSON string to import."},
+                "dry_run": {"type": "boolean", "default": False, "description": "If true, validate without writing to the database."},
+            },
+            "required": ["pack_json"],
+        },
+    },
 ]
 
 
@@ -2027,6 +2049,33 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
         return tool_result(
             {"matches": matches, "count": len(matches)},
             f"Matched {len(matches)} Flow automation rule{'s' if len(matches) != 1 else ''}.",
+        )
+
+    if name == "flow_pack_export":
+        require_tool_permission(actor, Permission.KEY_MANAGE)
+        from ..packs import export_pack
+        pack = export_pack(db)
+        return tool_result(
+            pack,
+            f"Exported pack with {len(pack.get('rules', []))} rules, {len(pack.get('agents', []))} agents.",
+        )
+
+    if name == "flow_pack_import":
+        require_tool_permission(actor, Permission.KEY_MANAGE)
+        from ..packs import import_pack
+        import json
+        pack_json_str = arguments.get("pack_json", "")
+        dry_run = arguments.get("dry_run", False)
+        try:
+            pack = json.loads(pack_json_str)
+        except json.JSONDecodeError as exc:
+            raise JsonRpcError(-32602, f"Invalid pack JSON: {exc}") from exc
+        result = import_pack(db, pack, dry_run=bool(dry_run))
+        if result["errors"]:
+            raise JsonRpcError(-32602, "Pack validation failed.", result["errors"])
+        return tool_result(
+            result,
+            f"Imported {sum(result['imported'].values())} entities, {len(result['skipped'])} skipped.",
         )
 
     raise JsonRpcError(-32601, f"Unknown Flow tool: {name}")

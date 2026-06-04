@@ -27,6 +27,7 @@ from .routes.automation import router as automation_router
 from .routes.dependencies import _commit
 from .routes.ideas import router as ideas_router
 from .routes.notifications import router as notifications_router
+from .routes.packs import router as packs_router
 from .routes.projects import router as projects_router
 from .routes.realtime import router as realtime_router
 from .routes.recurring_task_templates import router as recurring_templates_router
@@ -161,6 +162,7 @@ def create_app(
     app.mount("/static", StaticFiles(directory=str(PACKAGE_DIR / "static")), name="static")
 
     app.include_router(projects_router, prefix="/api")
+    app.include_router(packs_router, prefix="/api")
     app.include_router(audit_router, prefix="/api")
     app.include_router(agents_router, prefix="/api")
     app.include_router(ideas_router, prefix="/api")

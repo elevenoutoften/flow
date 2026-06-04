@@ -40,6 +40,8 @@ class PassResult:
     dispatched: int = 0
     stale_recovered: int = 0
     cron_matches: int = 0
+    recurring_materialized: int = 0
+    recurring_skipped: int = 0
     webhook_deliveries: int = 0
 
 
@@ -81,6 +83,11 @@ def run_pass(
     session.commit()
 
     result.cron_matches = _run_cron_rules(session, dry_run=config.dry_run)
+    session.commit()
+
+    sched_result = _run_recurring_templates(session, dry_run=config.dry_run)
+    result.recurring_materialized = sched_result.materialized
+    result.recurring_skipped = sched_result.skipped
     session.commit()
 
     result.webhook_deliveries = run_deliveries(dry_run=config.dry_run)
@@ -218,6 +225,20 @@ def _run_cron_rules(session: Session, *, dry_run: bool) -> int:
         matches += len(results)
     logger.info("Cron automation produced %s matches", matches)
     return matches
+
+
+def _run_recurring_templates(session: Session, *, dry_run: bool):
+    """Materialize due recurring task templates."""
+    from .scheduler import materialize_due_templates
+
+    result = materialize_due_templates(session, dry_run=dry_run)
+    logger.info(
+        "Recurring templates materialized=%s skipped=%s dry_run=%s",
+        result.materialized,
+        result.skipped,
+        result.dry_run,
+    )
+    return result
 
 
 def _emit_single_cron_rule(session: Session, rules: list[AutomationRule], rule: AutomationRule) -> list[dict]:

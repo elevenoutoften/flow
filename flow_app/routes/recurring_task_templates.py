@@ -40,6 +40,32 @@ def api_create_template(
     return svc.create(payload)
 
 
+@router.post("/recurring-task-templates/materialize", response_model=dict)
+def api_materialize_templates(
+    dry_run: bool = Query(default=False),
+    db: Session = Depends(get_db),
+    _actor: Actor = Depends(require_permission(Permission.RECURRING_TEMPLATES_MANAGE)),
+):
+    """Materialize due recurring task templates. Use dry_run=true to preview without creating tasks."""
+    from ..scheduler import materialize_due_templates
+
+    result = materialize_due_templates(db, dry_run=dry_run)
+    return {
+        "materialized": result.materialized,
+        "skipped": result.skipped,
+        "dry_run": result.dry_run,
+        "details": [
+            {
+                "template_id": detail.template_id,
+                "task_id": detail.task_id,
+                "skipped": detail.skipped,
+                "skip_reason": detail.skip_reason,
+            }
+            for detail in result.details
+        ],
+    }
+
+
 @router.get("/recurring-task-templates/{template_id}", response_model=RecurringTaskTemplateResponse)
 def api_get_template(
     template_id: str,

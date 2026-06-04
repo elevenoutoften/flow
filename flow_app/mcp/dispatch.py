@@ -528,6 +528,21 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "flow_materialize_recurring_templates",
+        "title": "Materialize Due Recurring Templates",
+        "description": "Materialize all due recurring task templates into tasks. Use dry_run=true to preview without creating tasks.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "dry_run": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Preview without creating tasks",
+                },
+            },
+        },
+    },
+    {
         "name": "flow_list_agents",
         "title": "List Flow Agents",
         "description": "List registered Flow agents.",
@@ -1363,6 +1378,32 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
         except RecurringTemplateNotFoundError as exc:
             raise JsonRpcError(-32602, exc.message) from exc
         return tool_result({"template": data}, f"Updated Flow recurring task template {data['id']}: {data['name']}")
+
+    if name == "flow_materialize_recurring_templates":
+        require_tool_permission(actor, Permission.RECURRING_TEMPLATES_MANAGE)
+        from ..scheduler import materialize_due_templates
+
+        dry_run = optional_bool(arguments.get("dry_run"), default=False)
+        result = materialize_due_templates(db, dry_run=dry_run)
+        details = [
+            {
+                "template_id": detail.template_id,
+                "task_id": detail.task_id,
+                "skipped": detail.skipped,
+                "skip_reason": detail.skip_reason,
+            }
+            for detail in result.details
+        ]
+        return tool_result(
+            {
+                "materialized": result.materialized,
+                "skipped": result.skipped,
+                "dry_run": result.dry_run,
+                "details": details,
+            },
+            f"Materialized {result.materialized} recurring template"
+            f"{'s' if result.materialized != 1 else ''}; skipped {result.skipped}.",
+        )
 
     if name == "flow_list_agents":
         require_tool_permission(actor, Permission.AGENT_READ)

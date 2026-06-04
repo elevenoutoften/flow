@@ -8,6 +8,7 @@ from ..dispatcher import DispatchError
 from ..repository import (
     count_agent_runs,
     create_agent_api_key,
+    get_agent_by_name,
     get_agent_api_key,
     list_agent_api_keys,
     revoke_agent_api_key,
@@ -71,6 +72,50 @@ def api_list_agents(
     ):
         svc = AgentService(db)
         return [serialize_agent(agent) for agent in svc.list_agents(enabled_only=enabled_only)]
+
+@router.get("/adapter-templates", response_model=list[dict])
+def api_list_adapter_templates(
+        _actor: Actor = Depends(require_permission(Permission.AGENT_READ)),
+    ):
+        from ..adapter_templates import BUILTIN_TEMPLATES
+
+        return [template.model_dump() for template in BUILTIN_TEMPLATES]
+
+@router.get("/adapter-templates/{template_name}", response_model=dict)
+def api_get_adapter_template(
+        template_name: str,
+        _actor: Actor = Depends(require_permission(Permission.AGENT_READ)),
+    ):
+        from ..adapter_templates import get_template
+
+        template = get_template(template_name)
+        if template is None:
+            raise HTTPException(status_code=404, detail=f"Adapter template '{template_name}' not found.")
+        return template.model_dump()
+
+@router.post("/adapter-templates/{template_name}/import", response_model=AgentResponse, status_code=status.HTTP_201_CREATED)
+def api_import_adapter_template(
+        template_name: str,
+        overrides: AgentCreate | None = None,
+        db: Session = Depends(get_db),
+        _actor: Actor = Depends(require_permission(Permission.AGENT_MANAGE)),
+    ):
+        from ..adapter_templates import agent_create_from_template, get_template, validate_template
+
+        template = get_template(template_name)
+        if template is None:
+            raise HTTPException(status_code=404, detail=f"Adapter template '{template_name}' not found.")
+        validate_template(template)
+        payload = agent_create_from_template(template, overrides)
+        existing = get_agent_by_name(db, payload.name)
+        if existing is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Agent with name '{payload.name}' already exists (id={existing.id}).",
+            )
+        svc = AgentService(db)
+        agent = svc.create_agent(payload)
+        return serialize_agent(agent)
 
 @router.get("/agents/{agent_id}", response_model=AgentResponse)
 def api_get_agent(

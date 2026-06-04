@@ -32,6 +32,7 @@ from ..repository import (
     delete_task_link,
     evaluate_rules,
     get_agent,
+    get_agent_by_name,
     get_agent_run,
     get_automation_rule,
     get_webhook_config,
@@ -549,6 +550,30 @@ TOOLS: list[dict[str, Any]] = [
         "inputSchema": {
             "type": "object",
             "properties": {"enabled_only": {"type": "boolean", "default": False}},
+        },
+    },
+    {
+        "name": "flow_list_adapter_templates",
+        "title": "List Adapter Templates",
+        "description": "List all built-in agent adapter templates available for import.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "flow_import_adapter_template",
+        "title": "Import an Adapter Template",
+        "description": "Import a built-in adapter template as a new Agent record. Optionally override fields like name, command, or working_directory.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "template_name": {"type": "string", "description": "The adapter template name to import"},
+                "name": {"type": "string", "description": "Override the agent name (defaults to template name)"},
+                "command": {"type": "string", "description": "Override the command"},
+                "working_directory": {"type": "string", "description": "Override the working directory"},
+            },
+            "required": ["template_name"],
         },
     },
     {
@@ -1413,6 +1438,53 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
         return tool_result(
             {"agents": agents, "count": len(agents)},
             f"Found {len(agents)} Flow agent{'s' if len(agents) != 1 else ''}.",
+        )
+
+    if name == "flow_list_adapter_templates":
+        require_tool_permission(actor, Permission.AGENT_READ)
+        from ..adapter_templates import BUILTIN_TEMPLATES
+
+        templates = [template.model_dump() for template in BUILTIN_TEMPLATES]
+        return tool_result(
+            {"templates": templates, "count": len(templates)},
+            f"{len(templates)} adapter template{'s' if len(templates) != 1 else ''} available.",
+        )
+
+    if name == "flow_import_adapter_template":
+        require_tool_permission(actor, Permission.AGENT_MANAGE)
+        template_name = require_string(arguments.get("template_name"), "template_name")
+        from ..adapter_templates import agent_create_from_template, get_template, validate_template
+
+        template = get_template(template_name)
+        if template is None:
+            raise JsonRpcError(-32602, f"Adapter template '{template_name}' not found.")
+        validate_template(template)
+
+        overrides = AgentCreate(
+            name=optional_string(arguments.get("name")) or template.name,
+            description=template.description,
+            agent_type=template.agent_type,
+            capabilities=",".join(template.capabilities),
+            command=optional_string(arguments.get("command")) or template.command,
+            command_allowlist=",".join(template.command_allowlist),
+            env_allowlist=",".join(template.env_allowlist),
+            working_directory=optional_string(arguments.get("working_directory")) or template.working_directory,
+            max_concurrency=template.max_concurrency,
+            heartbeat_timeout_seconds=template.heartbeat_timeout_seconds,
+            stale_claim_timeout_seconds=template.stale_claim_timeout_seconds,
+            dispatch_statuses=",".join(template.dispatch_statuses),
+        )
+        payload = agent_create_from_template(template, overrides)
+        existing = get_agent_by_name(db, payload.name)
+        if existing is not None:
+            raise JsonRpcError(-32602, f"Agent with name '{payload.name}' already exists (id={existing.id}).")
+
+        svc = AgentService(db)
+        agent = svc.create_agent(payload)
+        data = agent_to_json(agent)
+        return tool_result(
+            {"agent": data},
+            f"Imported adapter template '{template_name}' as agent '{agent.name}' (id={agent.id}).",
         )
 
     if name == "flow_get_agent":

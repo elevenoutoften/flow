@@ -46,25 +46,25 @@ PROJECTS = [
      "repo_url": "https://github.com/axis/flow.git", "default_branch": "main"},
     {"slug": "lore", "name": "Lore", "description": "Canonical knowledge base for agents and humans.",
      "repo_url": "https://github.com/axis/lore.git", "default_branch": "main"},
-    {"slug": "axis-web", "name": "Axis Web", "description": "Marketing site and product landing pages.",
-     "repo_url": "https://github.com/axis/web.git", "default_branch": "main"},
     {"slug": "hermes", "name": "Hermes", "description": "Autonomous agent runner and dispatcher.",
      "repo_url": "https://github.com/axis/hermes.git", "default_branch": "main"},
+    {"slug": "axis-web", "name": "Axis Web", "description": "Marketing site and product landing pages.",
+     "repo_url": "https://github.com/axis/web.git", "default_branch": "main"},
     {"slug": "docs", "name": "Docs", "description": "Product documentation and guides.",
      "repo_url": "https://github.com/axis/docs.git", "default_branch": "main"},
 ]
 
-# key -> TaskCreate kwargs. Priorities span 0-1000 so every priority-dot level
+# Max 5 tasks per column.  Priorities span 0–1000 so every priority-dot level
 # (>=900: 3, >=700: 2, >=200: 1, else 0) is represented.
+#
+# The "rules" task (doing) is the hover target for the screenshot: it has
+# exactly 3 dependency lines — child in todo, parent in review, parent in done.
 TASKS = {
-    # ---- backlog ----
+    # ---- backlog (4) ----
     "recurring": {"project": "flow", "status": "backlog", "priority": 300,
                   "title": "Recurring task templates",
                   "description": "Materialize repeating work from a schedule so standups, releases, and audits show up automatically.",
                   "complexity": "medium", "impact": "medium", "effort": "medium", "risk": "low"},
-    "saved-views": {"project": "flow", "status": "backlog", "priority": 250,
-                    "title": "Saved board filters & views",
-                    "description": "Let operators pin a project + filter combination and jump back to it in one click."},
     "backlinks": {"project": "lore", "status": "backlog", "priority": 180,
                   "title": "Wiki-style backlinks between pages",
                   "description": "Surface every page that references the current one, so canon stays connected."},
@@ -76,26 +76,25 @@ TASKS = {
                 "title": "Pricing page with plan comparison",
                 "description": "Side-by-side tiers with a feature matrix and a clear call to action."},
 
-    # ---- todo ----
+    # ---- todo (5) ----
+    "notify": {"project": "flow", "status": "todo", "priority": 700,
+               "title": "Discord & Telegram notifications",
+               "description": "Route human-required blockers and task events to chat so nothing waits unseen."},
     "md-import": {"project": "flow", "status": "todo", "priority": 650, "assignee": "scout",
                   "title": "Markdown task import wizard",
                   "description": "Paste a checklist and preview the parsed tasks before committing them to the board.",
                   "acceptance_criteria": "- Preview shows status, project, priority per line\n- Duplicates are flagged before commit\n- Commit reports created vs skipped"},
-    "notify": {"project": "flow", "status": "todo", "priority": 700,
-               "title": "Discord & Telegram notifications",
-               "description": "Route human-required blockers and task events to chat so nothing waits unseen."},
     "lore-autorecord": {"project": "lore", "status": "todo", "priority": 600, "assignee": "atlas",
                         "title": "Auto-record outcomes after Flow tasks",
                         "description": "When a Flow task closes, write what became true to the matching Lore page."},
     "landing": {"project": "axis-web", "status": "todo", "priority": 820,
                 "title": "Landing page: “Flow — the agent-first task board”",
-                "description": "Hero, feature grid, and a live board screenshot. The flagship marketing page.",
-                "impact": "high", "complexity": "medium"},
-    "quickstart": {"project": "docs", "status": "todo", "priority": 500,
-                   "title": "Quickstart: run Flow locally in 2 minutes",
-                   "description": "A copy-paste path from clone to a populated board in the browser."},
+                "description": "Hero, feature grid, and a live board screenshot. The flagship marketing page."},
+    "webhooks": {"project": "flow", "status": "todo", "priority": 750, "assignee": "scout",
+                 "title": "Webhook subscriptions for task events",
+                 "description": "Let external services subscribe to task lifecycle events via outbound webhooks."},
 
-    # ---- doing ----
+    # ---- doing (5) ----
     "rules": {"project": "flow", "status": "doing", "priority": 900, "assignee": "hermes",
               "title": "Automation rules engine",
               "description": "Event-driven conditions and actions: auto-assign, notify, promote, and escalate.",
@@ -111,33 +110,33 @@ TASKS = {
                     "title": "Full-text search across the knowledge base",
                     "description": "Fast lookup over titles and bodies so agents find canon before re-deriving it.",
                     "complexity": "medium", "impact": "high"},
-    "workspace-iso": {"project": "hermes", "status": "doing", "priority": 760, "assignee": "hermes",
-                      "title": "Workspace isolation for parallel agent runs",
-                      "description": "Each dispatched run gets its own git worktree so concurrent agents never collide.",
-                      "complexity": "large", "risk": "high", "impact": "high"},
-    "screenshots": {"project": "docs", "status": "doing", "priority": 640, "assignee": "scout",
-                    "title": "Demo screenshots for the new flow2 UI",
-                    "description": "Capture board, detail drawer, ideas wall, and each accent theme for the docs and landing page."},
+    "mcp-protocol": {"project": "flow", "status": "doing", "priority": 880, "assignee": "atlas",
+                     "title": "MCP protocol adapter for external tools",
+                     "description": "Bridge Flow task actions to Model Context Protocol so any MCP-compatible agent can read and write tasks natively.",
+                     "impact": "high", "complexity": "large"},
+    "dep-lines-vis": {"project": "flow", "status": "doing", "priority": 770, "assignee": "nyx",
+                      "title": "Dependency line visualization on the board",
+                      "description": "SVG dependency lines between cards that highlight on hover, showing blocking relationships at a glance."},
 
-    # ---- review ----
+    # ---- review (4) ----
     "themes": {"project": "flow", "status": "review", "priority": 720, "assignee": "nyx",
                "title": "Live theme switcher — Axis Love / Teal / Leaf",
                "description": "Swap the accent color live across the board; choice persists per browser.",
                "acceptance_criteria": "- Axis Love is the default rose accent\n- Teal and Leaf swap the accent only\n- Choice is saved and re-applied on reload"},
-    "drag": {"project": "flow", "status": "review", "priority": 680, "assignee": "hermes",
-             "title": "Drag-and-drop with safe click handling",
-             "description": "Move cards between columns by pointer drag without accidentally opening the detail drawer."},
-    "lore-mcp": {"project": "lore", "status": "review", "priority": 700, "assignee": "atlas",
-                 "title": "MCP tools for page upsert & lookup",
-                 "description": "Expose Lore over MCP so agents read and write canon programmatically."},
     "api-keys": {"project": "flow", "status": "review", "priority": 900, "assignee": "nyx",
                  "title": "API key roles & one-time secrets",
                  "human_required": True,
                  "blocker_reason": "Security review required before this can merge.",
                  "description": "Scoped roles (read-only → admin) and a generated secret shown exactly once.",
                  "impact": "critical", "risk": "high", "complexity": "medium"},
+    "lore-mcp": {"project": "lore", "status": "review", "priority": 700, "assignee": "atlas",
+                 "title": "MCP tools for page upsert & lookup",
+                 "description": "Expose Lore over MCP so agents read and write canon programmatically."},
+    "board-filters": {"project": "flow", "status": "review", "priority": 650, "assignee": "scout",
+                      "title": "Board column filters by project & assignee",
+                      "description": "Filter the board to show only a specific project or unassigned tasks."},
 
-    # ---- done ----
+    # ---- done (5) ----
     "api": {"project": "flow", "status": "done", "priority": 950, "assignee": "hermes",
             "title": "Agent-first REST + MCP API",
             "description": "A complete HTTP and MCP surface so agents have a reliable source of truth for work."},
@@ -147,24 +146,26 @@ TASKS = {
     "ideas": {"project": "flow", "status": "done", "priority": 600, "assignee": "scout",
               "title": "Idea wall for lightweight capture",
               "description": "Jot a title, description, and project without leaving the board."},
-    "lore-pages": {"project": "lore", "status": "done", "priority": 900, "assignee": "atlas",
-                   "title": "Canonical pages with frontmatter & kinds",
-                   "description": "Typed knowledge pages with visibility and metadata, ready for humans and agents."},
-    "lore-acl": {"project": "lore", "status": "done", "priority": 820, "assignee": "atlas",
-                 "title": "Page visibility & access control",
-                 "description": "Public, internal, and private pages enforced consistently across the API and MCP."},
+    "triage": {"project": "flow", "status": "done", "priority": 840, "assignee": "nyx",
+               "title": "Impact/Risk/Effort triage fields",
+               "description": "Every task carries impact, risk, effort, and complexity labels for fast prioritisation."},
     "dispatch": {"project": "hermes", "status": "done", "priority": 860, "assignee": "hermes",
                  "title": "Dependency-aware task dispatch",
                  "description": "The dispatcher only hands an agent work whose blockers are already resolved."},
 }
 
 # (parent, child, link_type) — parent blocks/precedes child.
+#
+# "rules" (doing) is the screenshot hover target.  It has exactly 3 lines:
+#   → notify (todo)      — rules blocks notifications
+#   ← api-keys (review)  — rules is blocked by the security review
+#   ← api (done)         — rules builds on the API
 LINKS = [
-    ("screenshots", "landing", "blocks"),       # landing page waits on demo screenshots
-    ("api", "rules", "blocks"),                  # rules engine builds on the API
-    ("api", "lore-mcp", "blocks"),               # MCP tools build on the API
-    ("lore-search", "lore-autorecord", "blocks"),  # auto-record needs search
-    ("quickstart", "landing", "related"),        # related marketing/docs work
+    ("api", "rules", "blocks"),                  # rules engine builds on the REST API
+    ("api-keys", "rules", "blocks"),             # rules blocked by security review
+    ("rules", "notify", "blocks"),                # rules engine powers notification actions
+    ("themes", "board-filters", "related"),        # UI polish cluster
+    ("deps", "dep-lines-vis", "blocks"),          # dep lines need the data model
 ]
 
 # task key -> list of (author, note body)
@@ -173,27 +174,80 @@ NOTES = {
         ("hermes", "Condition evaluation is wired; working on the action executors next."),
         ("nyx", "Let's make sure notify actions route through the providers from #notify."),
     ],
-    "lore-search": [
-        ("atlas", "Indexing titles + bodies. Ranking pass still pending."),
-    ],
     "api-keys": [
         ("nyx", "One-time secret reveal is done; awaiting the security review before merge."),
     ],
 }
 
 IDEAS = [
+    # Flow (8)
     {"project": "flow", "author": "nyx", "title": "Burndown & velocity charts",
      "description": "A small analytics surface: throughput per column and time-in-status."},
     {"project": "flow", "author": "scout", "title": "Board swimlanes by assignee",
      "description": "Group cards into horizontal lanes per agent to see who is loaded."},
     {"project": "flow", "author": "hermes", "title": "Slack notification provider",
      "description": "Add Slack alongside Discord and Telegram for blocker alerts."},
+    {"project": "flow", "author": "atlas", "title": "MCP tool: list tasks by assignee",
+     "description": "Let agents query their own task queue via the Model Context Protocol."},
+    {"project": "flow", "author": "nyx", "title": "Email digest for daily standups",
+     "description": "Auto-generate a daily summary: what moved, what's blocked, what's due next."},
+    {"project": "flow", "author": "scout", "title": "Keyboard shortcuts overlay",
+     "description": "Press ? to see all shortcuts. Navigate columns, open drawers, move cards — no mouse needed."},
+    {"project": "flow", "author": "hermes", "title": "Task templates from recurring schedules",
+     "description": "Auto-create tasks on a cron schedule so standups and releases never get missed."},
+    {"project": "flow", "author": "atlas", "title": "Drag-and-drop file attachments",
+     "description": "Drop screenshots, logs, or configs onto a task card to attach them instantly."},
+    # Lore (5)
     {"project": "lore", "author": "atlas", "title": "Semantic search with embeddings",
      "description": "Complement full-text search with vector similarity for fuzzy recall."},
     {"project": "lore", "author": "atlas", "title": "Auto-summary of stale pages",
      "description": "Flag pages untouched for 90 days and propose a refreshed summary."},
+    {"project": "lore", "author": "nyx", "title": "Page version history & diffs",
+     "description": "Track every canonical change with before/after diffs, like a wiki."},
+    {"project": "lore", "author": "scout", "title": "Cross-project knowledge graph",
+     "description": "Auto-link Lore pages to related Flow tasks and Hermes runs."},
+    {"project": "lore", "author": "hermes", "title": "Public page sharing with access tokens",
+     "description": "Generate a read-only share link for any public Lore page."},
+    # Hermes (4)
+    {"project": "hermes", "author": "hermes", "title": "Auto-retry failed dispatches",
+     "description": "When a runner exits non-zero, requeue with exponential backoff up to a configurable limit."},
+    {"project": "hermes", "author": "nyx", "title": "Cost tracker per task",
+     "description": "Estimate and display token or compute cost per dispatched task in the board."},
+    {"project": "hermes", "author": "atlas", "title": "Runner health dashboard",
+     "description": "Live CPU, memory, and queue depth per runner, surfaced in the board."},
+    {"project": "hermes", "author": "scout", "title": "Parallel dispatch with dependency fan-out",
+     "description": "When a task completes, dispatch all unblocked children in parallel."},
+    # Axis Web (2)
     {"project": "axis-web", "author": "scout", "title": "Interactive demo embed",
      "description": "Drop a read-only live board onto the landing page so visitors can poke around."},
+    {"project": "axis-web", "author": "nyx", "title": "Changelog page with auto-release notes",
+     "description": "Pull git tags and PR titles into a polished changelog, updated on every deploy."},
+    # Docs (2)
+    {"project": "docs", "author": "atlas", "title": "API reference auto-generated from OpenAPI",
+     "description": "Render the Flow API docs directly from the spec so they never go stale."},
+    {"project": "docs", "author": "scout", "title": "Guided onboarding wizard",
+     "description": "A step-by-step walkthrough: create project → add tasks → connect agents → ship."},
+]
+
+# Showcase API keys and agents for the Settings screenshot.
+API_KEYS = [
+    {"name": "Hermes production", "description": "Main dispatcher key for the Hermes runner pool.", "role": "admin"},
+    {"name": "Codex worker", "description": "Read-write key for the Codex CLI agent.", "role": "implementer"},
+    {"name": "GitHub CI read-only", "description": "Read-only key used in CI to check task status.", "role": "read_only"},
+    {"name": "Nyx orchestrator", "description": "Admin key for the Nyx coordination agent.", "role": "architect"},
+    {"name": "Staging deploy hook", "description": "Implementer key for the staging deployment pipeline.", "role": "implementer",
+     "revoked": True},
+]
+
+AGENTS = [
+    {"name": "Hermes", "description": "Primary dispatch and orchestration agent.", "agent_type": "cli",
+     "command": "hermes dispatch", "capabilities": "dispatch,claim,done", "max_concurrency": 4},
+    {"name": "Codex", "description": "Code generation and PR review agent powered by OpenAI.", "agent_type": "cli",
+     "command": "codex --acp --stdio", "capabilities": "code,review,test", "max_concurrency": 2},
+    {"name": "Atlas", "description": "Knowledge-base and documentation agent.", "agent_type": "cli",
+     "command": "hermes run --agent atlas", "capabilities": "read,write,lore", "max_concurrency": 2},
+    {"name": "Scout", "description": "QA and screenshot verification agent.", "agent_type": "cli",
+     "command": "hermes run --agent scout", "capabilities": "screenshot,test,verify", "max_concurrency": 2},
 ]
 
 
@@ -202,7 +256,10 @@ def seed() -> None:
     from flow_app.database import Base, build_engine, build_session_factory
     from flow_app.migration import ensure_compatible_schema
     from flow_app import repository as repo
-    from flow_app.schemas import IdeaCreate, ProjectCreate, TaskCreate, TaskLinkCreate
+    from flow_app.schemas import (
+        AgentApiKeyCreate, AgentCreate, IdeaCreate, ProjectCreate, TaskCreate, TaskLinkCreate,
+    )
+    from flow_app.models import ApiKeyRole
 
     engine = build_engine(DEMO_DB_URL)
     Base.metadata.create_all(bind=engine)
@@ -231,6 +288,19 @@ def seed() -> None:
         for idea in IDEAS:
             repo.create_idea(session, IdeaCreate(**idea))
 
+        # API keys (last one revoked)
+        for key_data in API_KEYS:
+            revoked = key_data.pop("revoked", False)
+            api_key, _raw = repo.create_agent_api_key(session, AgentApiKeyCreate(**key_data))
+            if revoked:
+                repo.revoke_agent_api_key(session, api_key)
+        session.flush()
+
+        # Agents
+        for agent_data in AGENTS:
+            repo.create_agent(session, AgentCreate(**agent_data))
+        session.flush()
+
         session.commit()
     finally:
         session.close()
@@ -238,7 +308,8 @@ def seed() -> None:
 
     print(
         f"  Seeded {len(PROJECTS)} projects, {len(TASKS)} tasks, "
-        f"{len(LINKS)} dependency links, {len(IDEAS)} ideas."
+        f"{len(LINKS)} dependency links, {len(IDEAS)} ideas, "
+        f"{len(API_KEYS)} API keys, {len(AGENTS)} agents."
     )
 
 

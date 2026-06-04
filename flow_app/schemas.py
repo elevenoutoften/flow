@@ -709,6 +709,7 @@ class AgentApiKeyResponse(BaseModel):
     description: str
     role: str
     key_prefix: str
+    secret_ref: str | None = None
     created_at: datetime
     revoked_at: datetime | None
 

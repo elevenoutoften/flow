@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from dataclasses import dataclass
 
 from sqlalchemy import inspect, select
@@ -34,6 +35,7 @@ WORKSPACE_CONFIG_NAME = "default"
 
 
 def _build_automation_rules(review_key_value: str, base_url: str = "http://localhost:8100") -> list[AutomationRuleCreate]:
+    del review_key_value, base_url
     return [
         AutomationRuleCreate(name="Notify on task completion", trigger="task_completed"),
         AutomationRuleCreate(
@@ -62,8 +64,8 @@ def _build_automation_rules(review_key_value: str, base_url: str = "http://local
                     {
                         "type": "dispatch",
                         "agent_name": REVIEWER_AGENT_NAME,
-                        "api_key": review_key_value,
-                        "base_url": base_url,
+                        "api_key": "env:FLOW_REVIEWER_API_KEY",
+                        "base_url": "env:FLOW_BASE_URL",
                     }
                 ]
             ),
@@ -124,7 +126,7 @@ def _collect_dry_run_lines(engine, project_slug: str) -> list[BootstrapLine]:
                 "API key",
                 REVIEWER_KEY_NAME,
                 "would create",
-                f"({ApiKeyRole.reviewer.value}) - {review_key_value}",
+                f"({ApiKeyRole.reviewer.value}) - {review_key_value} (set FLOW_REVIEWER_API_KEY to this value)",
             ),
             BootstrapLine("Agent", AGENT_NAME, "would create"),
             BootstrapLine("Agent", REVIEWER_AGENT_NAME, "would create"),
@@ -203,6 +205,10 @@ def _collect_lines(session: Session, project_slug: str, *, dry_run: bool) -> lis
     )
 
     automation_rules = _build_automation_rules(raw_keys.get(REVIEWER_KEY_NAME, ""))
+    if not dry_run and raw_keys.get(REVIEWER_KEY_NAME):
+        os.environ["FLOW_REVIEWER_API_KEY"] = raw_keys[REVIEWER_KEY_NAME]
+    if not dry_run:
+        os.environ.setdefault("FLOW_BASE_URL", "http://localhost:8100")
     for rule in automation_rules:
         rule_exists = _automation_rule_by_name(session, rule.name) is not None
         if not dry_run and not rule_exists:

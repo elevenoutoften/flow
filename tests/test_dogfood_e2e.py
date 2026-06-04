@@ -399,7 +399,7 @@ class TestDogfoodE2E:
 
         with app.state.SessionLocal() as db:
             route_rule = db.scalars(select(AutomationRule).where(AutomationRule.name == "route-review-tasks")).one()
-            assert json.loads(route_rule.actions)[0]["api_key"] == reviewer_key
+            assert json.loads(route_rule.actions)[0]["api_key"] == "env:FLOW_REVIEWER_API_KEY"
             route_matches = match_rules(db, "task_moved", task_id=approve_task_id, data={"status": "review"})
             assert "route-review-tasks" in {match.rule_name for match in route_matches}
 

@@ -11,6 +11,7 @@ from .config import FlowSettings, get_settings
 from .models import Task, utcnow
 from .notifications import NotificationProvider
 from .repository import create_notification_delivery, update_notification_delivery
+from .secrets_resolver import resolve_secret
 
 logger = logging.getLogger("flow.telegram")
 
@@ -22,7 +23,8 @@ class TelegramNotificationProvider(NotificationProvider):
 
     def send(self, db: Session, event: str, task: Task, changes: dict | None = None) -> None:
         settings = self._settings or get_settings()
-        bot_token = settings.telegram_bot_token.strip()
+        # Settings resolve secret references at load time; resolve here too for injected test/custom settings.
+        bot_token = resolve_secret(settings.telegram_bot_token).strip()
         chat_id = settings.telegram_chat_id.strip()
         if not bot_token or not chat_id:
             logger.debug("Skipping Telegram notification because bot token or chat ID is not configured.")

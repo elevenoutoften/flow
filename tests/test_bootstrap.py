@@ -144,10 +144,11 @@ def test_bootstrap_review_rules_include_dispatch_credentials_and_handoff_conditi
             {
                 "type": "dispatch",
                 "agent_name": "reviewer-agent",
-                "api_key": reviewer_key,
-                "base_url": "http://localhost:8100",
+                "api_key": "env:FLOW_REVIEWER_API_KEY",
+                "base_url": "env:FLOW_BASE_URL",
             }
         ]
+        assert reviewer_key
 
         handoff_rule = session.scalars(select(AutomationRule).where(AutomationRule.name == "warn-missing-handoff")).one()
         assert json.loads(handoff_rule.conditions) == [

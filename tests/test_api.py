@@ -565,6 +565,26 @@ class TestTrustedHeaderGating:
             "session_cookie_secure": True,
         }
 
+    def test_healthz_secrets_reports_secret_status_without_values(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("FLOW_TELEGRAM_BOT_TOKEN", "env:FLOW_TEST_TELEGRAM_TOKEN")
+        monkeypatch.setenv("FLOW_TEST_TELEGRAM_TOKEN", "telegram-secret")
+        monkeypatch.setenv("FLOW_REVIEWER_API_KEY", "reviewer-secret")
+        app = create_app(f"sqlite:///{tmp_path / 'healthz-secrets.sqlite'}")
+
+        with TestClient(app) as test_client:
+            response = test_client.get("/healthz/secrets")
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["telegram_bot_token"] == {"configured": True, "type": "env"}
+        assert payload["reviewer_api_key_ref"] == {
+            "configured": True,
+            "type": "env",
+            "ref": "env:FLOW_REVIEWER_API_KEY",
+        }
+        assert "telegram-secret" not in response.text
+        assert "reviewer-secret" not in response.text
+
     def test_session_cookie_not_issued_when_trusted_headers_disabled(self, tmp_path):
         app = create_app(
             f"sqlite:///{tmp_path / 'trusted-disabled-session.sqlite'}",

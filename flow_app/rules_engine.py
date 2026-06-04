@@ -22,6 +22,7 @@ from .repository import (
 )
 from .schemas import STATUSES, TaskUpdate
 from .security import Actor, is_valid_transition
+from .secrets_resolver import SecretResolutionError, resolve_secret
 from .storage_helpers import get_agent_capabilities
 
 CONDITION_FIELDS = {
@@ -308,10 +309,10 @@ def _execute_spawn(session: Session, task: Task | None, action: dict) -> ActionR
             session,
             agent,
             task,
-            api_key=_first_present(action.get("api_key")) or "",
-            base_url=_first_present(action.get("base_url")) or "",
+            api_key=resolve_secret(_first_present(action.get("api_key")) or ""),
+            base_url=resolve_secret(_first_present(action.get("base_url")) or ""),
         )
-    except DispatchError as exc:
+    except (DispatchError, SecretResolutionError) as exc:
         return ActionResult("spawn", False, str(exc), {"agent_id": agent.id})
     return ActionResult("spawn", True, f"Dispatched agent {agent.name}.", {"agent_id": agent.id, "run_id": run.id})
 

@@ -81,6 +81,7 @@ from .schemas import (
     WorkspaceConfigResponse,
     WorkspaceConfigUpdate,
 )
+from .secrets_resolver import redact_secret
 
 
 _logger = logging.getLogger(__name__)
@@ -552,11 +553,35 @@ def serialize_automation_rule(rule: AutomationRule) -> AutomationRuleResponse:
         trigger=rule.trigger,
         trigger_config=rule.trigger_config,
         conditions=rule.conditions,
-        actions=rule.actions,
+        actions=_redact_automation_actions(rule.actions),
         last_run_at=_ensure_optional_datetime(rule.last_run_at),
         created_at=_ensure_datetime(rule.created_at),
         updated_at=_ensure_datetime(rule.updated_at),
     )
+
+
+def _redact_automation_actions(actions: str) -> str:
+    try:
+        parsed = json.loads(actions or "[]")
+    except (TypeError, json.JSONDecodeError):
+        return actions
+    if not isinstance(parsed, list):
+        return actions
+    return json.dumps(_redact_secret_keys(parsed))
+
+
+def _redact_secret_keys(value):
+    if isinstance(value, list):
+        return [_redact_secret_keys(item) for item in value]
+    if isinstance(value, dict):
+        redacted = {}
+        for key, item in value.items():
+            if key in {"api_key", "secret", "token"} and isinstance(item, str):
+                redacted[key] = redact_secret(item)
+            else:
+                redacted[key] = _redact_secret_keys(item)
+        return redacted
+    return value
 
 
 def create_workspace_config(session: Session, payload: WorkspaceConfigCreate) -> WorkspaceConfig:
@@ -1632,6 +1657,7 @@ def serialize_agent_api_key(api_key: AgentApiKey) -> AgentApiKeyResponse:
         description=api_key.description,
         role=api_key.role,
         key_prefix=api_key.key_prefix,
+        secret_ref=None,
         created_at=_ensure_datetime(api_key.created_at),
         revoked_at=_ensure_optional_datetime(api_key.revoked_at),
     )

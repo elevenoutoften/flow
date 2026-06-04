@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from dataclasses import replace
 import json
 import logging
+import os
 from pathlib import Path
 
 from fastapi import FastAPI, Header, Request, status
@@ -32,6 +33,7 @@ from .routes.ui import router as ui_router
 from .routes.webhooks import router as webhooks_router
 from .routes.workspace import router as workspace_router
 from .security import SESSION_COOKIE_NAME, resolve_actor
+from .secrets_resolver import SecretResolutionError, resolve_secret, secret_reference_type
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 _LOGGER = logging.getLogger(__name__)
@@ -95,6 +97,20 @@ Set these, then send `Authorization: Bearer <YOUR_KEY>` on every request:
 - Roles & keys:     {DOCS}/Modules/Security.md
 """
     return template.replace("{BASE}", base_url).replace("{DOCS}", _REPO_DOCS)
+
+
+def _secret_health(value: str | None, *, ref: str | None = None) -> dict[str, object]:
+    secret_type = secret_reference_type(value)
+    configured = bool(value)
+    if value and secret_type in {"env", "file"}:
+        try:
+            configured = bool(resolve_secret(value))
+        except SecretResolutionError:
+            configured = False
+    payload: dict[str, object] = {"configured": configured, "type": secret_type}
+    if ref is not None:
+        payload["ref"] = ref
+    return payload
 
 
 def create_app(
@@ -168,6 +184,15 @@ def create_app(
             "trusted_headers": settings.trusted_headers,
             "session_auth_enabled": bool(settings.session_secret),
             "session_cookie_secure": settings.session_cookie_secure,
+        }
+
+    @app.get("/healthz/secrets")
+    def healthz_secrets():
+        return {
+            "telegram_bot_token": _secret_health(os.environ.get("FLOW_TELEGRAM_BOT_TOKEN", "")),
+            "discord_webhook_url": _secret_health(os.environ.get("FLOW_DISCORD_WEBHOOK_URL", "")),
+            "webhook_encryption_key": _secret_health(os.environ.get("FLOW_WEBHOOK_ENCRYPTION_KEY", "")),
+            "reviewer_api_key_ref": _secret_health("env:FLOW_REVIEWER_API_KEY", ref="env:FLOW_REVIEWER_API_KEY"),
         }
 
     @app.get("/llms.txt", response_class=PlainTextResponse)

@@ -92,6 +92,29 @@ def test_rule_crud_create_list_get_update_enable_disable(client):
     assert client.get("/api/automation-rules?enabled_only=true").json()["items"] == []
 
 
+def test_rule_api_redacts_secret_action_values(client):
+    rule = create_rule(
+        client,
+        actions=json.dumps(
+            [
+                {
+                    "type": "dispatch",
+                    "api_key": "flow_raw_secret",
+                    "secret": "raw-secret",
+                    "token": "env:FLOW_SAFE_TOKEN_REF",
+                    "nested": {"secret": "nested-secret"},
+                }
+            ]
+        ),
+    )
+
+    actions = json.loads(rule["actions"])
+    assert actions[0]["api_key"] == "***"
+    assert actions[0]["secret"] == "***"
+    assert actions[0]["token"] == "env:FLOW_SAFE_TOKEN_REF"
+    assert actions[0]["nested"]["secret"] == "***"
+
+
 def test_condition_evaluation_operators():
     data = {
         "status": "todo",

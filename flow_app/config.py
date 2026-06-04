@@ -7,6 +7,8 @@ from pathlib import Path
 
 from cryptography.fernet import Fernet
 
+from .secrets_resolver import resolve_secret
+
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -59,6 +61,12 @@ def _validate_fernet_key(value: str | None) -> str | None:
     except Exception as exc:
         raise ValueError(f"{name_for_webhook_key()} must be a valid Fernet key") from exc
     return value
+
+
+def _resolve_if_reference(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return resolve_secret(value)
 
 
 def name_for_webhook_key() -> str:
@@ -121,10 +129,10 @@ def get_settings() -> FlowSettings:
         session_secret=_env("FLOW_SESSION_SECRET", ""),
         session_cookie_secure=_env_bool("FLOW_SESSION_COOKIE_SECURE", default=False),
         public_url=_env("FLOW_PUBLIC_URL", "").rstrip("/"),
-        telegram_bot_token=_env("FLOW_TELEGRAM_BOT_TOKEN", ""),
+        telegram_bot_token=_resolve_if_reference(_env("FLOW_TELEGRAM_BOT_TOKEN", "")) or "",
         telegram_chat_id=_env("FLOW_TELEGRAM_CHAT_ID", ""),
-        discord_webhook_url=_env("FLOW_DISCORD_WEBHOOK_URL", ""),
-        webhook_encryption_key=_validate_fernet_key(_env_optional("FLOW_WEBHOOK_ENCRYPTION_KEY")),
+        discord_webhook_url=_resolve_if_reference(_env("FLOW_DISCORD_WEBHOOK_URL", "")) or "",
+        webhook_encryption_key=_validate_fernet_key(_resolve_if_reference(_env_optional("FLOW_WEBHOOK_ENCRYPTION_KEY"))),
         max_webhook_payload_bytes=_env_int("FLOW_MAX_WEBHOOK_PAYLOAD_BYTES", 65536),
         max_webhook_response_bytes=_env_int("FLOW_MAX_WEBHOOK_RESPONSE_BYTES", 4096),
         max_webhook_delivery_age_days=_env_int("FLOW_MAX_WEBHOOK_DELIVERY_AGE_DAYS", 30),

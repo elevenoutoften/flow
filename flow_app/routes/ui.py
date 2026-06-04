@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Header, Query, Request
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, Depends, Form, Header, Query, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
@@ -17,6 +17,7 @@ from ..security import (
     has_permission,
     resolve_actor,
     sign_session,
+    verify_bearer_token,
 )
 from ..services.idea import IdeaService
 from .dependencies import get_db
@@ -114,6 +115,7 @@ def board(
             "unclaimed_count": unclaimed_count,
             "counts_by_project": counts_by_project,
             "can_set_human_required": can_set_human_required,
+            "actor": actor,
             "default_project": request.app.state.settings.default_project,
             "theme": request.app.state.settings.theme,
             "asset_version": FLOW_VERSION,
@@ -192,4 +194,53 @@ def settings_surface(
         },
     )
     _maybe_set_session_cookie(request, response, actor)
+    return response
+
+
+@router.get("/login", response_class=HTMLResponse)
+def login_form(request: Request, error: str | None = Query(default=None)):
+    settings = request.app.state.settings
+    return templates.TemplateResponse(
+        request,
+        "login.html",
+        {
+            "session_enabled": bool(settings.session_secret),
+            "error": error,
+            "theme": settings.theme,
+            "asset_version": FLOW_VERSION,
+        },
+    )
+
+
+@router.post("/login")
+def login_submit(
+    request: Request,
+    api_key: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    settings = request.app.state.settings
+    if not settings.session_secret:
+        # Session cookies can't be signed without a secret; flow-serve sets one automatically.
+        return RedirectResponse("/login?error=disabled", status_code=303)
+
+    actor = verify_bearer_token(db, api_key.strip())
+    if actor is None:
+        return RedirectResponse("/login?error=invalid", status_code=303)
+
+    response = RedirectResponse("/", status_code=303)
+    response.set_cookie(
+        SESSION_COOKIE_NAME,
+        sign_session(actor, settings.session_secret),
+        max_age=SESSION_MAX_AGE,
+        httponly=True,
+        samesite="strict",
+        secure=settings.session_cookie_secure,
+    )
+    return response
+
+
+@router.get("/logout")
+def logout(request: Request):
+    response = RedirectResponse("/", status_code=303)
+    response.delete_cookie(SESSION_COOKIE_NAME)
     return response

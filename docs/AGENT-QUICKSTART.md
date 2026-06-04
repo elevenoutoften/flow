@@ -4,15 +4,19 @@ This guide helps you configure any LLM agent (Hermes, Claude, GPT, etc.) to work
 
 ## Prerequisites
 
-- Flow running locally or on a server (see [Operations](../Documentation/Operations.md) for setup)
+- Flow running locally or on a server (see [Operations](Operations.md) for setup)
 - An API key with appropriate role permissions
 
 ## 1. Install and Run Flow
 
 ```bash
 pip install .
-uvicorn flow_app.main:app --host 0.0.0.0 --port 8100
+flow-bootstrap    # first run only — seeds data and prints API keys once
+flow-serve        # starts the board on http://localhost:8100
 ```
+
+To use the browser board, open it and click **Sign in**, then paste an admin key from the
+`flow-bootstrap` output. Agents authenticate with the same keys over REST/MCP (below).
 
 Or with Docker:
 
@@ -63,7 +67,7 @@ Content-Type: application/json (for mutations)
 
 ### MCP Interface
 
-Flow also exposes an MCP (Model Context Protocol) endpoint at `POST /mcp` for LLM agents that support it. Send JSON-RPC 2.0 requests with your Bearer token. See [MCP docs](../Documentation/Modules/MCP.md) for the full tool reference.
+Flow also exposes an MCP (Model Context Protocol) endpoint at `POST /mcp` for LLM agents that support it. Send JSON-RPC 2.0 requests with your Bearer token. See [MCP docs](Modules/MCP.md) for the full tool reference.
 
 ## 4. Core Agent Loop
 
@@ -183,7 +187,7 @@ Choose the right role for your agent:
 | `reviewer` | Code review | Move review→done, send back to todo |
 | `read_only` | Monitoring | Read tasks only |
 
-See [Security](../Documentation/Modules/Security.md) for the full permission matrix.
+See [Security](Modules/Security.md) for the full permission matrix.
 
 ## 7. Human-Required Tasks
 
@@ -219,8 +223,8 @@ POST /api/tasks/{task_id}/handoff
 
 ## Full Documentation
 
-- [Architecture](../Documentation/Architecture.md) — system design and data model
-- [REST API](../Documentation/Modules/REST-API.md) — complete endpoint reference
-- [MCP](../Documentation/Modules/MCP.md) — JSON-RPC tools for LLM agents
-- [Security](../Documentation/Modules/Security.md) — roles, permissions, API keys
-- [Operations](../Documentation/Operations.md) — setup, deployment, backup
+- [Architecture](Architecture.md) — system design and data model
+- [REST API](Modules/REST-API.md) — complete endpoint reference
+- [MCP](Modules/MCP.md) — JSON-RPC tools for LLM agents
+- [Security](Modules/Security.md) — roles, permissions, API keys
+- [Operations](Operations.md) — setup, deployment, backup

@@ -24,10 +24,11 @@
 ## Documentation
 
 - [ ] README.md: quickstart, Docker, architecture, features, doc links
-- [ ] docs/API.md: all REST endpoints documented with examples
-- [ ] docs/MCP.md: all 12 MCP tools documented with schemas and examples
-- [ ] docs/ROLES.md: role matrix, human-required permissions, key management
-- [ ] docs/MIGRATION.md: backup/restore, schema migration, verification
+- [ ] AGENTS.md + docs/AGENT-QUICKSTART.md: one-command setup, connect-an-agent, agent loop
+- [ ] docs/Modules/REST-API.md: all REST endpoints documented with examples
+- [ ] docs/Modules/MCP.md: all MCP tools documented with schemas and examples
+- [ ] docs/Modules/Security.md: role matrix, human-required permissions, key management
+- [ ] docs/Operations.md: backup/restore, schema migration, verification
 - [ ] docs/UPGRADE.md: live upgrade runbook, key rotation, rollback
 
 ## Standalone Verification

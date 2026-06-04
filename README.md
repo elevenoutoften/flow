@@ -44,28 +44,35 @@ Single FastAPI process backed by SQLite. No database server, no external auth, n
 ## Quick Start
 
 ```bash
-pip install .
-uvicorn flow_app.main:app --host 0.0.0.0 --port 8100
+pip install . && flow-serve --bootstrap
 ```
 
-Open `http://localhost:8100` — the board UI is ready.
+`flow-serve --bootstrap` seeds the default project and prints role-scoped API keys **once** —
+copy them. It starts the board on `http://localhost:8100` (host/port from `FLOW_HOST`/`FLOW_PORT`).
+To use the board UI, click **Sign in** and paste an admin key. (Or just run `./scripts/quickstart.sh`,
+which does all three steps and prints the connect instructions.)
 
 ### Docker
 
 ```bash
 # Web service only
 docker compose up -d
+docker compose logs flow   # first run prints admin / implementer / reviewer keys once
 
 # Web service + automation runner
 docker compose --profile runner up -d
 ```
 
-### First API Key
+> **Deploying to a server?** See the [server deployment checklist](docs/Operations.md#deploying-to-a-server) for the HTTPS, session-cookie, and proxy settings that differ from a local run.
 
-1. Open `http://localhost:8100`
-2. Click **API keys** in the board UI
-3. Create a key (start with `admin` for setup)
-4. Copy it — shown only once
+### Signing in
+
+`flow-serve --bootstrap` prints an **admin** key on first run. Open `http://localhost:8100`, click
+**Sign in**, and paste it — you now have a browser session and can manage tasks, ideas, and
+more keys under **Settings → API keys**. (No reverse proxy or extra config needed; `flow-serve`
+sets up the session secret automatically.)
+
+The same keys work for the API:
 
 ```bash
 curl -H "Authorization: Bearer YOUR_KEY" \
@@ -73,16 +80,38 @@ curl -H "Authorization: Bearer YOUR_KEY" \
      http://localhost:8100/api/tasks
 ```
 
+## For agents
+
+Flow is built for LLM agents, and onboarding one is a single link:
+
+- **Working in this repo?** Point the agent at [AGENTS.md](AGENTS.md) — one-command setup, how to
+  connect via MCP, and the core work loop.
+- **Connecting to a running server?** Hand it `http://<your-server>:8100/llms.txt`. That endpoint
+  self-describes the live deployment (its MCP URL, a ready-to-paste `claude mcp add` command, and
+  the agent loop) so the agent can configure itself.
+
+**Claude Code**, in one command:
+
+```bash
+claude mcp add --transport http flow http://localhost:8100/mcp \
+  --header "Authorization: Bearer YOUR_KEY"
+```
+
+**Hermes** and other clients: install the skill at [docs/FLOW-HERMES-SKILL.md](docs/FLOW-HERMES-SKILL.md).
+
 ## Documentation
+
+All docs live in **[docs/](docs/)** — start at [docs/README.md](docs/README.md) for the full index.
 
 | Document | Description |
 |----------|-------------|
-| [Architecture](Documentation/Architecture.md) | System design, data model, lifecycle |
-| [Operations](Documentation/Operations.md) | Setup, deployment, backup |
-| [REST API](Documentation/Modules/REST-API.md) | Complete REST API reference |
-| [MCP](Documentation/Modules/MCP.md) | MCP interface for LLM agents |
-| [Security](Documentation/Modules/Security.md) | Roles, permissions, API keys |
-| [Web UI](Documentation/Modules/Web-UI.md) | Board, themes, overlays |
+| [Agent Quickstart](docs/AGENT-QUICKSTART.md) | Connect an agent and run the core work loop |
+| [Architecture](docs/Architecture.md) | System design, data model, lifecycle |
+| [Operations](docs/Operations.md) | Setup, deployment, backup |
+| [REST API](docs/Modules/REST-API.md) | Complete REST API reference |
+| [MCP](docs/Modules/MCP.md) | MCP interface for LLM agents |
+| [Security](docs/Modules/Security.md) | Roles, permissions, API keys |
+| [Web UI](docs/Modules/Web-UI.md) | Board, themes, overlays |
 
 ## Architecture
 

@@ -15,4 +15,4 @@ RUN pip install --no-cache-dir .
 
 EXPOSE 8100
 
-CMD ["python", "-m", "uvicorn", "flow_app.main:app", "--host", "0.0.0.0", "--port", "8100"]
+CMD ["flow-serve", "--bootstrap"]

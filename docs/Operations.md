@@ -67,18 +67,25 @@ Flow reads all configuration from environment variables. No config files.
 
 ## First-Time Setup
 
-### Bootstrap
+### One-Command Start
+
+```bash
+flow-serve --bootstrap
+```
+
+Creates the default project, three API keys (admin, implementer, reviewer), two agents (smoke-test, reviewer-agent), a workspace config, and four automation rules if they do not exist yet, then starts the web server. Prints newly created API keys — save them immediately, they are shown only once.
+
+For a seed-only run without starting the server:
 
 ```bash
 flow-bootstrap
 ```
 
-Creates the default project, three API keys (admin, implementer, reviewer), two agents (smoke-test, reviewer-agent), a workspace config, and four automation rules. Prints API keys — save them immediately, they are shown only once.
-
 Options:
-- `--project <slug>` — project slug (default: `default`)
-- `--database-url <url>` — database URL override
-- `--dry-run` — print planned actions without writing
+- `flow-serve --bootstrap --host <host> --port <port>` — bind override
+- `flow-bootstrap --project <slug>` — seed-only project slug override
+- `flow-bootstrap --database-url <url>` — seed-only database URL override
+- `flow-bootstrap --dry-run` — print planned changes without writing
 
 ### Manual Key Creation
 
@@ -101,6 +108,12 @@ curl -X POST http://localhost:8100/api/api-keys \
 ### Direct
 
 ```bash
+flow-serve --bootstrap   # seeds first-run data, auto-configures the session secret, then serves
+```
+
+`flow-serve` is a thin wrapper around uvicorn. To run uvicorn directly (e.g. custom workers):
+
+```bash
 uvicorn flow_app.main:app --host 0.0.0.0 --port 8100
 ```
 
@@ -108,6 +121,7 @@ uvicorn flow_app.main:app --host 0.0.0.0 --port 8100
 
 ```bash
 docker compose up -d
+docker compose logs flow   # first run prints admin / implementer / reviewer keys once
 ```
 
 ### systemd
@@ -158,7 +172,7 @@ User=flow
 Group=flow
 WorkingDirectory=/opt/flow
 EnvironmentFile=/etc/axis/flow.env
-ExecStart=/opt/flow/.venv/bin/python -m uvicorn flow_app.main:app --host 0.0.0.0 --port 8100
+ExecStart=/opt/flow/.venv/bin/flow-serve --bootstrap
 Restart=on-failure
 RestartSec=5
 
@@ -256,7 +270,35 @@ The `docker-compose.yml` defines two services:
 
 Both share the `flow-data` volume mounted at `/data`.
 
-The Dockerfile uses `python:3.12-slim`, installs the package with `pip install .`, and runs uvicorn.
+The Dockerfile uses `python:3.12-slim`, installs the package with `pip install .`, and runs `flow-serve --bootstrap`.
+The bundled compose defaults are local-safe: trusted proxy headers are disabled, session cookies are
+HTTP-friendly for `localhost`, and the session secret is generated in the persisted `/data` volume.
+
+## Deploying to a Server
+
+`flow-serve` behaves the same on a server as locally — it binds `FLOW_HOST`/`FLOW_PORT` (default
+`0.0.0.0:8100`) and auto-generates a session secret in the data dir, so browser login works out of
+the box. A few settings depend on how you expose it:
+
+| Exposure | `FLOW_SESSION_COOKIE_SECURE` | `FLOW_TRUSTED_HEADERS` | `FLOW_PUBLIC_URL` |
+|----------|------------------------------|------------------------|-------------------|
+| HTTPS via reverse proxy (recommended for public) | `true` | `false` (unless the proxy injects `X-Axis-*`) | `https://your-domain` |
+| Plain HTTP on a trusted/internal network | `false` | `false` | *(unset — auto-detected)* |
+| Identity proxy that injects `X-Axis-*` | `true` | `true` | your public URL |
+
+Checklist:
+
+- **Use HTTPS for anything public.** Over plain HTTP the API key and session cookie travel in
+  cleartext. Note the interaction: with `FLOW_SESSION_COOKIE_SECURE=true` the browser only sends the
+  cookie over HTTPS, so setting it `true` while serving over HTTP makes login silently fail to persist.
+- **Persist the data dir.** The SQLite DB and the session secret live in `FLOW_DATA_DIR`. In Docker,
+  keep it on a volume (the bundled `docker-compose.yml` mounts `flow-data:/data`); for systemd, point
+  `FLOW_DATA_DIR` at a stable path. Otherwise sessions and data reset on redeploy.
+- **Seed once.** `flow-serve --bootstrap` does this automatically. In Docker, read first-run keys
+  with `docker compose logs flow`.
+- **Advertise the right URL to agents.** Behind a proxy, set `FLOW_PUBLIC_URL` so `GET /llms.txt` and
+  the `claude mcp add` command show the public address rather than the internal one.
+- **Don't enable `FLOW_TRUSTED_HEADERS` without a stripping proxy** — see [Trusted Headers](#trusted-headers).
 
 ## Themes
 
@@ -268,7 +310,7 @@ Set `FLOW_TRUSTED_HEADERS=true` only when deploying behind a reverse proxy that 
 
 ## Session Cookies
 
-Set `FLOW_SESSION_SECRET` to enable browser session cookie authentication. The session cookie (`flow_session`) is HMAC-SHA256 signed with a 12-hour expiry. Set `FLOW_SESSION_COOKIE_SECURE=true` in production (HTTPS).
+`flow-serve` generates and persists `FLOW_SESSION_SECRET` automatically (in the data dir), so browser login works without configuration; set it explicitly only to share sessions across multiple instances. The session cookie (`flow_session`) is HMAC-SHA256 signed with a 12-hour expiry. Set `FLOW_SESSION_COOKIE_SECURE=true` in production (HTTPS).
 
 ## Common Mistakes
 

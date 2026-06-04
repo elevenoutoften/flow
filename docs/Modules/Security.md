@@ -108,6 +108,8 @@ API keys are hashed with SHA-256 before storage. Lookup is by hash. Revoked keys
 
 When `FLOW_SESSION_SECRET` is set, the browser UI uses a signed cookie (`flow_session`). The cookie contains `{name, role, iat, exp}` signed with HMAC-SHA256. Expiry is 12 hours.
 
+**Browser login:** users sign in at `GET /login` by pasting an API key. `POST /login` verifies the key with `verify_bearer_token` and, on success, mints the session cookie for that key's identity and role (`GET /logout` clears it). This is the standalone path — no reverse proxy required. `flow-serve` generates and persists `FLOW_SESSION_SECRET` automatically (in the data dir), so login works out of the box; running raw `uvicorn` without a secret disables it (the `/login` page says so).
+
 ### Trusted Headers
 
 Only accepted when `FLOW_TRUSTED_HEADERS=true`:

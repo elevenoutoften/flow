@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en" data-theme="{{ theme }}">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sign in · Flow</title>
+  <meta name="description" content="Sign in to Flow with an API key.">
+  <link rel="stylesheet" href="/static/flow.css?v={{ asset_version }}">
+  <style>
+    body{min-height:100vh;margin:0}
+    .login-shell{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;
+      font-family:var(--font-sans, system-ui, sans-serif)}
+    .login-card{width:100%;max-width:380px;background:var(--bg-surface, #1d1d1f);
+      color:var(--text-body, rgba(255,255,255,.85));border:1px solid var(--separator-strong, rgba(255,255,255,.1));
+      border-radius:var(--radius-lg, 16px);padding:32px;box-shadow:0 12px 40px rgba(0,0,0,.45)}
+    .login-brand{display:flex;align-items:center;gap:8px;margin-bottom:24px}
+    .login-brand .dot{width:10px;height:10px;border-radius:50%;background:var(--rose, #ff8fbe)}
+    .login-brand .wordmark{font-weight:700;letter-spacing:.04em;color:var(--text-heading, #fff)}
+    .login-card h1{font-size:18px;margin:0 0 4px;color:var(--text-heading, #fff)}
+    .login-card p.sub{color:var(--text-muted, rgba(255,255,255,.5));font-size:13px;margin:0 0 20px}
+    .login-field{display:flex;flex-direction:column;gap:6px;margin-bottom:16px}
+    .login-field label{font-size:12px;font-weight:600;color:var(--text-muted, rgba(255,255,255,.5))}
+    .login-field input{padding:10px 12px;border:1px solid var(--separator-strong, rgba(255,255,255,.1));
+      border-radius:var(--radius-sm, 8px);font-family:var(--font-mono, monospace);font-size:13px;
+      background:var(--bg-field, rgba(255,255,255,.04));color:var(--text-body, rgba(255,255,255,.85))}
+    .login-field input:focus{outline:2px solid var(--rose-focus, #ff8fbe);outline-offset:1px}
+    .login-error{background:var(--error-bg, rgba(248,113,113,.1));color:var(--error, #f87171);
+      border:1px solid var(--error-border, rgba(248,113,113,.3));border-radius:var(--radius-sm, 8px);
+      padding:10px 12px;font-size:13px;margin-bottom:16px}
+    .login-hint{color:var(--text-muted, rgba(255,255,255,.5));font-size:12px;line-height:1.6;margin-top:18px}
+    .login-hint code{font-family:var(--font-mono, monospace);background:var(--bg-elevated, rgba(255,255,255,.05));
+      padding:1px 5px;border-radius:4px;color:var(--text-body, rgba(255,255,255,.85))}
+    .login-hint a{color:var(--rose, #ff8fbe);text-decoration:none}
+    .login-actions .btn{width:100%;justify-content:center}
+  </style>
+</head>
+<body>
+  <div class="login-shell">
+    <div class="login-card">
+      <div class="login-brand"><span class="dot"></span><span class="wordmark">Flow</span></div>
+      <h1>Sign in</h1>
+      <p class="sub">Paste an API key to open a browser session.</p>
+
+      {% if error == "invalid" %}
+      <div class="login-error" role="alert">That API key wasn't recognized. Check it and try again.</div>
+      {% elif error == "disabled" %}
+      <div class="login-error" role="alert">Browser login is disabled because no session secret is set.
+        Start the server with <code>flow-serve</code> (it configures one automatically) or set <code>FLOW_SESSION_SECRET</code>.</div>
+      {% endif %}
+
+      <form method="post" action="/login">
+        <div class="login-field">
+          <label for="api_key">API key</label>
+          <input id="api_key" name="api_key" type="password" autocomplete="off" autofocus
+                 placeholder="flow_…" {% if not session_enabled %}disabled{% endif %}>
+        </div>
+        <div class="login-actions">
+          <button class="btn btn-primary" type="submit" {% if not session_enabled %}disabled{% endif %}>Sign in</button>
+        </div>
+      </form>
+
+      <p class="login-hint">
+        Need a key? Run <code>flow-bootstrap</code> to print admin / implementer / reviewer keys,
+        or ask an admin to generate one. Use an <strong>admin</strong> key for full board access.
+        <br><a href="/">← Back to the board</a>
+      </p>
+    </div>
+  </div>
+</body>
+</html>

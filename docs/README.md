@@ -1,16 +1,20 @@
 # Flow — Documentation
 
-**Status:** 2026-05-29  
+**Status:** 2026-06-04
 **Scope:** `flow_app/`, `tests/`, `scripts/`, `docker-compose.yml`, `Dockerfile`
 
 Flow is an agent-first Kanban task board service. It is a single FastAPI application backed by SQLite, deployed as a standalone process or Docker container. Flow gives LLM agents a reliable source of truth for work items, enforces role-scoped API keys, tracks human-required blockers, and provides an MCP interface for programmatic access.
 
+> **New here?** Start with [AGENTS.md](../AGENTS.md) (repo root) for the one-command setup and how to
+> connect an agent. A running server also self-describes at `GET /llms.txt`.
+
 ## Recommended Reading Order
 
 1. This page — orientation and module map
-2. [Architecture](Architecture.md) — system design, data model, lifecycle, invariants
-3. [Operations](Operations.md) — setup, deployment, backup, runner, upgrade
-4. Module pages below — deep dives into each subsystem
+2. [Agent Quickstart](AGENT-QUICKSTART.md) — connect an agent and run the core work loop
+3. [Architecture](Architecture.md) — system design, data model, lifecycle, invariants
+4. [Operations](Operations.md) — setup, deployment, backup, runner, upgrade
+5. Module pages below — deep dives into each subsystem
 
 ## High-Level Module Map
 
@@ -33,6 +37,13 @@ Flow is an agent-first Kanban task board service. It is a single FastAPI applica
 | HTML UI | Browser-based Kanban board | `flow_app/routes/ui.py`, `flow_app/templates/`, `flow_app/static/` |
 
 ## Module Index
+
+### Getting Started
+
+| Page | Description |
+|------|-------------|
+| [Agent Quickstart](AGENT-QUICKSTART.md) | Install, bootstrap, connect any LLM agent, and run the 5-step work loop |
+| [Flow Hermes Skill](FLOW-HERMES-SKILL.md) | Drop-in skill file for Hermes agents (REST + MCP recipes) |
 
 ### Core
 
@@ -104,3 +115,13 @@ Flow is an agent-first Kanban task board service. It is a single FastAPI applica
 - **All route handlers** use `require_permission()` dependency injection for auth.
 - **Task concurrency** uses optimistic locking via `version` column and `cas_update_task()`.
 - **Package version** (`FLOW_VERSION`) is a content hash of static files, not a semver string.
+
+## Documentation Conventions
+
+All project documentation lives in this `docs/` folder — there is no second docs tree. House style:
+
+- **Top-level guides** use Title-case filenames (`Architecture.md`, `Operations.md`). The agent
+  onboarding guides keep their established `AGENT-QUICKSTART.md` / `FLOW-HERMES-SKILL.md` names.
+- **Module deep-dives** use PascalCase filenames under `Modules/` (`MCP.md`, `REST-API.md`).
+- **Links between docs** are relative (`Modules/MCP.md`, `../AGENTS.md`) so the tree is portable.
+- The repo-root [AGENTS.md](../AGENTS.md) is the single entry point; it points here, not vice-versa.

@@ -9,7 +9,7 @@ from pathlib import Path
 from fastapi import FastAPI, Header, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 
@@ -34,6 +34,66 @@ from .security import SESSION_COOKIE_NAME, resolve_actor
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 _LOGGER = logging.getLogger(__name__)
+
+_REPO_DOCS = "https://github.com/elevenoutoften/flow/blob/main/docs"
+
+
+def _render_llms_txt(base_url: str) -> str:
+    """Render the deployment-aware agent onboarding doc served at GET /llms.txt.
+
+    Follows the llmstxt.org convention. `base_url` is this server's external URL with no
+    trailing slash; it is interpolated into a single copy-pasteable connect flow so an agent
+    handed only this link can configure itself. Contains no secrets.
+    """
+    template = """# Flow — Agent Onboarding
+
+> Flow is an agent-first Kanban board, live at {BASE}.
+> Hand this URL to any LLM agent (Claude, Hermes, GPT) to connect and start working tasks.
+
+## This server speaks
+
+- Web board  — {BASE}/
+- REST API   — {BASE}/api
+- MCP (JSON-RPC 2.0) — {BASE}/mcp
+
+## 1. Get an API key (role-scoped)
+
+- Web UI: open {BASE}/ then "API keys" and create one (start with `admin` for setup).
+- First run on the host: `flow-bootstrap` prints admin / implementer / reviewer keys once.
+
+## 2. Connect your agent
+
+### Claude Code
+
+    claude mcp add --transport http flow {BASE}/mcp --header "Authorization: Bearer <YOUR_KEY>"
+
+Then call a tool such as `flow_board_summary` to confirm the connection.
+
+### Hermes / any HTTP client
+
+Set these, then send `Authorization: Bearer <YOUR_KEY>` on every request:
+
+    FLOW_BASE_URL={BASE}
+    FLOW_API_KEY=<YOUR_KEY>
+    FLOW_AGENT_NAME=<your-agent-name>
+
+## 3. Core work loop
+
+1. Next task:  GET  {BASE}/api/tasks/next?project=default
+2. Claim it:   POST {BASE}/api/tasks/<id>/claim   body: {"agent_name":"<you>"}
+3. Work, posting progress:
+               POST {BASE}/api/tasks/<id>/note    body: {"note":"...","author":"<you>"}
+4. Hand off:   POST {BASE}/api/tasks/<id>/move    body: {"status":"review"}
+   (reviewers/admins move tasks to `done`)
+
+## Full documentation
+
+- Agent quickstart: {DOCS}/AGENT-QUICKSTART.md
+- REST API:         {DOCS}/Modules/REST-API.md
+- MCP tools:        {DOCS}/Modules/MCP.md
+- Roles & keys:     {DOCS}/Modules/Security.md
+"""
+    return template.replace("{BASE}", base_url).replace("{DOCS}", _REPO_DOCS)
 
 
 def create_app(
@@ -107,6 +167,12 @@ def create_app(
             "session_auth_enabled": bool(settings.session_secret),
             "session_cookie_secure": settings.session_cookie_secure,
         }
+
+    @app.get("/llms.txt", response_class=PlainTextResponse)
+    def llms_txt(request: Request):
+        configured = request.app.state.settings.public_url
+        base_url = configured or str(request.base_url).rstrip("/")
+        return _render_llms_txt(base_url)
 
     @app.post("/mcp")
     async def mcp(

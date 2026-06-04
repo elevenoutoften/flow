@@ -68,6 +68,39 @@ def _build_automation_rules(review_key_value: str, base_url: str = "http://local
                 ]
             ),
         ),
+        AutomationRuleCreate(
+            name="Stale-doing-warn",
+            enabled=False,
+            trigger="cron",
+            trigger_config=json.dumps({"minute": "0", "hour": "9", "day_of_week": "*"}),
+            conditions=json.dumps(
+                [
+                    {"field": "status", "operator": "eq", "value": "doing"},
+                    {"field": "age_since_updated", "operator": "gt", "value": "259200"},
+                ]
+            ),
+            actions=json.dumps(
+                [
+                    {
+                        "type": "add_note",
+                        "note": "\u26a0\ufe0f This task has been in doing for 3+ days without update.",
+                    }
+                ]
+            ),
+        ),
+        AutomationRuleCreate(
+            name="Stale-review-escalate",
+            enabled=False,
+            trigger="cron",
+            trigger_config=json.dumps({"minute": "0", "hour": "10", "day_of_week": "*"}),
+            conditions=json.dumps(
+                [
+                    {"field": "status", "operator": "eq", "value": "review"},
+                    {"field": "age_since_updated", "operator": "gt", "value": "604800"},
+                ]
+            ),
+            actions=json.dumps([{"type": "notify", "message": "Review task has been stale for 7+ days"}]),
+        ),
     ]
 
 

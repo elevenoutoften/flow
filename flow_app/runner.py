@@ -220,9 +220,11 @@ def _run_cron_rules(session: Session, *, dry_run: bool) -> int:
             continue
         if dry_run:
             logger.info("Would fire cron automation rule %s (%s)", rule.name, rule.id)
-            continue
-        results = _emit_single_cron_rule(session, rules, rule)
-        matches += len(results)
+        results = _emit_single_cron_rule(session, rules, rule, dry_run=dry_run)
+        if dry_run and isinstance(results, dict):
+            matches += len(results.get("matches", []))
+        else:
+            matches += len(results)
     logger.info("Cron automation produced %s matches", matches)
     return matches
 
@@ -241,8 +243,20 @@ def _run_recurring_templates(session: Session, *, dry_run: bool):
     return result
 
 
-def _emit_single_cron_rule(session: Session, rules: list[AutomationRule], rule: AutomationRule) -> list[dict]:
-    return emit_event(session, "cron", data={"rule_id": rule.id, "rule_name": rule.name}, rule_id=rule.id)
+def _emit_single_cron_rule(
+    session: Session,
+    rules: list[AutomationRule],
+    rule: AutomationRule,
+    *,
+    dry_run: bool = False,
+) -> list[dict] | dict:
+    return emit_event(
+        session,
+        "cron",
+        data={"rule_id": rule.id, "rule_name": rule.name},
+        rule_id=rule.id,
+        dry_run=dry_run,
+    )
 
 
 def _same_minute(left: datetime, right: datetime) -> bool:

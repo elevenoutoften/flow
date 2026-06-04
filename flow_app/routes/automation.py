@@ -8,6 +8,7 @@ from ..repository import (
     count_automation_rules,
     serialize_automation_rule,
 )
+from ..rules_engine import emit_event
 from ..schemas import (
     AutomationEvent,
     AutomationRuleCreate,
@@ -44,6 +45,25 @@ def api_evaluate_automation_rules(
         svc = AutomationService(db)
         matches = svc.evaluate_rules(payload, actor=actor)
         return {"matches": matches, "count": len(matches)}
+
+@router.post("/automation-rules/{rule_id}/dry-run", response_model=dict)
+def api_dry_run_rule(
+        rule_id: str,
+        db: Session = Depends(get_db),
+        _actor: Actor = Depends(require_permission(Permission.RULES_EVALUATE)),
+    ):
+        svc = AutomationService(db)
+        try:
+            rule = svc.get_rule(rule_id)
+        except AutomationRuleNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=exc.message) from exc
+        return emit_event(
+            db,
+            "cron",
+            data={"rule_id": rule.id, "rule_name": rule.name},
+            rule_id=rule.id,
+            dry_run=True,
+        )
 
 @router.get("/automation-rules/{rule_id}", response_model=AutomationRuleResponse)
 def api_get_automation_rule(

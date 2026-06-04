@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import json
 from typing import Any
 
@@ -33,8 +34,17 @@ CONDITION_FIELDS = {
     "human_required",
     "title",
     "latest_handoff",
+    "age_since_updated",
+    "age_since_created",
+    "age_since_claimed",
+}
+AGE_CONDITION_FIELDS = {
+    "age_since_updated": "updated_at",
+    "age_since_created": "created_at",
+    "age_since_claimed": "claimed_at",
 }
 CONDITION_OPERATORS = {"eq", "ne", "in", "not_in", "contains", "gt", "lt", "gte", "lte", "exists", "not_exists"}
+AGE_CONDITION_OPERATORS = {"gt", "lt", "gte", "lte", "eq", "ne"}
 TRIGGERS = {"task_created", "task_moved", "task_claimed", "task_completed", "task_blocked", "cron"}
 _notify_provider: RulesNotifyProvider | None = None
 
@@ -66,8 +76,9 @@ def set_notify_provider(provider: RulesNotifyProvider | None) -> None:
     _notify_provider = provider
 
 
-def evaluate_conditions(conditions: list[dict], task_data: dict) -> bool:
+def evaluate_conditions(conditions: list[dict], task_data: dict, now: datetime | None = None) -> bool:
     """Evaluate condition objects against task data with AND logic."""
+    now = _aware_datetime(now or datetime.now(timezone.utc))
     for cond in conditions:
         field = cond.get("field", "")
         operator = cond.get("operator", "eq")
@@ -77,8 +88,14 @@ def evaluate_conditions(conditions: list[dict], task_data: dict) -> bool:
             return False
         if operator not in CONDITION_OPERATORS:
             return False
+        if field in AGE_CONDITION_FIELDS and operator not in AGE_CONDITION_OPERATORS:
+            return False
 
-        actual = task_data.get(field)
+        actual = _condition_actual(task_data, field, now)
+        if field in AGE_CONDITION_FIELDS and actual is None:
+            return False
+        if field in AGE_CONDITION_FIELDS:
+            value = _number_or_original(value)
 
         if operator == "eq" and actual != value:
             return False
@@ -107,12 +124,53 @@ def evaluate_conditions(conditions: list[dict], task_data: dict) -> bool:
     return True
 
 
+def _condition_actual(task_data: dict, field: str, now: datetime) -> Any:
+    if field not in AGE_CONDITION_FIELDS:
+        return task_data.get(field)
+
+    timestamp = task_data.get(AGE_CONDITION_FIELDS[field])
+    if timestamp is None:
+        return None
+    timestamp = _parse_datetime(timestamp)
+    if timestamp is None:
+        return None
+    return (now - timestamp).total_seconds()
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return _aware_datetime(value)
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return _aware_datetime(parsed)
+    return None
+
+
+def _aware_datetime(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _number_or_original(value: Any) -> Any:
+    if isinstance(value, (int, float)):
+        return value
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return value
+
+
 def match_rules(
     session: Session,
     trigger: str,
     task_id: str | None = None,
     data: dict | None = None,
     rule_id: str | None = None,
+    now: datetime | None = None,
 ) -> list[MatchResult]:
     """Find all enabled rules matching the trigger and conditions."""
     query = session.query(AutomationRule).filter(AutomationRule.enabled == 1, AutomationRule.trigger == trigger)
@@ -121,6 +179,7 @@ def match_rules(
     rules = query.order_by(AutomationRule.priority.desc()).all()
 
     results = []
+    now = now or datetime.now(timezone.utc)
     task_data = data or {}
     if task_id:
         task = get_task(session, task_id)
@@ -133,7 +192,25 @@ def match_rules(
             conditions = json.loads(rule.conditions) if rule.conditions else []
         except (json.JSONDecodeError, TypeError):
             continue
-        if evaluate_conditions(conditions, task_data):
+        if trigger == "cron" and task_id is None and conditions:
+            candidate_data = data or {}
+            for task in session.scalars(select(Task).order_by(Task.updated_at.asc(), Task.id.asc())).all():
+                per_task_data = serialize_task(task).model_dump(mode="json")
+                per_task_data.update(candidate_data)
+                if evaluate_conditions(conditions, per_task_data, now=now):
+                    actions = _load_actions(rule)
+                    if actions is None:
+                        break
+                    results.append(
+                        MatchResult(
+                            rule_id=rule.id,
+                            rule_name=rule.name,
+                            actions=actions,
+                            task_id=task.id,
+                        )
+                    )
+            continue
+        if evaluate_conditions(conditions, task_data, now=now):
             try:
                 actions = json.loads(rule.actions) if rule.actions else []
             except (json.JSONDecodeError, TypeError):
@@ -147,6 +224,13 @@ def match_rules(
                 )
             )
     return results
+
+
+def _load_actions(rule: AutomationRule) -> list[dict] | None:
+    try:
+        return json.loads(rule.actions) if rule.actions else []
+    except (json.JSONDecodeError, TypeError):
+        return None
 
 
 def execute_actions(
@@ -414,9 +498,25 @@ def emit_event(
     data: dict | None = None,
     actor: Actor | None = None,
     rule_id: str | None = None,
-) -> list[dict]:
+    dry_run: bool = False,
+) -> list[dict] | dict:
     """Emit an event, execute matched rule actions, and return serializable results."""
     matches = match_rules(session, trigger, task_id, data, rule_id=rule_id)
+    if dry_run:
+        return {
+            "dry_run": True,
+            "matches": [
+                {
+                    "rule_id": match.rule_id,
+                    "rule_name": match.rule_name,
+                    "task_id": match.task_id,
+                    "task": _serialize_match_task(session, match.task_id),
+                    "actions": match.actions,
+                }
+                for match in matches
+            ],
+        }
+
     results = []
     for match in matches:
         rule = session.get(AutomationRule, match.rule_id)
@@ -437,3 +537,12 @@ def emit_event(
         )
     session.flush()
     return results
+
+
+def _serialize_match_task(session: Session, task_id: str | None) -> dict | None:
+    if not task_id:
+        return None
+    task = get_task(session, task_id)
+    if task is None:
+        return None
+    return serialize_task(task).model_dump(mode="json")

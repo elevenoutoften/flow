@@ -927,6 +927,18 @@ TOOLS: list[dict[str, Any]] = [
             "required": ["trigger"],
         },
     },
+    {
+        "name": "flow_dry_run_automation_rule",
+        "title": "Dry-Run an Automation Rule",
+        "description": "Preview what a cron/scheduled automation rule would do without side effects.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "rule_id": {"type": "string", "description": "The automation rule ID"},
+            },
+            "required": ["rule_id"],
+        },
+    },
 ]
 
 
@@ -1839,6 +1851,27 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
         return tool_result(
             {"matches": matches, "count": len(matches)},
             f"Matched {len(matches)} Flow automation rule{'s' if len(matches) != 1 else ''}.",
+        )
+
+    if name == "flow_dry_run_automation_rule":
+        require_tool_permission(actor, Permission.RULES_EVALUATE)
+        rule_id = require_string(arguments.get("rule_id"), "rule_id")
+        svc = AutomationService(db)
+        try:
+            rule = svc.get_rule(rule_id)
+        except AutomationRuleNotFoundError as exc:
+            raise JsonRpcError(-32602, exc.message) from exc
+        result = emit_rule_event(
+            db,
+            "cron",
+            data={"rule_id": rule.id, "rule_name": rule.name},
+            rule_id=rule.id,
+            dry_run=True,
+        )
+        matches = result.get("matches", []) if isinstance(result, dict) else []
+        return tool_result(
+            result,
+            f"Dry-run matched {len(matches)} Flow automation rule action plan{'s' if len(matches) != 1 else ''}.",
         )
 
     raise JsonRpcError(-32601, f"Unknown Flow tool: {name}")

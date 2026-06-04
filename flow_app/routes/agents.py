@@ -3,8 +3,11 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.orm import Session
 
+from ..audit import actor_id_for, audit
 from ..config import DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT
 from ..dispatcher import DispatchError
+from ..metrics import metrics
+from ..ratelimit import client_ip, key_creation_limiter
 from ..repository import (
     count_agent_runs,
     create_agent_api_key,
@@ -43,10 +46,13 @@ def api_list_agent_api_keys(
 @router.post("/api-keys", response_model=AgentApiKeyCreateResponse, status_code=status.HTTP_201_CREATED)
 def api_create_agent_api_key(
         payload: AgentApiKeyCreate,
+        request: Request,
         db: Session = Depends(get_db),
-        _actor: Actor = Depends(require_permission(Permission.KEY_MANAGE)),
+        actor: Actor = Depends(require_permission(Permission.KEY_MANAGE)),
     ):
+        key_creation_limiter.check(actor.key_id or client_ip(request), request.app.state.settings.rate_limit_key_creation)
         api_key, raw_key = create_agent_api_key(db, payload)
+        audit(db, actor_id_for(actor), "api_key.create", "api_key", api_key.id, {"role": api_key.role})
         _commit(db)
         return serialize_created_agent_api_key(api_key, raw_key)
 
@@ -54,12 +60,13 @@ def api_create_agent_api_key(
 def api_revoke_agent_api_key(
         api_key_id: str,
         db: Session = Depends(get_db),
-        _actor: Actor = Depends(require_permission(Permission.KEY_MANAGE)),
+        actor: Actor = Depends(require_permission(Permission.KEY_MANAGE)),
     ):
         api_key = get_agent_api_key(db, api_key_id)
         if api_key is None:
             raise HTTPException(status_code=404, detail="API key not found.")
         api_key = revoke_agent_api_key(db, api_key)
+        audit(db, actor_id_for(actor), "api_key.delete", "api_key", api_key_id)
         _commit(db)
         return serialize_agent_api_key(api_key)
 
@@ -157,12 +164,19 @@ def api_dispatch_agent(
                 api_key_value=request.headers.get("authorization", "").removeprefix("Bearer ").strip(),
             )
         except AgentNotFoundError as exc:
+            metrics.inc("dispatch.error")
             raise HTTPException(status_code=404, detail=exc.message) from exc
         except AgentError as exc:
+            metrics.inc("dispatch.error")
             status_code = 404 if exc.error_type == "not_found" else 400
             raise HTTPException(status_code=status_code, detail=exc.message) from exc
         except DispatchError as exc:
+            metrics.inc("dispatch.error")
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        metrics.inc("dispatch.count")
+        metrics.inc("dispatch.success")
+        audit(db, actor_id_for(actor), "agent.dispatch", "agent", agent_id, {"task_id": run.task_id, "run_id": run.id})
+        _commit(db)
         return serialize_agent_run(run)
 
 @router.post("/agent-runs/{run_id}/heartbeat", response_model=AgentRunResponse)
@@ -183,13 +197,15 @@ def api_complete_agent_run(
         run_id: str,
         db: Session = Depends(get_db),
         exit_code: int = Query(...),
-        _actor: Actor = Depends(require_permission(Permission.DISPATCH)),
+        actor: Actor = Depends(require_permission(Permission.DISPATCH)),
     ):
         svc = AgentService(db)
         try:
             run = svc.complete_run(run_id, exit_code)
         except AgentRunNotFoundError as exc:
             raise HTTPException(status_code=404, detail=exc.message) from exc
+        audit(db, actor_id_for(actor), "agent_run.complete", "agent_run", run.id, {"exit_code": exit_code})
+        _commit(db)
         return serialize_agent_run(run)
 
 @router.post("/agent-runs/stale-recovery")

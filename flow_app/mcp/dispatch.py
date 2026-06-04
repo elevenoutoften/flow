@@ -16,6 +16,7 @@ from ..repository import (
     archive_idea,
     auto_promote_unblocked_children,
     count_agent_runs,
+    count_audit_logs,
     count_automation_rules,
     count_ideas,
     count_runners,
@@ -47,6 +48,7 @@ from ..repository import (
     list_webhook_configs,
     list_agent_runs,
     list_agents,
+    list_audit_logs,
     list_automation_rules,
     list_ideas,
     list_runners,
@@ -60,6 +62,7 @@ from ..repository import (
     serialize_runner,
     serialize_agent,
     serialize_agent_run,
+    serialize_audit_log,
     serialize_task_link,
     serialize_task_handoff,
     serialize_task,
@@ -375,6 +378,21 @@ TOOLS: list[dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "project": {"type": "string", "description": "Optional project slug."},
+            },
+        },
+    },
+    {
+        "name": "flow_list_audit_logs",
+        "title": "List Flow Audit Logs",
+        "description": "List Flow audit log entries with optional filters.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "actor_id": {"type": "string"},
+                "action": {"type": "string"},
+                "target_type": {"type": "string"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": MAX_PAGE_LIMIT, "default": DEFAULT_PAGE_LIMIT},
+                "offset": {"type": "integer", "minimum": 0, "default": 0},
             },
         },
     },
@@ -1301,6 +1319,30 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
         return tool_result(
             {"project": project, "counts_by_status": counts, "human_required_tasks": human_required_tasks},
             f"Summarized {len(tasks)} Flow task{'s' if len(tasks) != 1 else ''}.",
+        )
+
+    if name == "flow_list_audit_logs":
+        require_tool_permission(actor, Permission.AUDIT_READ)
+        limit = optional_limit(arguments.get("limit"))
+        offset = optional_offset(arguments.get("offset"))
+        actor_id = optional_string(arguments.get("actor_id"))
+        action = optional_string(arguments.get("action"))
+        target_type = optional_string(arguments.get("target_type"))
+        entries = [
+            serialize_audit_log(entry).model_dump(mode="json")
+            for entry in list_audit_logs(
+                db,
+                actor_id=actor_id,
+                action=action,
+                target_type=target_type,
+                limit=limit,
+                offset=offset,
+            )
+        ]
+        total = count_audit_logs(db, actor_id=actor_id, action=action, target_type=target_type)
+        return tool_result(
+            {"audit_logs": entries, "count": len(entries), "total": total, "limit": limit, "offset": offset},
+            f"Found {len(entries)} Flow audit log entr{'y' if len(entries) == 1 else 'ies'}.",
         )
 
     if name == "flow_list_ideas":

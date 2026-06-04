@@ -10,6 +10,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .metrics import metrics
 from .models import Task, WebhookConfig, WebhookDelivery, utcnow
 from .repository import create_webhook_delivery, get_webhook_secret, update_webhook_delivery
 from .ssrf import resolve_webhook_target
@@ -91,6 +92,7 @@ def deliver_webhook(db: Session, delivery: WebhookDelivery, config: WebhookConfi
             last_response_code=response.status_code,
             last_response_body=body,
         )
+        metrics.inc("webhook.delivered")
         return
 
     _record_failure(db, delivery, config, response.status_code, body)
@@ -168,6 +170,7 @@ def _record_failure(
         last_response_code=status_code,
         last_response_body=response_body,
     )
+    metrics.inc("webhook.failed")
 
 
 def _config_events(config: WebhookConfig) -> set[str]:

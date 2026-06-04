@@ -21,6 +21,18 @@ BLOCKING_TASK_LINK_TYPES: set[str] = {"blocks", "depends_on"}
 WORKSPACE_STRATEGIES: set[str] = {"git_worktree", "shared_dir", "scratch_dir"}
 
 
+class AuditLogResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    actor_id: str
+    action: str
+    target_type: str
+    target_id: str
+    detail: str
+    created_at: datetime
+
+
 class AssigneeType(str, Enum):
     agent = "agent"
     human = "human"

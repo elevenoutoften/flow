@@ -5,6 +5,8 @@ from fastapi.testclient import TestClient
 
 from flow_app.config import reset_settings_cache
 from flow_app.main import create_app
+from flow_app.metrics import metrics
+from flow_app.ratelimit import auth_limiter, key_creation_limiter, mutation_limiter
 
 
 ADMIN_HEADERS = {"X-Axis-Admin": "1", "X-Axis-User": "test-admin"}
@@ -13,7 +15,15 @@ ADMIN_HEADERS = {"X-Axis-Admin": "1", "X-Axis-User": "test-admin"}
 @pytest.fixture(autouse=True)
 def _reset_settings():
     reset_settings_cache()
+    metrics.reset()
+    auth_limiter.reset()
+    key_creation_limiter.reset()
+    mutation_limiter.reset()
     yield
+    metrics.reset()
+    auth_limiter.reset()
+    key_creation_limiter.reset()
+    mutation_limiter.reset()
     reset_settings_cache()
 
 

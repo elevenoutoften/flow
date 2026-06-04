@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from uuid import uuid4
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
+from ..audit import actor_id_for, audit
 from ..config import DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT
+from ..metrics import metrics
 from ..markdown_import import parse_markdown_tasks
+from ..ratelimit import client_ip, mutation_limiter
 from ..repository import (
     count_tasks,
     create_task_handoff,
@@ -182,10 +185,15 @@ def api_list_tasks(
 @router.post("/tasks", response_model=TaskResponse, status_code=status.HTTP_201_CREATED)
 def api_create_task(
         payload: TaskCreate,
+        request: Request,
         db: Session = Depends(get_db),
         actor: Actor = Depends(require_permission(Permission.TASKS_CREATE)),
     ):
+        mutation_limiter.check(actor.key_id or client_ip(request), request.app.state.settings.rate_limit_mutations)
         task = _make_task_service(db).create_task(payload, actor)
+        metrics.inc("task.created")
+        audit(db, actor_id_for(actor), "task.create", "task", task.id, {"status": task.status, "project": task.project})
+        _commit(db)
         return serialize_task(task)
 
 @router.get("/tasks/{task_id}", response_model=TaskResponse)
@@ -324,9 +332,11 @@ def api_update_task(
 def api_claim_task(
         task_id: str,
         payload: ClaimRequest,
+        request: Request,
         db: Session = Depends(get_db),
         actor: Actor = Depends(require_permission(Permission.TASKS_CLAIM)),
     ):
+        mutation_limiter.check(actor.key_id or client_ip(request), request.app.state.settings.rate_limit_mutations)
         try:
             task = _make_task_service(db).claim_task(task_id, actor, agent_name=payload.agent_name)
         except TaskNotFoundError:
@@ -339,6 +349,8 @@ def api_claim_task(
             raise HTTPException(status_code=403, detail=exc.message)
         except MissingAssigneeError as exc:
             raise HTTPException(status_code=400, detail=exc.message)
+        audit(db, actor_id_for(actor), "task.claim", "task", task.id)
+        _commit(db)
         return serialize_task(task)
 
 @router.post("/tasks/{task_id}/release", response_model=TaskResponse)
@@ -359,9 +371,12 @@ def api_release_task(
 def api_move_task(
         task_id: str,
         payload: MoveRequest,
+        request: Request,
         db: Session = Depends(get_db),
         actor: Actor = Depends(require_permission(Permission.TASKS_MOVE)),
     ):
+        mutation_limiter.check(actor.key_id or client_ip(request), request.app.state.settings.rate_limit_mutations)
+        old_status = _require_task(db, task_id).status
         try:
             task = _make_task_service(db).move_task(task_id, payload.status, actor)
         except TaskNotFoundError:
@@ -372,6 +387,9 @@ def api_move_task(
             raise HTTPException(status_code=409, detail=exc.message)
         except TaskConcurrentModificationError as exc:
             raise HTTPException(status_code=409, detail=exc.message)
+        metrics.inc("task.moved")
+        audit(db, actor_id_for(actor), "task.move", "task", task.id, {"from": old_status, "to": task.status})
+        _commit(db)
         return serialize_task(task)
 
 @router.post("/tasks/{task_id}/note", response_model=TaskResponse)

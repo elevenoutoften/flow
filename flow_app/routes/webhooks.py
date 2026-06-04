@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
+from ..audit import actor_id_for, audit
 from ..config import DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT
 from ..models import utcnow
 from ..repository import (
@@ -33,7 +34,7 @@ router = APIRouter()
 def api_create_webhook(
         payload: WebhookConfigCreate,
         db: Session = Depends(get_db),
-        _actor: Actor = Depends(require_permission(Permission.WEBHOOK_MANAGE)),
+        actor: Actor = Depends(require_permission(Permission.WEBHOOK_MANAGE)),
     ):
         svc = WebhookService(db)
         try:
@@ -41,6 +42,8 @@ def api_create_webhook(
         except WebhookError as exc:
             status_code = 422 if exc.error_type == "invalid_event" else 400
             raise HTTPException(status_code=status_code, detail=exc.message) from exc
+        audit(db, actor_id_for(actor), "webhook.create", "webhook", config.id)
+        _commit(db)
         data = serialize_webhook_config(config).model_dump()
         return WebhookConfigCreateResponse(**data, secret=raw_secret)
 

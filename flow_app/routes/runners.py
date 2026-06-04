@@ -8,10 +8,12 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from ..audit import audit
 from ..config import DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT
 from ..dispatcher import complete_run
-from ..models import Agent, AgentRun, Task, utcnow
 from ..models import Agent, AgentRun, RunnerLease, Task, utcnow
+from ..metrics import metrics
+from ..ratelimit import mutation_limiter
 from ..repository import (
     count_runners,
     create_agent_run,
@@ -197,6 +199,7 @@ def api_poll_runner(
     response: Response,
     db: Session = Depends(get_db),
 ):
+    mutation_limiter.check(runner_id, request.app.state.settings.rate_limit_mutations)
     runner = _require_polling_runner(db, runner_id, request)
     now = utcnow()
     runner.last_seen_at = now
@@ -215,6 +218,8 @@ def api_poll_runner(
     if run is not None and agent is not None and task is not None:
         lease = create_runner_lease(db, runner.id, run.id, now + timedelta(seconds=runner.lease_duration_seconds))
         publish_board_event("task_claimed", task, run_id=run.id, runner_id=runner.id, lease_id=lease.id)
+        metrics.inc("runner.lease.created")
+        audit(db, "system", "runner.lease.poll", "runner", runner.id, {"lease_id": lease.id})
         _commit(db)
         return serialize_runner_lease(lease, task, agent)
 
@@ -235,6 +240,8 @@ def api_poll_runner(
     db.add(run)
     lease = create_runner_lease(db, runner.id, run.id, now + timedelta(seconds=runner.lease_duration_seconds))
     publish_board_event("task_claimed", task, run_id=run.id, runner_id=runner.id, lease_id=lease.id)
+    metrics.inc("runner.lease.created")
+    audit(db, "system", "runner.lease.poll", "runner", runner.id, {"lease_id": lease.id})
     _commit(db)
     return serialize_runner_lease(lease, task, agent)
 
@@ -273,6 +280,7 @@ def api_heartbeat_runner_lease(
         run.last_heartbeat_at = now
         run.updated_at = now
         db.add(run)
+    audit(db, "system", "runner.lease.heartbeat", "runner_lease", lease.id)
     _commit(db)
     return serialize_runner_lease(lease)
 
@@ -305,6 +313,8 @@ def api_complete_runner_lease(
     )
     if run is not None:
         complete_run(db, run, payload.exit_code)
+    metrics.inc("runner.lease.completed")
+    audit(db, "system", "runner.lease.complete", "runner_lease", lease.id, {"exit_code": payload.exit_code})
     _commit(db)
     return serialize_runner_lease(lease, task, agent)
 

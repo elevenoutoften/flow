@@ -320,6 +320,18 @@ class RunnerLease(Base):
     )
 
 
+class AuditLog(Base):
+    __tablename__ = "audit_log"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    actor_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    action: Mapped[str] = mapped_column(String(48), nullable=False, index=True)
+    target_type: Mapped[str] = mapped_column(String(48), nullable=False, default="")
+    target_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    detail: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, index=True)
+
+
 class Idea(Base):
     __tablename__ = "ideas"
 

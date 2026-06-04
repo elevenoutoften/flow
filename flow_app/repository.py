@@ -14,6 +14,7 @@ from .models import (
     Agent,
     AgentApiKey,
     AgentRun,
+    AuditLog,
     AutomationRule,
     FlowCounter,
     Idea,
@@ -50,6 +51,7 @@ from .schemas import (
     AgentRunResponse,
     AgentUpdate,
     AutomationEvent,
+    AuditLogResponse,
     AutomationRuleCreate,
     AutomationRuleResponse,
     AutomationRuleUpdate,
@@ -130,6 +132,10 @@ def generate_runner_id(session: Session) -> str:
 
 def generate_runner_lease_id(session: Session) -> str:
     return generate_counter_id(session, "lease", "lease")
+
+
+def generate_audit_log_id(session: Session) -> str:
+    return generate_counter_id(session, "audit", "audit")
 
 
 def generate_rule_id(session: Session) -> str:
@@ -292,6 +298,81 @@ def revoke_agent_api_key(session: Session, api_key: AgentApiKey) -> AgentApiKey:
     session.add(api_key)
     session.flush()
     return api_key
+
+
+def create_audit_log(
+    session: Session,
+    actor_id: str,
+    action: str,
+    target_type: str = "",
+    target_id: str = "",
+    detail: str = "",
+) -> AuditLog:
+    """Write an append-only audit entry."""
+    entry = AuditLog(
+        id=generate_audit_log_id(session),
+        actor_id=actor_id,
+        action=action,
+        target_type=target_type,
+        target_id=target_id,
+        detail=detail,
+        created_at=utcnow(),
+    )
+    session.add(entry)
+    session.flush()
+    return entry
+
+
+def _audit_log_stmt(
+    *,
+    actor_id: str | None = None,
+    action: str | None = None,
+    target_type: str | None = None,
+    count: bool = False,
+) -> Select:
+    stmt = select(func.count()).select_from(AuditLog) if count else select(AuditLog)
+    if actor_id:
+        stmt = stmt.where(AuditLog.actor_id == actor_id)
+    if action:
+        stmt = stmt.where(AuditLog.action == action)
+    if target_type:
+        stmt = stmt.where(AuditLog.target_type == target_type)
+    return stmt
+
+
+def list_audit_logs(
+    session: Session,
+    actor_id: str | None = None,
+    action: str | None = None,
+    target_type: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[AuditLog]:
+    stmt = _audit_log_stmt(actor_id=actor_id, action=action, target_type=target_type)
+    stmt = stmt.order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+    return list(session.scalars(_apply_pagination(stmt, limit=limit, offset=offset)).all())
+
+
+def count_audit_logs(
+    session: Session,
+    actor_id: str | None = None,
+    action: str | None = None,
+    target_type: str | None = None,
+) -> int:
+    stmt = _audit_log_stmt(actor_id=actor_id, action=action, target_type=target_type, count=True)
+    return int(session.scalar(stmt) or 0)
+
+
+def serialize_audit_log(entry: AuditLog) -> AuditLogResponse:
+    return AuditLogResponse(
+        id=entry.id,
+        actor_id=entry.actor_id,
+        action=entry.action,
+        target_type=entry.target_type,
+        target_id=entry.target_id,
+        detail=entry.detail,
+        created_at=_ensure_datetime(entry.created_at),
+    )
 
 
 def create_agent(session: Session, payload: AgentCreate) -> Agent:

@@ -10,6 +10,24 @@ def ensure_compatible_schema(engine) -> None:
         connection.execute(
             text(
                 """
+                CREATE TABLE IF NOT EXISTS audit_log (
+                    id VARCHAR(32) PRIMARY KEY,
+                    actor_id VARCHAR(64) NOT NULL,
+                    action VARCHAR(48) NOT NULL,
+                    target_type VARCHAR(48) NOT NULL DEFAULT '',
+                    target_id VARCHAR(64) NOT NULL DEFAULT '',
+                    detail TEXT NOT NULL DEFAULT '',
+                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+        )
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_audit_log_actor_id ON audit_log (actor_id)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_audit_log_action ON audit_log (action)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_audit_log_created_at ON audit_log (created_at)"))
+        connection.execute(
+            text(
+                """
                 CREATE TABLE IF NOT EXISTS agents (
                     id VARCHAR(32) NOT NULL PRIMARY KEY,
                     name VARCHAR(180) NOT NULL UNIQUE,
@@ -288,6 +306,7 @@ def ensure_compatible_schema(engine) -> None:
         connection.execute(text("INSERT OR IGNORE INTO flow_counters (name, value) VALUES ('recurring_task_template', 0)"))
         connection.execute(text("INSERT OR IGNORE INTO flow_counters (name, value) VALUES ('runner', 0)"))
         connection.execute(text("INSERT OR IGNORE INTO flow_counters (name, value) VALUES ('lease', 0)"))
+        connection.execute(text("INSERT OR IGNORE INTO flow_counters (name, value) VALUES ('audit', 0)"))
 
     inspector = inspect(engine)
     table_names = inspector.get_table_names()

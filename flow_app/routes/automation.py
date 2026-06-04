@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
+from ..audit import actor_id_for, audit
 from ..config import DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT
 from ..repository import (
     count_automation_rules,
@@ -62,10 +63,12 @@ def api_get_automation_rule(
 def api_create_automation_rule(
         payload: AutomationRuleCreate,
         db: Session = Depends(get_db),
-        _actor: Actor = Depends(require_permission(Permission.RULES_MANAGE)),
+        actor: Actor = Depends(require_permission(Permission.RULES_MANAGE)),
     ):
         svc = AutomationService(db)
         rule = svc.create_rule(payload)
+        audit(db, actor_id_for(actor), "rule.create", "rule", rule.id)
+        db.commit()
         return serialize_automation_rule(rule)
 
 @router.patch("/automation-rules/{rule_id}", response_model=AutomationRuleResponse)
@@ -73,11 +76,13 @@ def api_update_automation_rule(
         rule_id: str,
         payload: AutomationRuleUpdate,
         db: Session = Depends(get_db),
-        _actor: Actor = Depends(require_permission(Permission.RULES_MANAGE)),
+        actor: Actor = Depends(require_permission(Permission.RULES_MANAGE)),
     ):
         svc = AutomationService(db)
         try:
             rule = svc.update_rule(rule_id, payload)
         except AutomationRuleNotFoundError as exc:
             raise HTTPException(status_code=404, detail=exc.message) from exc
+        audit(db, actor_id_for(actor), "rule.update", "rule", rule.id)
+        db.commit()
         return serialize_automation_rule(rule)

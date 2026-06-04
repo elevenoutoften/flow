@@ -27,6 +27,7 @@ from collections.abc import Callable
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from .metrics import metrics
 from .models import Agent, AgentRun, Runner, RunnerLease, Task, utcnow
 from .repository import (
     add_note,
@@ -229,6 +230,7 @@ def stale_recovery(session: Session) -> list[str]:
         if expires_at >= now:
             continue
         lease.status = "expired"
+        metrics.inc("runner.lease.expired")
         lease.updated_at = now
         run = session.get(AgentRun, lease.agent_run_id)
         if run and run.status == "running":

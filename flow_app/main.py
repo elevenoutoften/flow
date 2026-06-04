@@ -19,7 +19,9 @@ from .database import Base, build_engine, build_session_factory, default_databas
 from .dispatcher import set_session_factory
 from .mcp import JsonRpcError, error_response, exception_response, handle_mcp_message
 from .migration import ensure_compatible_schema
+from .metrics import metrics
 from .repository import ensure_project
+from .routes.audit import router as audit_router
 from .routes.agents import router as agents_router
 from .routes.automation import router as automation_router
 from .routes.dependencies import _commit
@@ -159,6 +161,7 @@ def create_app(
     app.mount("/static", StaticFiles(directory=str(PACKAGE_DIR / "static")), name="static")
 
     app.include_router(projects_router, prefix="/api")
+    app.include_router(audit_router, prefix="/api")
     app.include_router(agents_router, prefix="/api")
     app.include_router(ideas_router, prefix="/api")
     app.include_router(webhooks_router, prefix="/api")
@@ -169,6 +172,13 @@ def create_app(
     app.include_router(tasks_router, prefix="/api")
     app.include_router(workspace_router, prefix="/api")
     app.include_router(realtime_router, prefix="/api")
+
+    @app.middleware("http")
+    async def record_api_errors(request: Request, call_next):
+        response = await call_next(request)
+        if request.url.path.startswith("/api/") and response.status_code >= 500:
+            metrics.inc("api.errors")
+        return response
 
     @app.get("/healthz")
     def healthz(request: Request):

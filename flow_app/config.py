@@ -96,6 +96,10 @@ class FlowSettings:
     max_webhook_payload_bytes: int = 65536
     max_webhook_response_bytes: int = 4096
     max_webhook_delivery_age_days: int = 30
+    audit_enabled: bool = True
+    rate_limit_enabled: bool = True
+    rate_limit_key_creation: int = 10
+    rate_limit_mutations: int = 120
 
     @property
     def session_cookie_enabled(self) -> bool:
@@ -136,6 +140,10 @@ def get_settings() -> FlowSettings:
         max_webhook_payload_bytes=_env_int("FLOW_MAX_WEBHOOK_PAYLOAD_BYTES", 65536),
         max_webhook_response_bytes=_env_int("FLOW_MAX_WEBHOOK_RESPONSE_BYTES", 4096),
         max_webhook_delivery_age_days=_env_int("FLOW_MAX_WEBHOOK_DELIVERY_AGE_DAYS", 30),
+        audit_enabled=_env_bool("FLOW_AUDIT_ENABLED", default=True),
+        rate_limit_enabled=_env_bool("FLOW_RATE_LIMIT_ENABLED", default=True),
+        rate_limit_key_creation=_env_int("FLOW_RATE_LIMIT_KEY_CREATION", 10),
+        rate_limit_mutations=_env_int("FLOW_RATE_LIMIT_MUTATIONS", 120),
     )
     return _settings_cache
 

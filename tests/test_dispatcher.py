@@ -173,6 +173,15 @@ class TestAgentCRUD:
             # IntegrityError from unique constraint: 409 (if caught) or 500 (unhandled flush)
             assert r.status_code in (400, 409, 500)
 
+    def test_agent_type_validation(self, tmp_path):
+        with _client(tmp_path) as c:
+            r = c.post("/api/agents", json={"name": "bad-agent", "agent_type": "invalid"})
+            assert r.status_code == 422
+
+            agent = create_agent(c, agent_type="remote")
+            r = c.patch(f"/api/agents/{agent['id']}", json={"agent_type": "invalid"})
+            assert r.status_code == 422
+
 
 class TestDispatchStatuses:
     def test_dispatch_statuses_default(self, tmp_path):
@@ -532,6 +541,28 @@ class TestAgentRunLifecycle:
             assert run["task_id"] == task["id"]
             assert run["status"] == "running"
             assert run["pid"] is not None
+
+    def test_remote_dispatch_creates_run_without_process(self, tmp_path, monkeypatch):
+        def fail_popen(*args, **kwargs):
+            raise AssertionError("remote dispatch must not spawn a subprocess")
+
+        monkeypatch.setattr("flow_app.dispatcher.subprocess.Popen", fail_popen)
+        with _client(tmp_path) as c:
+            agent = create_agent(c, agent_type="remote")
+            task = create_task(c)
+
+            r = c.post(f"/api/agents/{agent['id']}/dispatch", params={"task_id": task["id"]})
+
+            assert r.status_code == 200, r.text
+            run = r.json()
+            assert run["agent_id"] == agent["id"]
+            assert run["task_id"] == task["id"]
+            assert run["status"] == "running"
+            assert run["pid"] is None
+
+            fetched = c.get(f"/api/tasks/{task['id']}").json()
+            assert fetched["status"] == "doing"
+            assert fetched["assignee"] == agent["name"]
 
     def test_dispatch_disabled_agent(self, tmp_path):
         with _client(tmp_path) as c:

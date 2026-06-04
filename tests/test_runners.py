@@ -209,6 +209,30 @@ def test_runner_poll_no_work(client):
     assert response.content == b""
 
 
+def test_runner_poll_picks_up_remote_dispatched_run(client):
+    agent = create_agent(client, agent_type="remote")
+    task = create_task(client)
+    runner, key = create_runner_with_key(client, agent_names=agent["name"])
+    dispatched = client.post(f"/api/agents/{agent['id']}/dispatch", params={"task_id": task["id"]})
+    assert dispatched.status_code == 200, dispatched.text
+    run = dispatched.json()
+    assert run["status"] == "running"
+    assert run["pid"] is None
+
+    response = client.post(f"/api/runners/{runner['id']}/poll", headers=bearer_headers(key))
+
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["id"].startswith("lease_")
+    assert data["runner_id"] == runner["id"]
+    assert data["agent_run_id"] == run["id"]
+    assert data["task_id"] == task["id"]
+    assert data["agent_name"] == agent["name"]
+    with client.app.state.SessionLocal() as db:
+        runs = db.query(AgentRun).filter(AgentRun.task_id == task["id"]).all()
+        assert [stored.id for stored in runs] == [run["id"]]
+
+
 def test_runner_poll_at_capacity_returns_active_leases(client):
     agent = create_agent(client)
     create_task(client)

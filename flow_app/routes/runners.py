@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from ..config import DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT
 from ..dispatcher import complete_run
 from ..models import Agent, AgentRun, Task, utcnow
+from ..models import Agent, AgentRun, RunnerLease, Task, utcnow
 from ..repository import (
     count_runners,
     create_agent_run,
@@ -111,6 +112,35 @@ def _eligible_task_for_runner(db: Session, runner):
     return None, None
 
 
+def _pending_remote_run_for_runner(db: Session, runner):
+    agent_names = get_comma_list(runner.agent_names)
+    if not agent_names:
+        return None, None, None
+    stmt = (
+        select(AgentRun, Agent, Task)
+        .join(Agent, Agent.id == AgentRun.agent_id)
+        .join(Task, Task.id == AgentRun.task_id)
+        .outerjoin(
+            RunnerLease,
+            (RunnerLease.agent_run_id == AgentRun.id) & (RunnerLease.status == "active"),
+        )
+        .where(
+            AgentRun.status == "running",
+            Agent.agent_type == "remote",
+            Agent.enabled == 1,
+            Agent.name.in_(agent_names),
+            Task.status == "doing",
+            Task.assignee == Agent.name,
+            RunnerLease.id.is_(None),
+        )
+        .order_by(AgentRun.started_at, AgentRun.created_at, AgentRun.id)
+    )
+    row = db.execute(stmt).first()
+    if row is None:
+        return None, None, None
+    return row
+
+
 @router.get("/runners", response_model=PaginatedResponse)
 def api_list_runners(
     db: Session = Depends(get_db),
@@ -180,6 +210,13 @@ def api_poll_runner(
     if len(active_leases) >= runner.max_concurrent_leases:
         _commit(db)
         return [_active_lease_response(db, lease) for lease in active_leases]
+
+    run, agent, task = _pending_remote_run_for_runner(db, runner)
+    if run is not None and agent is not None and task is not None:
+        lease = create_runner_lease(db, runner.id, run.id, now + timedelta(seconds=runner.lease_duration_seconds))
+        publish_board_event("task_claimed", task, run_id=run.id, runner_id=runner.id, lease_id=lease.id)
+        _commit(db)
+        return serialize_runner_lease(lease, task, agent)
 
     agent, task = _eligible_task_for_runner(db, runner)
     if agent is None or task is None:

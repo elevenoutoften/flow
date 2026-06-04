@@ -987,7 +987,6 @@ class AgentCreate(BaseModel):
 
     @field_validator(
         "description",
-        "agent_type",
         "capabilities",
         "command",
         "command_allowlist",
@@ -997,6 +996,15 @@ class AgentCreate(BaseModel):
     @classmethod
     def clean_text_fields(cls, value: str | None) -> str:
         return _clean_text(value)
+
+    @field_validator("agent_type")
+    @classmethod
+    def validate_agent_type(cls, value: str | None) -> str:
+        allowed = {"cli", "remote"}
+        cleaned = (value or "cli").strip().lower()
+        if cleaned not in allowed:
+            raise ValueError(f"agent_type must be one of: {', '.join(sorted(allowed))}")
+        return cleaned
 
     @field_validator("dispatch_statuses")
     @classmethod
@@ -1031,7 +1039,6 @@ class AgentUpdate(BaseModel):
 
     @field_validator(
         "description",
-        "agent_type",
         "capabilities",
         "command",
         "command_allowlist",
@@ -1043,6 +1050,17 @@ class AgentUpdate(BaseModel):
         if value is None:
             return None
         return _clean_text(value)
+
+    @field_validator("agent_type")
+    @classmethod
+    def validate_agent_type(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        allowed = {"cli", "remote"}
+        cleaned = value.strip().lower()
+        if cleaned not in allowed:
+            raise ValueError(f"agent_type must be one of: {', '.join(sorted(allowed))}")
+        return cleaned
 
     @field_validator("dispatch_statuses")
     @classmethod

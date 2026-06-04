@@ -105,6 +105,19 @@ def dispatch_one(
     run.last_heartbeat_at = now
     run.updated_at = now
     command = _substitute_command(command_template, agent=agent, task=task, run=run)
+
+    if agent.agent_type == "remote":
+        logger.info(
+            "Remote agent %s dispatched to task %s (run %s); awaiting runner poll",
+            agent.name,
+            task.id,
+            run.id,
+        )
+        add_note(session, task, f"Dispatched to remote agent {agent.name} as run {run.id}.", author="dispatcher")
+        session.add(run)
+        session.flush()
+        return run
+
     env = _build_env(agent, task, run, api_key=api_key, base_url=base_url)
     workspace = _provision_run_workspace(session, task, run)
     if workspace is not None and not workspace.ready:

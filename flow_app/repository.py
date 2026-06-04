@@ -21,6 +21,7 @@ from .models import (
     Project,
     RecurringTaskTemplate,
     Runner,
+    RunnerLease,
     Task,
     TaskHandoff,
     TaskLink,
@@ -58,6 +59,7 @@ from .schemas import (
     IdeaResponse,
     IdeaUpdate,
     HandoffResponse,
+    LeaseResponse,
     NEXT_STATUS_ORDER,
     NotificationDeliveryResponse,
     PromoteTaskSpec,
@@ -124,6 +126,10 @@ def generate_agent_run_id(session: Session) -> str:
 
 def generate_runner_id(session: Session) -> str:
     return generate_counter_id(session, "runner", "runner")
+
+
+def generate_runner_lease_id(session: Session) -> str:
+    return generate_counter_id(session, "lease", "lease")
 
 
 def generate_rule_id(session: Session) -> str:
@@ -451,6 +457,80 @@ def serialize_runner(runner: Runner) -> RunnerResponse:
         created_at=_ensure_datetime(runner.created_at),
         updated_at=_ensure_datetime(runner.updated_at),
     )
+
+
+def create_runner_lease(session: Session, runner_id: str, agent_run_id: str, expires_at: datetime) -> RunnerLease:
+    """Create a RunnerLease."""
+    now = utcnow()
+    lease = RunnerLease(
+        id=generate_runner_lease_id(session),
+        runner_id=runner_id,
+        agent_run_id=agent_run_id,
+        status="active",
+        leased_at=now,
+        expires_at=expires_at,
+        last_heartbeat_at=None,
+        runner_pid=None,
+        runner_message="",
+        completed_at=None,
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(lease)
+    session.flush()
+    return lease
+
+
+def get_runner_lease(session: Session, lease_id: str) -> RunnerLease | None:
+    return session.get(RunnerLease, lease_id)
+
+
+def get_active_leases_for_runner(session: Session, runner_id: str) -> list[RunnerLease]:
+    stmt = (
+        select(RunnerLease)
+        .where(RunnerLease.runner_id == runner_id, RunnerLease.status == "active")
+        .order_by(RunnerLease.leased_at, RunnerLease.id)
+    )
+    return list(session.scalars(stmt).all())
+
+
+def update_runner_lease(session: Session, lease: RunnerLease, updates: dict) -> RunnerLease:
+    for field, value in updates.items():
+        setattr(lease, field, value)
+    lease.updated_at = utcnow()
+    session.add(lease)
+    session.flush()
+    return lease
+
+
+def serialize_runner_lease(lease: RunnerLease, task: Task | None = None, agent: Agent | None = None) -> LeaseResponse:
+    session = object_session(lease)
+    run = session.get(AgentRun, lease.agent_run_id) if session is not None else None
+    if task is None and session is not None and run is not None:
+        task = session.get(Task, run.task_id)
+    if agent is None and session is not None and run is not None:
+        agent = session.get(Agent, run.agent_id)
+    return LeaseResponse(
+        id=lease.id,
+        runner_id=lease.runner_id,
+        agent_run_id=lease.agent_run_id,
+        status=lease.status,
+        leased_at=_ensure_datetime(lease.leased_at),
+        expires_at=_ensure_datetime(lease.expires_at),
+        last_heartbeat_at=_ensure_optional_datetime(lease.last_heartbeat_at),
+        runner_pid=lease.runner_pid,
+        runner_message=lease.runner_message,
+        completed_at=_ensure_optional_datetime(lease.completed_at),
+        task_id=task.id if task is not None else "",
+        task_title=task.title if task is not None else "",
+        agent_name=agent.name if agent is not None else "",
+        agent_command=agent.command if agent is not None else "",
+        agent_env_allowlist=agent.env_allowlist if agent is not None else "",
+    )
+
+
+def runner_lease_to_json(lease: RunnerLease, task: Task | None = None, agent: Agent | None = None) -> dict:
+    return serialize_runner_lease(lease, task, agent).model_dump(mode="json")
 
 
 def create_agent_run(session: Session, *, agent_id: str, task_id: str, status: str = "pending") -> AgentRun:

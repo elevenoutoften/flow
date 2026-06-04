@@ -1198,6 +1198,36 @@ class AgentRunResponse(BaseModel):
     updated_at: datetime
 
 
+class LeaseResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    runner_id: str
+    agent_run_id: str
+    status: str
+    leased_at: datetime
+    expires_at: datetime
+    last_heartbeat_at: datetime | None
+    runner_pid: int | None
+    runner_message: str
+    completed_at: datetime | None
+    task_id: str
+    task_title: str
+    agent_name: str
+    agent_command: str
+    agent_env_allowlist: str
+
+
+class LeaseHeartbeatRequest(BaseModel):
+    runner_pid: int | None = None
+    message: str = ""
+
+
+class LeaseCompleteRequest(BaseModel):
+    exit_code: int = 0
+    message: str = ""
+
+
 AUTOMATION_TRIGGERS = {"task_created", "task_moved", "task_claimed", "task_completed", "task_blocked", "cron"}
 
 

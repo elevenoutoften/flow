@@ -24,9 +24,10 @@ import threading
 import time
 from collections.abc import Callable
 
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .models import Agent, AgentRun, Task, utcnow
+from .models import Agent, AgentRun, Runner, RunnerLease, Task, utcnow
 from .repository import (
     add_note,
     create_agent_run,
@@ -207,6 +208,43 @@ def stale_recovery(session: Session) -> list[str]:
         session.add(run)
         recovered.append(run.id)
         _cleanup_run_workspace(session, run)
+    active_leases = session.scalars(select(RunnerLease).where(RunnerLease.status == "active")).all()
+    for lease in active_leases:
+        expires_at = lease.expires_at
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=now.tzinfo)
+        if expires_at >= now:
+            continue
+        lease.status = "expired"
+        lease.updated_at = now
+        run = session.get(AgentRun, lease.agent_run_id)
+        if run and run.status == "running":
+            task = session.get(Task, run.task_id)
+            if task is not None:
+                if task.status == "doing":
+                    task.status = "todo"
+                task.assignee = None
+                add_note(session, task, f"Recovered expired runner lease {lease.id}; task released.", author="dispatcher")
+                update_task(session, task, TaskUpdate())
+            run.status = "stale"
+            run.finished_at = now
+            run.updated_at = now
+            session.add(run)
+            recovered.append(run.id)
+        session.add(lease)
+        session.flush()
+        runner = session.get(Runner, lease.runner_id)
+        if runner:
+            active_remaining = session.scalar(
+                select(func.count()).select_from(RunnerLease).where(
+                    RunnerLease.runner_id == runner.id,
+                    RunnerLease.status == "active",
+                )
+            )
+            if active_remaining == 0:
+                runner.status = "offline"
+                runner.updated_at = now
+                session.add(runner)
     session.flush()
     return recovered
 

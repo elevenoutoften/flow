@@ -19,6 +19,7 @@ from .models import (
     Idea,
     NotificationDelivery,
     Project,
+    RecurringTaskTemplate,
     Task,
     TaskHandoff,
     TaskLink,
@@ -63,6 +64,9 @@ from .schemas import (
     ProjectCreate,
     ProjectResponse,
     ProjectUpdate,
+    RecurringTaskTemplateCreate,
+    RecurringTaskTemplateResponse,
+    RecurringTaskTemplateUpdate,
     TaskCreate,
     TaskListResponse,
     TaskLinkCreate,
@@ -95,6 +99,10 @@ def generate_task_id(session: Session) -> str:
 
 def generate_idea_id(session: Session) -> str:
     return generate_counter_id(session, "idea", "idea")
+
+
+def generate_recurring_task_template_id(session: Session) -> str:
+    return generate_counter_id(session, "recurring_task_template", "rpt")
 
 
 def generate_api_key_id(session: Session) -> str:
@@ -1203,6 +1211,102 @@ def update_idea(session: Session, idea: Idea, payload: IdeaUpdate) -> Idea:
     return idea
 
 
+def create_recurring_task_template(session: Session, payload: RecurringTaskTemplateCreate) -> RecurringTaskTemplate:
+    now = utcnow()
+    ensure_project(session, payload.project)
+    template = RecurringTaskTemplate(
+        id=generate_recurring_task_template_id(session),
+        name=payload.name,
+        project=payload.project,
+        title=payload.title,
+        description=payload.description,
+        acceptance_criteria=payload.acceptance_criteria,
+        priority=payload.priority,
+        status=payload.status,
+        complexity=payload.complexity,
+        impact=payload.impact,
+        effort=payload.effort,
+        risk=payload.risk,
+        cadence=payload.cadence,
+        next_run_at=payload.next_run_at,
+        enabled=int(payload.enabled),
+        metadata_="{}",
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(template)
+    session.flush()
+    return template
+
+
+def get_recurring_task_template(session: Session, template_id: str) -> RecurringTaskTemplate:
+    template = session.get(RecurringTaskTemplate, template_id)
+    if template is None:
+        raise ValueError(f"Recurring task template not found: {template_id}")
+    return template
+
+
+def _recurring_task_templates_stmt(
+    *,
+    project: str | None = None,
+    enabled_only: bool = False,
+    count: bool = False,
+) -> Select:
+    stmt = select(func.count()).select_from(RecurringTaskTemplate) if count else select(RecurringTaskTemplate)
+    if project:
+        stmt = stmt.where(RecurringTaskTemplate.project == project)
+    if enabled_only:
+        stmt = stmt.where(RecurringTaskTemplate.enabled == 1)
+    if not count:
+        stmt = stmt.order_by(RecurringTaskTemplate.next_run_at, RecurringTaskTemplate.id)
+    return stmt
+
+
+def list_recurring_task_templates(
+    session: Session,
+    project: str | None = None,
+    enabled_only: bool = False,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[RecurringTaskTemplate]:
+    stmt = _apply_pagination(
+        _recurring_task_templates_stmt(project=project, enabled_only=enabled_only),
+        limit=limit,
+        offset=offset,
+    )
+    return list(session.scalars(stmt).all())
+
+
+def count_recurring_task_templates(
+    session: Session,
+    project: str | None = None,
+    enabled_only: bool = False,
+) -> int:
+    return int(
+        session.execute(
+            _recurring_task_templates_stmt(project=project, enabled_only=enabled_only, count=True)
+        ).scalar_one()
+    )
+
+
+def update_recurring_task_template(
+    session: Session,
+    template: RecurringTaskTemplate,
+    payload: RecurringTaskTemplateUpdate,
+) -> RecurringTaskTemplate:
+    changes = payload.model_dump(exclude_unset=True)
+    if "enabled" in changes:
+        changes["enabled"] = int(changes["enabled"])
+    for field, value in changes.items():
+        setattr(template, field, value)
+    if "project" in changes and template.project:
+        ensure_project(session, template.project)
+    template.updated_at = utcnow()
+    session.add(template)
+    session.flush()
+    return template
+
+
 def archive_idea(session: Session, idea: Idea) -> Idea:
     idea.archived_at = utcnow()
     idea.updated_at = utcnow()
@@ -1574,6 +1678,35 @@ def serialize_idea(idea: Idea, session: Session) -> IdeaResponse:
         created_at=_ensure_datetime(idea.created_at),
         updated_at=_ensure_datetime(idea.updated_at),
     )
+
+
+def serialize_recurring_task_template(template: RecurringTaskTemplate) -> RecurringTaskTemplateResponse:
+    return RecurringTaskTemplateResponse(
+        id=template.id,
+        name=template.name,
+        project=template.project,
+        title=template.title,
+        description=template.description,
+        acceptance_criteria=template.acceptance_criteria,
+        priority=template.priority,
+        status=template.status,
+        complexity=template.complexity,
+        impact=template.impact,
+        effort=template.effort,
+        risk=template.risk,
+        cadence=template.cadence,
+        next_run_at=_ensure_optional_datetime(template.next_run_at),
+        enabled=bool(template.enabled),
+        metadata=template.metadata_,
+        created_at=_ensure_optional_datetime(template.created_at),
+        updated_at=_ensure_optional_datetime(template.updated_at),
+    )
+
+
+def serialize_recurring_task_template_list(
+    templates: list[RecurringTaskTemplate],
+) -> list[RecurringTaskTemplateResponse]:
+    return [serialize_recurring_task_template(template) for template in templates]
 
 
 def find_import_duplicate(

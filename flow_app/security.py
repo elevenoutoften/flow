@@ -60,6 +60,8 @@ class Permission(Enum):
     HANDOFF_READ = "handoff:read"
     HANDOFF_CREATE = "handoff:create"
     HANDOFF_MANAGE = "handoff:manage"
+    RECURRING_TEMPLATES_READ = "recurring_templates:read"
+    RECURRING_TEMPLATES_MANAGE = "recurring_templates:manage"
 
 
 def webhook_encryption_enabled() -> bool:
@@ -120,6 +122,8 @@ ROLE_PERMISSIONS: dict[ApiKeyRole, set[Permission]] = {
         Permission.HANDOFF_READ,
         Permission.HANDOFF_CREATE,
         Permission.HANDOFF_MANAGE,
+        Permission.RECURRING_TEMPLATES_READ,
+        Permission.RECURRING_TEMPLATES_MANAGE,
     },
     ApiKeyRole.architect: {
         Permission.TASKS_READ,
@@ -146,6 +150,8 @@ ROLE_PERMISSIONS: dict[ApiKeyRole, set[Permission]] = {
         Permission.HANDOFF_READ,
         Permission.HANDOFF_CREATE,
         Permission.HANDOFF_MANAGE,
+        Permission.RECURRING_TEMPLATES_READ,
+        Permission.RECURRING_TEMPLATES_MANAGE,
     },
     ApiKeyRole.implementer: {
         Permission.TASKS_READ,
@@ -161,6 +167,7 @@ ROLE_PERMISSIONS: dict[ApiKeyRole, set[Permission]] = {
         Permission.WEBHOOK_READ,
         Permission.HANDOFF_READ,
         Permission.HANDOFF_CREATE,
+        Permission.RECURRING_TEMPLATES_READ,
     },
     ApiKeyRole.reviewer: {
         Permission.TASKS_READ,
@@ -176,6 +183,7 @@ ROLE_PERMISSIONS: dict[ApiKeyRole, set[Permission]] = {
         Permission.WEBHOOK_READ,
         Permission.HANDOFF_READ,
         Permission.HANDOFF_CREATE,
+        Permission.RECURRING_TEMPLATES_READ,
     },
     ApiKeyRole.read_only: {
         Permission.TASKS_READ,
@@ -186,6 +194,7 @@ ROLE_PERMISSIONS: dict[ApiKeyRole, set[Permission]] = {
         Permission.WORKSPACE_READ,
         Permission.WEBHOOK_READ,
         Permission.HANDOFF_READ,
+        Permission.RECURRING_TEMPLATES_READ,
     },
 }
 

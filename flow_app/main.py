@@ -26,6 +26,7 @@ from .routes.ideas import router as ideas_router
 from .routes.notifications import router as notifications_router
 from .routes.projects import router as projects_router
 from .routes.realtime import router as realtime_router
+from .routes.recurring_task_templates import router as recurring_templates_router
 from .routes.tasks import router as tasks_router
 from .routes.ui import router as ui_router
 from .routes.webhooks import router as webhooks_router
@@ -146,6 +147,7 @@ def create_app(
     app.include_router(webhooks_router, prefix="/api")
     app.include_router(automation_router, prefix="/api")
     app.include_router(notifications_router, prefix="/api")
+    app.include_router(recurring_templates_router, prefix="/api")
     app.include_router(tasks_router, prefix="/api")
     app.include_router(workspace_router, prefix="/api")
     app.include_router(realtime_router, prefix="/api")

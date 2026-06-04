@@ -77,6 +77,8 @@ from ..schemas import (
     IdeaUpdate,
     HandoffRequest,
     PromoteTaskSpec,
+    RecurringTaskTemplateCreate,
+    RecurringTaskTemplateUpdate,
     STATUSES,
     AgentCreate,
     AgentUpdate,
@@ -102,6 +104,7 @@ from ..services.task import (
 from ..services.agent import AgentError, AgentNotFoundError, AgentRunNotFoundError, AgentService
 from ..services.automation import AutomationRuleNotFoundError, AutomationService
 from ..services.idea import IdeaNotFoundError, IdeaService
+from ..services.recurring_task_template import RecurringTemplateNotFoundError, RecurringTemplateService
 from ..services.webhook import WebhookError, WebhookNotFoundError, WebhookService
 from ..services.workspace import WorkspaceConfigNotFoundError, WorkspaceService
 from ..telegram import TelegramNotificationProvider
@@ -120,6 +123,7 @@ PROTOCOL_VERSION = "2025-11-25"
 PROJECT_NAME = "flow"
 TASK_UPDATE_FIELDS = set(TaskUpdate.model_fields)
 IDEA_UPDATE_FIELDS = set(IdeaUpdate.model_fields)
+RECURRING_TEMPLATE_UPDATE_FIELDS = set(RecurringTaskTemplateUpdate.model_fields)
 AGENT_UPDATE_FIELDS = set(AgentUpdate.model_fields)
 RULE_UPDATE_FIELDS = set(AutomationRuleUpdate.model_fields)
 WORKSPACE_CONFIG_UPDATE_FIELDS = set(WorkspaceConfigUpdate.model_fields)
@@ -446,6 +450,81 @@ TOOLS: list[dict[str, Any]] = [
                 },
             },
             "required": ["idea_id", "tasks"],
+        },
+    },
+    {
+        "name": "flow_list_recurring_task_templates",
+        "title": "List Flow Recurring Task Templates",
+        "description": "List recurring task templates, optionally filtered by project or enabled state.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project": {"type": "string", "description": "Optional project slug."},
+                "enabled": {"type": "boolean", "default": None},
+                "limit": {"type": "integer", "minimum": 1, "maximum": MAX_PAGE_LIMIT, "default": DEFAULT_PAGE_LIMIT},
+                "offset": {"type": "integer", "minimum": 0, "default": 0},
+            },
+        },
+    },
+    {
+        "name": "flow_create_recurring_task_template",
+        "title": "Create Flow Recurring Task Template",
+        "description": "Create a recurring task template.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "project": {"type": "string"},
+                "title": {"type": "string"},
+                "description": {"type": "string", "default": ""},
+                "acceptance_criteria": {"type": "string", "default": ""},
+                "priority": {"type": "integer", "default": 500},
+                "status": {"type": "string", "enum": list(STATUSES), "default": "todo"},
+                "complexity": {"type": "string", "default": "small"},
+                "impact": {"type": "string", "default": "medium"},
+                "effort": {"type": "string", "default": "medium"},
+                "risk": {"type": "string", "default": "low"},
+                "cadence": {"type": "string"},
+                "next_run_at": {"type": "string", "format": "date-time"},
+                "enabled": {"type": "boolean", "default": True},
+            },
+            "required": ["name", "project", "title", "cadence", "next_run_at"],
+        },
+    },
+    {
+        "name": "flow_get_recurring_task_template",
+        "title": "Get Flow Recurring Task Template",
+        "description": "Read a recurring task template by ID.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"template_id": {"type": "string"}},
+            "required": ["template_id"],
+        },
+    },
+    {
+        "name": "flow_update_recurring_task_template",
+        "title": "Update Flow Recurring Task Template",
+        "description": "Update a recurring task template.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "template_id": {"type": "string"},
+                "name": {"type": "string"},
+                "project": {"type": "string"},
+                "title": {"type": "string"},
+                "description": {"type": "string"},
+                "acceptance_criteria": {"type": "string"},
+                "priority": {"type": "integer"},
+                "status": {"type": "string", "enum": list(STATUSES)},
+                "complexity": {"type": "string"},
+                "impact": {"type": "string"},
+                "effort": {"type": "string"},
+                "risk": {"type": "string"},
+                "cadence": {"type": "string"},
+                "next_run_at": {"type": "string", "format": "date-time"},
+                "enabled": {"type": "boolean"},
+            },
+            "required": ["template_id"],
         },
     },
     {
@@ -1212,6 +1291,78 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
             f"Promoted Flow idea {data['id']} into {len(data['promoted_task_ids'])} linked task"
             f"{'s' if len(data['promoted_task_ids']) != 1 else ''}.",
         )
+
+    if name == "flow_list_recurring_task_templates":
+        require_tool_permission(actor, Permission.RECURRING_TEMPLATES_READ)
+        project = optional_string(arguments.get("project"))
+        enabled_arg = arguments.get("enabled")
+        enabled_only = False if enabled_arg is None else optional_bool(enabled_arg, default=False)
+        limit = optional_limit(arguments.get("limit"))
+        offset = optional_offset(arguments.get("offset"))
+        svc = RecurringTemplateService(db)
+        data = svc.list(project=project, enabled_only=enabled_only, limit=limit, offset=offset)
+        templates = data["items"]
+        return tool_result(
+            {
+                "templates": templates,
+                "count": len(templates),
+                "total": data["total"],
+                "limit": data["limit"],
+                "offset": data["offset"],
+            },
+            f"Found {len(templates)} Flow recurring task template{'s' if len(templates) != 1 else ''}.",
+        )
+
+    if name == "flow_create_recurring_task_template":
+        require_tool_permission(actor, Permission.RECURRING_TEMPLATES_MANAGE)
+        try:
+            payload = RecurringTaskTemplateCreate(
+                name=arguments.get("name"),
+                project=arguments.get("project"),
+                title=arguments.get("title"),
+                description=arguments.get("description", ""),
+                acceptance_criteria=arguments.get("acceptance_criteria", ""),
+                priority=arguments.get("priority", 500),
+                status=arguments.get("status", "todo"),
+                complexity=arguments.get("complexity", "small"),
+                impact=arguments.get("impact", "medium"),
+                effort=arguments.get("effort", "medium"),
+                risk=arguments.get("risk", "low"),
+                cadence=arguments.get("cadence"),
+                next_run_at=arguments.get("next_run_at"),
+                enabled=arguments.get("enabled", True),
+            )
+        except ValidationError as exc:
+            raise JsonRpcError(-32602, "Invalid recurring task template payload.", exc.errors()) from exc
+        svc = RecurringTemplateService(db)
+        data = svc.create(payload)
+        return tool_result({"template": data}, f"Created Flow recurring task template {data['id']}: {data['name']}")
+
+    if name == "flow_get_recurring_task_template":
+        require_tool_permission(actor, Permission.RECURRING_TEMPLATES_READ)
+        template_id = require_string(arguments.get("template_id"), "template_id")
+        svc = RecurringTemplateService(db)
+        try:
+            data = svc.get(template_id)
+        except RecurringTemplateNotFoundError as exc:
+            raise JsonRpcError(-32602, exc.message) from exc
+        return tool_result({"template": data}, f"Found Flow recurring task template {data['id']}: {data['name']}")
+
+    if name == "flow_update_recurring_task_template":
+        require_tool_permission(actor, Permission.RECURRING_TEMPLATES_MANAGE)
+        template_id = require_string(arguments.get("template_id"), "template_id")
+        try:
+            payload = RecurringTaskTemplateUpdate(
+                **update_arguments(arguments, RECURRING_TEMPLATE_UPDATE_FIELDS, "template_id")
+            )
+        except ValidationError as exc:
+            raise JsonRpcError(-32602, "Invalid recurring task template payload.", exc.errors()) from exc
+        svc = RecurringTemplateService(db)
+        try:
+            data = svc.update(template_id, payload)
+        except RecurringTemplateNotFoundError as exc:
+            raise JsonRpcError(-32602, exc.message) from exc
+        return tool_result({"template": data}, f"Updated Flow recurring task template {data['id']}: {data['name']}")
 
     if name == "flow_list_agents":
         require_tool_permission(actor, Permission.AGENT_READ)

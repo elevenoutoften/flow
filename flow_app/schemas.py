@@ -804,6 +804,105 @@ class IdeaResponse(BaseModel):
     updated_at: datetime
 
 
+class RecurringTaskTemplateCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=200)
+    project: str = Field(..., min_length=1)
+    title: str = Field(..., min_length=1)
+    description: str = ""
+    acceptance_criteria: str = ""
+    priority: int = 500
+    status: str = "todo"
+    complexity: str = "small"
+    impact: str = "medium"
+    effort: str = "medium"
+    risk: str = "low"
+    cadence: str = Field(..., min_length=1)
+    next_run_at: datetime
+    enabled: bool = True
+
+    @field_validator("name", "project", "title")
+    @classmethod
+    def require_nonempty(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("must not be empty")
+        return cleaned
+
+    @field_validator("description", "acceptance_criteria")
+    @classmethod
+    def clean_text(cls, value: str | None) -> str:
+        return _clean_text(value)
+
+    @field_validator("cadence")
+    @classmethod
+    def validate_cadence(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("cadence must not be empty")
+        return cleaned
+
+    @field_validator("status")
+    @classmethod
+    def validate_status(cls, value: str) -> str:
+        if value not in STATUSES:
+            raise ValueError(f"status must be one of {set(STATUSES)}")
+        return value
+
+
+class RecurringTaskTemplateUpdate(BaseModel):
+    name: str | None = None
+    project: str | None = None
+    title: str | None = None
+    description: str | None = None
+    acceptance_criteria: str | None = None
+    priority: int | None = None
+    status: str | None = None
+    complexity: str | None = None
+    impact: str | None = None
+    effort: str | None = None
+    risk: str | None = None
+    cadence: str | None = None
+    next_run_at: datetime | None = None
+    enabled: bool | None = None
+
+    @field_validator("name", "project", "title", "description", "acceptance_criteria", "cadence")
+    @classmethod
+    def clean_optional(cls, value: str | None) -> str | None:
+        return _clean_optional(value)
+
+    @field_validator("status")
+    @classmethod
+    def validate_status(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if value not in STATUSES:
+            raise ValueError(f"status must be one of {set(STATUSES)}")
+        return value
+
+
+class RecurringTaskTemplateResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    id: str
+    name: str
+    project: str
+    title: str
+    description: str
+    acceptance_criteria: str
+    priority: int
+    status: str
+    complexity: str
+    impact: str
+    effort: str
+    risk: str
+    cadence: str
+    next_run_at: datetime | None = None
+    enabled: bool
+    metadata: str = Field(validation_alias="metadata_")
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
 class MarkdownImportPreviewRequest(BaseModel):
     markdown: str
     source_filename: str | None = None

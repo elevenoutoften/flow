@@ -292,3 +292,26 @@ class Idea(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
     )
+
+
+class RecurringTaskTemplate(Base):
+    __tablename__ = "recurring_task_templates"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    project: Mapped[str] = mapped_column(String(120), nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[str] = mapped_column(Text, default="", server_default="")
+    acceptance_criteria: Mapped[str] = mapped_column(Text, default="", server_default="")
+    priority: Mapped[int] = mapped_column(Integer, default=500)
+    status: Mapped[str] = mapped_column(String(24), default="todo", server_default="todo")
+    complexity: Mapped[str] = mapped_column(String(24), default="small", server_default="small")
+    impact: Mapped[str] = mapped_column(String(24), default="medium", server_default="medium")
+    effort: Mapped[str] = mapped_column(String(24), default="medium", server_default="medium")
+    risk: Mapped[str] = mapped_column(String(24), default="low", server_default="low")
+    cadence: Mapped[str] = mapped_column(String(60), nullable=False)
+    next_run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Integer, default=1, server_default="1")
+    metadata_: Mapped[str] = mapped_column("metadata", Text, default="{}", server_default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)

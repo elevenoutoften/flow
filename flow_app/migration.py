@@ -204,12 +204,39 @@ def ensure_compatible_schema(engine) -> None:
         connection.execute(
             text("CREATE INDEX IF NOT EXISTS ix_notification_deliveries_task_id ON notification_deliveries (task_id)")
         )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS recurring_task_templates (
+                    id VARCHAR(32) PRIMARY KEY,
+                    name VARCHAR(200) NOT NULL,
+                    project VARCHAR(120) NOT NULL,
+                    title TEXT NOT NULL,
+                    description TEXT DEFAULT '',
+                    acceptance_criteria TEXT DEFAULT '',
+                    priority INTEGER DEFAULT 500,
+                    status VARCHAR(24) DEFAULT 'todo',
+                    complexity VARCHAR(24) DEFAULT 'small',
+                    impact VARCHAR(24) DEFAULT 'medium',
+                    effort VARCHAR(24) DEFAULT 'medium',
+                    risk VARCHAR(24) DEFAULT 'low',
+                    cadence VARCHAR(60) NOT NULL,
+                    next_run_at DATETIME NOT NULL,
+                    enabled INTEGER DEFAULT 1,
+                    metadata TEXT DEFAULT '{}',
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+        )
         connection.execute(text("INSERT OR IGNORE INTO flow_counters (name, value) VALUES ('webhook', 0)"))
         connection.execute(text("INSERT OR IGNORE INTO flow_counters (name, value) VALUES ('delivery', 0)"))
         connection.execute(
             text("INSERT OR IGNORE INTO flow_counters (name, value) VALUES ('notification_delivery', 0)")
         )
         connection.execute(text("INSERT OR IGNORE INTO flow_counters (name, value) VALUES ('handoff', 0)"))
+        connection.execute(text("INSERT OR IGNORE INTO flow_counters (name, value) VALUES ('recurring_task_template', 0)"))
 
     inspector = inspect(engine)
     table_names = inspector.get_table_names()
@@ -282,4 +309,3 @@ def ensure_compatible_schema(engine) -> None:
     if "role" not in existing_api_key_columns:
         with engine.begin() as connection:
             connection.execute(text("ALTER TABLE api_keys ADD COLUMN role VARCHAR(32) NOT NULL DEFAULT 'read_only'"))
-

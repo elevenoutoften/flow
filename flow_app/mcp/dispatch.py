@@ -18,6 +18,7 @@ from ..repository import (
     count_agent_runs,
     count_automation_rules,
     count_ideas,
+    count_runners,
     count_tasks,
     count_webhook_deliveries,
     create_agent,
@@ -25,6 +26,7 @@ from ..repository import (
     create_task_handoff,
     create_webhook_config,
     create_idea,
+    create_runner,
     create_task,
     create_task_link,
     create_workspace_config,
@@ -37,6 +39,7 @@ from ..repository import (
     get_webhook_config,
     get_webhook_delivery,
     get_idea,
+    get_runner,
     get_task,
     get_dependency_summary,
     get_workspace_config,
@@ -46,6 +49,7 @@ from ..repository import (
     list_agents,
     list_automation_rules,
     list_ideas,
+    list_runners,
     list_task_links,
     list_task_handoffs,
     list_tasks,
@@ -53,6 +57,7 @@ from ..repository import (
     promote_tasks,
     serialize_automation_rule,
     serialize_idea,
+    serialize_runner,
     serialize_agent,
     serialize_agent_run,
     serialize_task_link,
@@ -66,6 +71,7 @@ from ..repository import (
     update_automation_rule,
     update_webhook_config,
     update_idea,
+    update_runner,
     update_task,
     update_workspace_config,
 )
@@ -79,6 +85,8 @@ from ..schemas import (
     PromoteTaskSpec,
     RecurringTaskTemplateCreate,
     RecurringTaskTemplateUpdate,
+    RunnerCreate,
+    RunnerUpdate,
     STATUSES,
     AgentCreate,
     AgentUpdate,
@@ -125,6 +133,7 @@ TASK_UPDATE_FIELDS = set(TaskUpdate.model_fields)
 IDEA_UPDATE_FIELDS = set(IdeaUpdate.model_fields)
 RECURRING_TEMPLATE_UPDATE_FIELDS = set(RecurringTaskTemplateUpdate.model_fields)
 AGENT_UPDATE_FIELDS = set(AgentUpdate.model_fields)
+RUNNER_UPDATE_FIELDS = set(RunnerUpdate.model_fields)
 RULE_UPDATE_FIELDS = set(AutomationRuleUpdate.model_fields)
 WORKSPACE_CONFIG_UPDATE_FIELDS = set(WorkspaceConfigUpdate.model_fields)
 WEBHOOK_UPDATE_FIELDS = {"url", "events", "active", "project"}
@@ -615,6 +624,73 @@ TOOLS: list[dict[str, Any]] = [
                 },
             },
             "required": ["agent_id"],
+        },
+    },
+    {
+        "name": "flow_list_runners",
+        "title": "List Flow Runners",
+        "description": "List registered remote Flow runners.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "minimum": 1, "maximum": MAX_PAGE_LIMIT, "default": DEFAULT_PAGE_LIMIT},
+                "offset": {"type": "integer", "minimum": 0, "default": 0},
+                "status": {"type": "string", "enum": ["online", "offline", "draining"]},
+            },
+        },
+    },
+    {
+        "name": "flow_get_runner",
+        "title": "Get Flow Runner",
+        "description": "Read a single Flow runner by ID.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"runner_id": {"type": "string"}},
+            "required": ["runner_id"],
+        },
+    },
+    {
+        "name": "flow_create_runner",
+        "title": "Create Flow Runner",
+        "description": "Register a remote Flow runner.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "description": {"type": "string", "default": ""},
+                "enabled": {"type": "boolean", "default": True},
+                "runner_type": {"type": "string", "enum": ["poll", "push"], "default": "poll"},
+                "capabilities": {"type": "string", "default": ""},
+                "agent_names": {"type": "string", "default": ""},
+                "lease_duration_seconds": {"type": "integer", "minimum": 60, "default": 600},
+                "heartbeat_interval_seconds": {"type": "integer", "minimum": 10, "default": 60},
+                "max_concurrent_leases": {"type": "integer", "minimum": 1, "default": 1},
+                "api_key_ref": {"type": "string", "default": ""},
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "flow_update_runner",
+        "title": "Update Flow Runner",
+        "description": "Update a registered Flow runner.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "runner_id": {"type": "string"},
+                "name": {"type": "string"},
+                "description": {"type": "string"},
+                "enabled": {"type": "boolean"},
+                "runner_type": {"type": "string", "enum": ["poll", "push"]},
+                "capabilities": {"type": "string"},
+                "agent_names": {"type": "string"},
+                "lease_duration_seconds": {"type": "integer", "minimum": 60},
+                "heartbeat_interval_seconds": {"type": "integer", "minimum": 10},
+                "max_concurrent_leases": {"type": "integer", "minimum": 1},
+                "api_key_ref": {"type": "string"},
+                "status": {"type": "string", "enum": ["online", "offline", "draining"]},
+            },
+            "required": ["runner_id"],
         },
     },
     {
@@ -1466,6 +1542,76 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
         data = agent_to_json(agent)
         return tool_result({"agent": data}, f"Updated Flow agent {data['id']}: {data['name']}")
 
+    if name == "flow_list_runners":
+        require_tool_permission(actor, Permission.RUNNER_READ)
+        limit = optional_limit(arguments.get("limit"))
+        offset = optional_offset(arguments.get("offset"))
+        status_filter = optional_string(arguments.get("status"))
+        runners = [
+            runner_to_json(runner)
+            for runner in list_runners(db, status=status_filter, limit=limit, offset=offset)
+        ]
+        total = count_runners(db, status=status_filter)
+        return tool_result(
+            {"runners": runners, "count": len(runners), "total": total, "limit": limit, "offset": offset},
+            f"Found {len(runners)} Flow runner{'s' if len(runners) != 1 else ''}.",
+        )
+
+    if name == "flow_get_runner":
+        require_tool_permission(actor, Permission.RUNNER_READ)
+        runner_id = require_string(arguments.get("runner_id"), "runner_id")
+        runner = require_runner(db, runner_id)
+        data = runner_to_json(runner)
+        return tool_result({"runner": data}, f"Found Flow runner {data['id']}: {data['name']}")
+
+    if name == "flow_create_runner":
+        require_tool_permission(actor, Permission.RUNNER_MANAGE)
+        try:
+            payload = RunnerCreate(
+                name=arguments.get("name"),
+                description=arguments.get("description", ""),
+                enabled=arguments.get("enabled", True),
+                runner_type=arguments.get("runner_type", "poll"),
+                capabilities=arguments.get("capabilities", ""),
+                agent_names=arguments.get("agent_names", ""),
+                lease_duration_seconds=arguments.get("lease_duration_seconds", 600),
+                heartbeat_interval_seconds=arguments.get("heartbeat_interval_seconds", 60),
+                max_concurrent_leases=arguments.get("max_concurrent_leases", 1),
+                api_key_ref=arguments.get("api_key_ref", ""),
+            )
+        except ValidationError as exc:
+            raise JsonRpcError(-32602, "Invalid runner payload.", exc.errors()) from exc
+        try:
+            runner, _secret = create_runner(db, payload)
+        except IntegrityError as exc:
+            db.rollback()
+            raise JsonRpcError(
+                -32603,
+                "Database conflict: the record already exists or violates a constraint.",
+            ) from exc
+        _commit(db)
+        data = runner_to_json(runner)
+        return tool_result({"runner": data}, f"Created Flow runner {data['id']}: {data['name']}")
+
+    if name == "flow_update_runner":
+        require_tool_permission(actor, Permission.RUNNER_MANAGE)
+        runner_id = require_string(arguments.get("runner_id"), "runner_id")
+        try:
+            payload = RunnerUpdate(**update_arguments(arguments, RUNNER_UPDATE_FIELDS, "runner_id"))
+        except ValidationError as exc:
+            raise JsonRpcError(-32602, "Invalid runner payload.", exc.errors()) from exc
+        try:
+            runner = update_runner(db, require_runner(db, runner_id), payload)
+        except IntegrityError as exc:
+            db.rollback()
+            raise JsonRpcError(
+                -32603,
+                "Database conflict: the record already exists or violates a constraint.",
+            ) from exc
+        _commit(db)
+        data = runner_to_json(runner)
+        return tool_result({"runner": data}, f"Updated Flow runner {data['id']}: {data['name']}")
+
     if name == "flow_list_workspace_configs":
         require_tool_permission(actor, Permission.WORKSPACE_READ)
         enabled_only = optional_bool(arguments.get("enabled_only"), default=False)
@@ -1878,6 +2024,13 @@ def require_agent_run(db: Session, run_id: str):
     return run
 
 
+def require_runner(db: Session, runner_id: str):
+    runner = get_runner(db, runner_id)
+    if runner is None:
+        raise JsonRpcError(-32602, f"Runner not found: {runner_id}")
+    return runner
+
+
 def require_automation_rule(db: Session, rule_id: str):
     rule = get_automation_rule(db, rule_id)
     if rule is None:
@@ -1925,6 +2078,10 @@ def agent_to_json(agent) -> dict[str, Any]:
 
 def agent_run_to_json(run) -> dict[str, Any]:
     return serialize_agent_run(run).model_dump(mode="json")
+
+
+def runner_to_json(runner) -> dict[str, Any]:
+    return serialize_runner(runner).model_dump(mode="json")
 
 
 def automation_rule_to_json(rule) -> dict[str, Any]:

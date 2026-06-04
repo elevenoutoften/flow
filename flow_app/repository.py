@@ -20,6 +20,7 @@ from .models import (
     NotificationDelivery,
     Project,
     RecurringTaskTemplate,
+    Runner,
     Task,
     TaskHandoff,
     TaskLink,
@@ -67,6 +68,9 @@ from .schemas import (
     RecurringTaskTemplateCreate,
     RecurringTaskTemplateResponse,
     RecurringTaskTemplateUpdate,
+    RunnerCreate,
+    RunnerResponse,
+    RunnerUpdate,
     TaskCreate,
     TaskListResponse,
     TaskLinkCreate,
@@ -116,6 +120,10 @@ def generate_agent_id(session: Session) -> str:
 
 def generate_agent_run_id(session: Session) -> str:
     return generate_counter_id(session, "agent_run", "run")
+
+
+def generate_runner_id(session: Session) -> str:
+    return generate_counter_id(session, "runner", "runner")
 
 
 def generate_rule_id(session: Session) -> str:
@@ -351,6 +359,97 @@ def serialize_agent(agent: Agent) -> AgentResponse:
         dispatch_statuses=set_comma_list(get_agent_dispatch_statuses(agent)),
         created_at=_ensure_datetime(agent.created_at),
         updated_at=_ensure_datetime(agent.updated_at),
+    )
+
+
+def create_runner(session: Session, payload: RunnerCreate) -> tuple[Runner, None]:
+    """Create a new Runner. Returns (runner, None); no secret is generated."""
+    now = utcnow()
+    runner = Runner(
+        id=generate_runner_id(session),
+        name=payload.name,
+        description=payload.description,
+        enabled=int(payload.enabled),
+        runner_type=payload.runner_type,
+        capabilities=payload.capabilities,
+        agent_names=payload.agent_names,
+        lease_duration_seconds=payload.lease_duration_seconds,
+        heartbeat_interval_seconds=payload.heartbeat_interval_seconds,
+        max_concurrent_leases=payload.max_concurrent_leases,
+        api_key_ref=payload.api_key_ref,
+        last_seen_at=None,
+        status="offline",
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(runner)
+    session.flush()
+    return runner, None
+
+
+def get_runner(session: Session, runner_id: str) -> Runner | None:
+    return session.get(Runner, runner_id)
+
+
+def get_runner_by_name(session: Session, name: str) -> Runner | None:
+    return session.scalars(select(Runner).where(Runner.name == name)).first()
+
+
+def _runners_stmt(*, enabled_only: bool = False, status: str | None = None, count: bool = False) -> Select:
+    stmt = select(func.count()).select_from(Runner) if count else select(Runner)
+    if enabled_only:
+        stmt = stmt.where(Runner.enabled == 1)
+    if status:
+        stmt = stmt.where(Runner.status == status)
+    return stmt
+
+
+def list_runners(
+    session: Session,
+    *,
+    enabled_only: bool = False,
+    status: str | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+) -> list[Runner]:
+    stmt = _runners_stmt(enabled_only=enabled_only, status=status)
+    stmt = stmt.order_by(func.lower(Runner.name), Runner.id)
+    return list(session.scalars(_apply_pagination(stmt, limit=limit, offset=offset)).all())
+
+
+def count_runners(session: Session, *, enabled_only: bool = False, status: str | None = None) -> int:
+    return int(session.scalar(_runners_stmt(enabled_only=enabled_only, status=status, count=True)) or 0)
+
+
+def update_runner(session: Session, runner: Runner, payload: RunnerUpdate) -> Runner:
+    changes = payload.model_dump(exclude_unset=True)
+    if "enabled" in changes:
+        changes["enabled"] = int(changes["enabled"])
+    for field, value in changes.items():
+        setattr(runner, field, value)
+    runner.updated_at = utcnow()
+    session.add(runner)
+    session.flush()
+    return runner
+
+
+def serialize_runner(runner: Runner) -> RunnerResponse:
+    return RunnerResponse(
+        id=runner.id,
+        name=runner.name,
+        description=runner.description,
+        enabled=get_bool_field(runner.enabled),
+        runner_type=runner.runner_type,
+        capabilities=runner.capabilities,
+        agent_names=runner.agent_names,
+        lease_duration_seconds=runner.lease_duration_seconds,
+        heartbeat_interval_seconds=runner.heartbeat_interval_seconds,
+        max_concurrent_leases=runner.max_concurrent_leases,
+        api_key_ref=runner.api_key_ref,
+        last_seen_at=_ensure_optional_datetime(runner.last_seen_at),
+        status=runner.status,
+        created_at=_ensure_datetime(runner.created_at),
+        updated_at=_ensure_datetime(runner.updated_at),
     )
 
 

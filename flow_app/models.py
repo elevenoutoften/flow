@@ -279,6 +279,28 @@ class NotificationDelivery(Base):
     )
 
 
+class Runner(Base):
+    __tablename__ = "runners"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    name: Mapped[str] = mapped_column(String(180), nullable=False, unique=True)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    enabled: Mapped[bool] = mapped_column(Integer, nullable=False, default=1)
+    runner_type: Mapped[str] = mapped_column(String(24), nullable=False, default="poll")
+    capabilities: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    agent_names: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    lease_duration_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=600)
+    heartbeat_interval_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
+    max_concurrent_leases: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    api_key_ref: Mapped[str] = mapped_column(String(256), nullable=False, default="")
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="offline", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+
 class Idea(Base):
     __tablename__ = "ideas"
 

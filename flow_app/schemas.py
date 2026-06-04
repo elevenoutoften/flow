@@ -1073,6 +1073,114 @@ class AgentResponse(BaseModel):
     updated_at: datetime
 
 
+class RunnerCreate(BaseModel):
+    name: str
+    description: str = ""
+    enabled: bool = True
+    runner_type: str = "poll"
+    capabilities: str = ""
+    agent_names: str = ""
+    lease_duration_seconds: int = Field(default=600, ge=60)
+    heartbeat_interval_seconds: int = Field(default=60, ge=10)
+    max_concurrent_leases: int = Field(default=1, ge=1)
+    api_key_ref: str = ""
+
+    @field_validator("name")
+    @classmethod
+    def require_name(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Name is required.")
+        return cleaned
+
+    @field_validator("description", "capabilities", "agent_names", "api_key_ref")
+    @classmethod
+    def clean_text_fields(cls, value: str | None) -> str:
+        return _clean_text(value)
+
+    @field_validator("runner_type")
+    @classmethod
+    def validate_runner_type(cls, value: str | None) -> str:
+        allowed = {"poll", "push"}
+        cleaned = (value or "poll").strip().lower()
+        if cleaned not in allowed:
+            raise ValueError(f"runner_type must be one of: {', '.join(sorted(allowed))}")
+        return cleaned
+
+
+class RunnerUpdate(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    enabled: bool | None = None
+    runner_type: str | None = None
+    capabilities: str | None = None
+    agent_names: str | None = None
+    lease_duration_seconds: int | None = Field(default=None, ge=60)
+    heartbeat_interval_seconds: int | None = Field(default=None, ge=10)
+    max_concurrent_leases: int | None = Field(default=None, ge=1)
+    api_key_ref: str | None = None
+    status: str | None = None
+
+    @field_validator("name")
+    @classmethod
+    def clean_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Name cannot be blank.")
+        return cleaned
+
+    @field_validator("description", "capabilities", "agent_names", "api_key_ref")
+    @classmethod
+    def clean_optional_text_fields(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return _clean_text(value)
+
+    @field_validator("runner_type")
+    @classmethod
+    def validate_runner_type(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        allowed = {"poll", "push"}
+        cleaned = value.strip().lower()
+        if cleaned not in allowed:
+            raise ValueError(f"runner_type must be one of: {', '.join(sorted(allowed))}")
+        return cleaned
+
+    @field_validator("status")
+    @classmethod
+    def validate_runner_status(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        allowed = {"online", "offline", "draining"}
+        cleaned = value.strip().lower()
+        if cleaned not in allowed:
+            raise ValueError(f"status must be one of: {', '.join(sorted(allowed))}")
+        return cleaned
+
+
+class RunnerResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    name: str
+    description: str
+    enabled: bool
+    runner_type: str
+    capabilities: str
+    agent_names: str
+    lease_duration_seconds: int
+    heartbeat_interval_seconds: int
+    max_concurrent_leases: int
+    api_key_ref: str
+    last_seen_at: datetime | None
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+
 class AgentRunResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

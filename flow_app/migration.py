@@ -207,6 +207,30 @@ def ensure_compatible_schema(engine) -> None:
         connection.execute(
             text(
                 """
+                CREATE TABLE IF NOT EXISTS runners (
+                    id VARCHAR(32) PRIMARY KEY,
+                    name VARCHAR(180) NOT NULL UNIQUE,
+                    description TEXT NOT NULL DEFAULT '',
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    runner_type VARCHAR(24) NOT NULL DEFAULT 'poll',
+                    capabilities TEXT NOT NULL DEFAULT '',
+                    agent_names TEXT NOT NULL DEFAULT '',
+                    lease_duration_seconds INTEGER NOT NULL DEFAULT 600,
+                    heartbeat_interval_seconds INTEGER NOT NULL DEFAULT 60,
+                    max_concurrent_leases INTEGER NOT NULL DEFAULT 1,
+                    api_key_ref VARCHAR(256) NOT NULL DEFAULT '',
+                    last_seen_at DATETIME,
+                    status VARCHAR(24) NOT NULL DEFAULT 'offline',
+                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+        )
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_runners_status ON runners (status)"))
+        connection.execute(
+            text(
+                """
                 CREATE TABLE IF NOT EXISTS recurring_task_templates (
                     id VARCHAR(32) PRIMARY KEY,
                     name VARCHAR(200) NOT NULL,
@@ -237,6 +261,7 @@ def ensure_compatible_schema(engine) -> None:
         )
         connection.execute(text("INSERT OR IGNORE INTO flow_counters (name, value) VALUES ('handoff', 0)"))
         connection.execute(text("INSERT OR IGNORE INTO flow_counters (name, value) VALUES ('recurring_task_template', 0)"))
+        connection.execute(text("INSERT OR IGNORE INTO flow_counters (name, value) VALUES ('runner', 0)"))
 
     inspector = inspect(engine)
     table_names = inspector.get_table_names()

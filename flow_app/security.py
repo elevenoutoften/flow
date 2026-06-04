@@ -47,6 +47,8 @@ class Permission(Enum):
     BOARD_VIEW = "board:view"
     AGENT_READ = "agent:read"
     AGENT_MANAGE = "agent:manage"
+    RUNNER_READ = "runner:read"
+    RUNNER_MANAGE = "runner:manage"
     DISPATCH = "dispatch"
     RULES_READ = "rules:read"
     RULES_MANAGE = "rules:manage"
@@ -109,6 +111,8 @@ ROLE_PERMISSIONS: dict[ApiKeyRole, set[Permission]] = {
         Permission.BOARD_VIEW,
         Permission.AGENT_READ,
         Permission.AGENT_MANAGE,
+        Permission.RUNNER_READ,
+        Permission.RUNNER_MANAGE,
         Permission.DISPATCH,
         Permission.RULES_READ,
         Permission.RULES_MANAGE,
@@ -137,6 +141,8 @@ ROLE_PERMISSIONS: dict[ApiKeyRole, set[Permission]] = {
         Permission.BOARD_VIEW,
         Permission.AGENT_READ,
         Permission.AGENT_MANAGE,
+        Permission.RUNNER_READ,
+        Permission.RUNNER_MANAGE,
         Permission.DISPATCH,
         Permission.RULES_READ,
         Permission.RULES_MANAGE,
@@ -160,6 +166,7 @@ ROLE_PERMISSIONS: dict[ApiKeyRole, set[Permission]] = {
         Permission.TASKS_NOTE,
         Permission.BOARD_VIEW,
         Permission.AGENT_READ,
+        Permission.RUNNER_READ,
         Permission.DISPATCH,
         Permission.RULES_READ,
         Permission.LINKS_READ,
@@ -177,6 +184,7 @@ ROLE_PERMISSIONS: dict[ApiKeyRole, set[Permission]] = {
         Permission.TASKS_DONE,
         Permission.BOARD_VIEW,
         Permission.AGENT_READ,
+        Permission.RUNNER_READ,
         Permission.RULES_READ,
         Permission.LINKS_READ,
         Permission.WORKSPACE_READ,
@@ -189,6 +197,7 @@ ROLE_PERMISSIONS: dict[ApiKeyRole, set[Permission]] = {
         Permission.TASKS_READ,
         Permission.BOARD_VIEW,
         Permission.AGENT_READ,
+        Permission.RUNNER_READ,
         Permission.RULES_READ,
         Permission.LINKS_READ,
         Permission.WORKSPACE_READ,

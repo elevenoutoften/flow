@@ -231,6 +231,31 @@ def ensure_compatible_schema(engine) -> None:
         connection.execute(
             text(
                 """
+                CREATE TABLE IF NOT EXISTS runner_leases (
+                    id VARCHAR(32) PRIMARY KEY,
+                    runner_id VARCHAR(32) NOT NULL REFERENCES runners(id) ON DELETE CASCADE,
+                    agent_run_id VARCHAR(32) NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+                    status VARCHAR(24) NOT NULL DEFAULT 'active',
+                    leased_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    expires_at DATETIME NOT NULL,
+                    last_heartbeat_at DATETIME,
+                    runner_pid INTEGER,
+                    runner_message TEXT NOT NULL DEFAULT '',
+                    completed_at DATETIME,
+                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+        )
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_runner_leases_runner_id ON runner_leases (runner_id)"))
+        connection.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_runner_leases_agent_run_id ON runner_leases (agent_run_id)")
+        )
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_runner_leases_status ON runner_leases (status)"))
+        connection.execute(
+            text(
+                """
                 CREATE TABLE IF NOT EXISTS recurring_task_templates (
                     id VARCHAR(32) PRIMARY KEY,
                     name VARCHAR(200) NOT NULL,
@@ -262,6 +287,7 @@ def ensure_compatible_schema(engine) -> None:
         connection.execute(text("INSERT OR IGNORE INTO flow_counters (name, value) VALUES ('handoff', 0)"))
         connection.execute(text("INSERT OR IGNORE INTO flow_counters (name, value) VALUES ('recurring_task_template', 0)"))
         connection.execute(text("INSERT OR IGNORE INTO flow_counters (name, value) VALUES ('runner', 0)"))
+        connection.execute(text("INSERT OR IGNORE INTO flow_counters (name, value) VALUES ('lease', 0)"))
 
     inspector = inspect(engine)
     table_names = inspector.get_table_names()

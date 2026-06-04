@@ -301,6 +301,25 @@ class Runner(Base):
     )
 
 
+class RunnerLease(Base):
+    __tablename__ = "runner_leases"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    runner_id: Mapped[str] = mapped_column(ForeignKey("runners.id", ondelete="CASCADE"), nullable=False, index=True)
+    agent_run_id: Mapped[str] = mapped_column(ForeignKey("agent_runs.id", ondelete="CASCADE"), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="active", index=True)
+    leased_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    runner_pid: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    runner_message: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+
 class Idea(Base):
     __tablename__ = "ideas"
 

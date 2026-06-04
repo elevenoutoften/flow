@@ -987,7 +987,6 @@ class AgentCreate(BaseModel):
 
     @field_validator(
         "description",
-        "agent_type",
         "capabilities",
         "command",
         "command_allowlist",
@@ -997,6 +996,15 @@ class AgentCreate(BaseModel):
     @classmethod
     def clean_text_fields(cls, value: str | None) -> str:
         return _clean_text(value)
+
+    @field_validator("agent_type")
+    @classmethod
+    def validate_agent_type(cls, value: str | None) -> str:
+        allowed = {"cli", "remote"}
+        cleaned = (value or "cli").strip().lower()
+        if cleaned not in allowed:
+            raise ValueError(f"agent_type must be one of: {', '.join(sorted(allowed))}")
+        return cleaned
 
     @field_validator("dispatch_statuses")
     @classmethod
@@ -1031,7 +1039,6 @@ class AgentUpdate(BaseModel):
 
     @field_validator(
         "description",
-        "agent_type",
         "capabilities",
         "command",
         "command_allowlist",
@@ -1043,6 +1050,17 @@ class AgentUpdate(BaseModel):
         if value is None:
             return None
         return _clean_text(value)
+
+    @field_validator("agent_type")
+    @classmethod
+    def validate_agent_type(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        allowed = {"cli", "remote"}
+        cleaned = value.strip().lower()
+        if cleaned not in allowed:
+            raise ValueError(f"agent_type must be one of: {', '.join(sorted(allowed))}")
+        return cleaned
 
     @field_validator("dispatch_statuses")
     @classmethod
@@ -1196,6 +1214,36 @@ class AgentRunResponse(BaseModel):
     workspace_state: dict | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class LeaseResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    runner_id: str
+    agent_run_id: str
+    status: str
+    leased_at: datetime
+    expires_at: datetime
+    last_heartbeat_at: datetime | None
+    runner_pid: int | None
+    runner_message: str
+    completed_at: datetime | None
+    task_id: str
+    task_title: str
+    agent_name: str
+    agent_command: str
+    agent_env_allowlist: str
+
+
+class LeaseHeartbeatRequest(BaseModel):
+    runner_pid: int | None = None
+    message: str = ""
+
+
+class LeaseCompleteRequest(BaseModel):
+    exit_code: int = 0
+    message: str = ""
 
 
 AUTOMATION_TRIGGERS = {"task_created", "task_moved", "task_claimed", "task_completed", "task_blocked", "cron"}

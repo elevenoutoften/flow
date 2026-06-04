@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+from datetime import timedelta
+
+from flow_app.dispatcher import stale_recovery
+from flow_app.models import AgentRun, RunnerLease, Task, utcnow
+from flow_app.repository import create_runner_lease
+
 
 def bearer_headers(api_key: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {api_key}"}
@@ -22,6 +28,33 @@ def create_runner(client, **overrides) -> dict:
     response = client.post("/api/runners", json=payload)
     assert response.status_code == 201, response.text
     return response.json()
+
+
+def create_agent(client, **overrides) -> dict:
+    payload = {
+        "name": "implementer",
+        "description": "Implementation agent",
+        "command": "codex exec",
+        "env_allowlist": "FLOW_API_KEY,GITHUB_TOKEN",
+    }
+    payload.update(overrides)
+    response = client.post("/api/agents", json=payload)
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+def create_task(client, **overrides) -> dict:
+    payload = {"title": "Implement feature X", "status": "backlog"}
+    payload.update(overrides)
+    response = client.post("/api/tasks", json=payload)
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+def create_runner_with_key(client, **overrides) -> tuple[dict, str]:
+    key = overrides.pop("api_key_ref", "runner-secret")
+    runner = create_runner(client, api_key_ref=key, **overrides)
+    return runner, key
 
 
 def test_runner_crud_and_soft_delete(client):
@@ -141,3 +174,255 @@ def test_runner_lease_duration_minimum(client):
     runner = create_runner(client, name="lease-runner")
     response = client.patch(f"/api/runners/{runner['id']}", json={"lease_duration_seconds": 59})
     assert response.status_code == 422
+
+
+def test_runner_poll_with_work_available(client):
+    agent = create_agent(client)
+    task = create_task(client)
+    runner, key = create_runner_with_key(client, agent_names=agent["name"])
+
+    response = client.post(f"/api/runners/{runner['id']}/poll", headers=bearer_headers(key))
+
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["id"].startswith("lease_")
+    assert data["runner_id"] == runner["id"]
+    assert data["status"] == "active"
+    assert data["task_id"] == task["id"]
+    assert data["task_title"] == task["title"]
+    assert data["agent_name"] == agent["name"]
+    assert data["agent_command"] == agent["command"]
+    assert data["agent_env_allowlist"] == agent["env_allowlist"]
+
+    fetched = client.get(f"/api/tasks/{task['id']}").json()
+    assert fetched["status"] == "doing"
+    assert fetched["assignee"] == agent["name"]
+
+
+def test_runner_poll_no_work(client):
+    create_agent(client)
+    runner, key = create_runner_with_key(client, agent_names="implementer")
+
+    response = client.post(f"/api/runners/{runner['id']}/poll", headers=bearer_headers(key))
+
+    assert response.status_code == 204
+    assert response.content == b""
+
+
+def test_runner_poll_picks_up_remote_dispatched_run(client):
+    agent = create_agent(client, agent_type="remote")
+    task = create_task(client)
+    runner, key = create_runner_with_key(client, agent_names=agent["name"])
+    dispatched = client.post(f"/api/agents/{agent['id']}/dispatch", params={"task_id": task["id"]})
+    assert dispatched.status_code == 200, dispatched.text
+    run = dispatched.json()
+    assert run["status"] == "running"
+    assert run["pid"] is None
+
+    response = client.post(f"/api/runners/{runner['id']}/poll", headers=bearer_headers(key))
+
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["id"].startswith("lease_")
+    assert data["runner_id"] == runner["id"]
+    assert data["agent_run_id"] == run["id"]
+    assert data["task_id"] == task["id"]
+    assert data["agent_name"] == agent["name"]
+    with client.app.state.SessionLocal() as db:
+        runs = db.query(AgentRun).filter(AgentRun.task_id == task["id"]).all()
+        assert [stored.id for stored in runs] == [run["id"]]
+
+
+def test_runner_poll_at_capacity_returns_active_leases(client):
+    agent = create_agent(client)
+    create_task(client)
+    runner, key = create_runner_with_key(client, agent_names=agent["name"], max_concurrent_leases=1)
+    first = client.post(f"/api/runners/{runner['id']}/poll", headers=bearer_headers(key))
+    assert first.status_code == 200, first.text
+    create_task(client, title="Second task")
+
+    response = client.post(f"/api/runners/{runner['id']}/poll", headers=bearer_headers(key))
+
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert isinstance(data, list)
+    assert [item["id"] for item in data] == [first.json()["id"]]
+
+
+def test_runner_poll_auth_failures(client):
+    create_agent(client)
+    runner, key = create_runner_with_key(client, agent_names="implementer")
+
+    wrong = client.post(f"/api/runners/{runner['id']}/poll", headers=bearer_headers(key + "-wrong"))
+    assert wrong.status_code == 403
+
+    no_key = create_runner(client, name="no-key-runner", api_key_ref="")
+    missing = client.post(f"/api/runners/{no_key['id']}/poll", headers=bearer_headers("anything"))
+    assert missing.status_code == 403
+
+
+def test_runner_poll_disabled_runner(client):
+    runner, key = create_runner_with_key(client, enabled=False)
+
+    response = client.post(f"/api/runners/{runner['id']}/poll", headers=bearer_headers(key))
+
+    assert response.status_code == 403
+
+
+def test_runner_lease_heartbeat_updates_lease_and_run(client):
+    create_agent(client)
+    create_task(client)
+    runner, key = create_runner_with_key(client, agent_names="implementer")
+    lease = client.post(f"/api/runners/{runner['id']}/poll", headers=bearer_headers(key)).json()
+
+    response = client.post(
+        f"/api/runners/{runner['id']}/leases/{lease['id']}/heartbeat",
+        headers=bearer_headers(key),
+        json={"runner_pid": 1234, "message": "running tests"},
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["runner_pid"] == 1234
+    assert data["runner_message"] == "running tests"
+    assert data["last_heartbeat_at"] is not None
+    with client.app.state.SessionLocal() as db:
+        run = db.get(AgentRun, lease["agent_run_id"])
+        assert run.last_heartbeat_at is not None
+
+
+def test_runner_lease_heartbeat_expired_returns_gone(client):
+    create_agent(client)
+    create_task(client)
+    runner, key = create_runner_with_key(client, agent_names="implementer")
+    lease = client.post(f"/api/runners/{runner['id']}/poll", headers=bearer_headers(key)).json()
+    with client.app.state.SessionLocal() as db:
+        stored = db.get(RunnerLease, lease["id"])
+        stored.expires_at = utcnow() - timedelta(seconds=1)
+        db.commit()
+
+    response = client.post(
+        f"/api/runners/{runner['id']}/leases/{lease['id']}/heartbeat",
+        headers=bearer_headers(key),
+        json={},
+    )
+
+    assert response.status_code == 410
+
+
+def test_runner_lease_heartbeat_wrong_runner(client):
+    create_agent(client)
+    create_task(client)
+    runner, key = create_runner_with_key(client, agent_names="implementer")
+    lease = client.post(f"/api/runners/{runner['id']}/poll", headers=bearer_headers(key)).json()
+    other, other_key = create_runner_with_key(client, name="other-runner", agent_names="implementer", api_key_ref="other-key")
+
+    response = client.post(
+        f"/api/runners/{other['id']}/leases/{lease['id']}/heartbeat",
+        headers=bearer_headers(other_key),
+        json={},
+    )
+
+    assert response.status_code == 403
+
+
+def test_runner_lease_complete_success_keeps_task_doing(client):
+    create_agent(client)
+    task = create_task(client)
+    runner, key = create_runner_with_key(client, agent_names="implementer")
+    lease = client.post(f"/api/runners/{runner['id']}/poll", headers=bearer_headers(key)).json()
+
+    response = client.post(
+        f"/api/runners/{runner['id']}/leases/{lease['id']}/complete",
+        headers=bearer_headers(key),
+        json={"exit_code": 0, "message": "done"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "completed"
+    assert response.json()["runner_message"] == "done"
+    fetched = client.get(f"/api/tasks/{task['id']}").json()
+    assert fetched["status"] == "doing"
+    assert fetched["assignee"] == "implementer"
+    with client.app.state.SessionLocal() as db:
+        run = db.get(AgentRun, lease["agent_run_id"])
+        assert run.status == "done"
+
+
+def test_runner_lease_complete_failure_reverts_task(client):
+    create_agent(client)
+    task = create_task(client)
+    runner, key = create_runner_with_key(client, agent_names="implementer")
+    lease = client.post(f"/api/runners/{runner['id']}/poll", headers=bearer_headers(key)).json()
+
+    response = client.post(
+        f"/api/runners/{runner['id']}/leases/{lease['id']}/complete",
+        headers=bearer_headers(key),
+        json={"exit_code": 2, "message": "failed"},
+    )
+
+    assert response.status_code == 200, response.text
+    fetched = client.get(f"/api/tasks/{task['id']}").json()
+    assert fetched["status"] == "todo"
+    assert fetched["assignee"] is None
+    with client.app.state.SessionLocal() as db:
+        run = db.get(AgentRun, lease["agent_run_id"])
+        assert run.status == "crashed"
+
+
+def test_runner_lease_complete_already_completed_returns_conflict(client):
+    create_agent(client)
+    create_task(client)
+    runner, key = create_runner_with_key(client, agent_names="implementer")
+    lease = client.post(f"/api/runners/{runner['id']}/poll", headers=bearer_headers(key)).json()
+    first = client.post(
+        f"/api/runners/{runner['id']}/leases/{lease['id']}/complete",
+        headers=bearer_headers(key),
+        json={"exit_code": 0},
+    )
+    assert first.status_code == 200, first.text
+
+    response = client.post(
+        f"/api/runners/{runner['id']}/leases/{lease['id']}/complete",
+        headers=bearer_headers(key),
+        json={"exit_code": 0},
+    )
+
+    assert response.status_code == 409
+
+
+def test_stale_recovery_expires_runner_leases(client):
+    agent = create_agent(client)
+    task = create_task(client)
+    runner, _key = create_runner_with_key(client, agent_names=agent["name"])
+    with client.app.state.SessionLocal() as db:
+        stored_task = db.get(Task, task["id"])
+        stored_task.status = "doing"
+        stored_task.assignee = agent["name"]
+        run = AgentRun(
+            id="run_expired_lease",
+            agent_id=agent["id"],
+            task_id=task["id"],
+            status="running",
+            started_at=utcnow() - timedelta(minutes=5),
+            last_heartbeat_at=utcnow(),
+            created_at=utcnow() - timedelta(minutes=5),
+            updated_at=utcnow() - timedelta(minutes=5),
+        )
+        db.add(run)
+        db.flush()
+        lease = create_runner_lease(db, runner["id"], run.id, utcnow() - timedelta(seconds=1))
+        db.commit()
+
+        recovered = stale_recovery(db)
+        db.commit()
+        db.refresh(lease)
+        db.refresh(run)
+        db.refresh(stored_task)
+
+        assert recovered == [run.id]
+        assert lease.status == "expired"
+        assert run.status == "stale"
+        assert stored_task.status == "todo"
+        assert stored_task.assignee is None
+    assert client.get(f"/api/runners/{runner['id']}").json()["status"] == "offline"

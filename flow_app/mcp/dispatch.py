@@ -514,6 +514,7 @@ TOOLS: list[dict[str, Any]] = [
                 "cadence": {"type": "string"},
                 "next_run_at": {"type": "string", "format": "date-time"},
                 "enabled": {"type": "boolean", "default": True},
+                "metadata": {"type": "string", "description": "JSON metadata for the template, default '{}'"},
             },
             "required": ["name", "project", "title", "cadence", "next_run_at"],
         },
@@ -550,6 +551,7 @@ TOOLS: list[dict[str, Any]] = [
                 "cadence": {"type": "string"},
                 "next_run_at": {"type": "string", "format": "date-time"},
                 "enabled": {"type": "boolean"},
+                "metadata": {"type": "string", "description": "JSON metadata for the template, default '{}'"},
             },
             "required": ["template_id"],
         },
@@ -1486,6 +1488,7 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
                 cadence=arguments.get("cadence"),
                 next_run_at=arguments.get("next_run_at"),
                 enabled=arguments.get("enabled", True),
+                metadata=arguments.get("metadata", "{}"),
             )
         except ValidationError as exc:
             raise JsonRpcError(-32602, "Invalid recurring task template payload.", exc.errors()) from exc

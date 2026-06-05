@@ -25,6 +25,8 @@ NAMED_CADENCES = {
     "yearly": timedelta(days=365),
 }
 
+INTERVAL_CADENCE_PATTERN = re.compile(r"(\d+)\s*([mhdw])")
+
 
 def parse_cadence(cadence: str) -> timedelta:
     """Parse a cadence string into a timedelta."""
@@ -32,7 +34,7 @@ def parse_cadence(cadence: str) -> timedelta:
     if cadence in NAMED_CADENCES:
         return NAMED_CADENCES[cadence]
 
-    match = re.fullmatch(r"(\d+)\s*([mhdw])", cadence)
+    match = INTERVAL_CADENCE_PATTERN.fullmatch(cadence)
     if match:
         value = int(match.group(1))
         unit = match.group(2)
@@ -47,6 +49,18 @@ def parse_cadence(cadence: str) -> timedelta:
 
     _LOGGER.warning("Unrecognized cadence '%s', defaulting to 1 day", cadence)
     return timedelta(days=1)
+
+
+def validate_cadence(cadence: str) -> str:
+    """Validate a cadence string for user-provided template payloads."""
+    cleaned = cadence.strip().lower()
+    if cleaned in NAMED_CADENCES or INTERVAL_CADENCE_PATTERN.fullmatch(cleaned):
+        return cleaned
+    valid_names = ", ".join(NAMED_CADENCES)
+    raise ValueError(
+        f"Invalid cadence '{cadence}'. Use a named cadence ({valid_names}) "
+        "or an interval like '15m', '2h', '1d', '3w'."
+    )
 
 
 def compute_next_run(cadence: str, after: datetime) -> datetime:

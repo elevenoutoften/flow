@@ -832,6 +832,7 @@ class RecurringTaskTemplateCreate(BaseModel):
     cadence: str = Field(..., min_length=1)
     next_run_at: datetime
     enabled: bool = True
+    metadata: str = "{}"
 
     @field_validator("name", "project", "title")
     @classmethod
@@ -849,10 +850,20 @@ class RecurringTaskTemplateCreate(BaseModel):
     @field_validator("cadence")
     @classmethod
     def validate_cadence(cls, value: str) -> str:
-        cleaned = value.strip()
-        if not cleaned:
+        if not value.strip():
             raise ValueError("cadence must not be empty")
-        return cleaned
+        from .scheduler import validate_cadence as validate_template_cadence
+
+        return validate_template_cadence(value)
+
+    @field_validator("metadata")
+    @classmethod
+    def validate_metadata(cls, value: str) -> str:
+        try:
+            json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise ValueError("metadata must be valid JSON") from exc
+        return value
 
     @field_validator("status")
     @classmethod
@@ -877,11 +888,34 @@ class RecurringTaskTemplateUpdate(BaseModel):
     cadence: str | None = None
     next_run_at: datetime | None = None
     enabled: bool | None = None
+    metadata: str | None = None
 
-    @field_validator("name", "project", "title", "description", "acceptance_criteria", "cadence")
+    @field_validator("name", "project", "title", "description", "acceptance_criteria")
     @classmethod
     def clean_optional(cls, value: str | None) -> str | None:
         return _clean_optional(value)
+
+    @field_validator("cadence")
+    @classmethod
+    def validate_cadence(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if not value.strip():
+            raise ValueError("cadence must not be empty")
+        from .scheduler import validate_cadence as validate_template_cadence
+
+        return validate_template_cadence(value)
+
+    @field_validator("metadata")
+    @classmethod
+    def validate_metadata(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        try:
+            json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise ValueError("metadata must be valid JSON") from exc
+        return value
 
     @field_validator("status")
     @classmethod

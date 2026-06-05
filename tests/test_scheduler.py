@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from flow_app.repository import get_recurring_task_template, get_task, list_tasks
-from flow_app.scheduler import compute_next_run, materialize_due_templates, parse_cadence
+from flow_app.scheduler import compute_next_run, materialize_due_templates, parse_cadence, validate_cadence
 from flow_app.schemas import RecurringTaskTemplateCreate
 from flow_app.services.recurring_task_template import RecurringTemplateService
 
@@ -49,8 +51,22 @@ def test_parse_simple_intervals():
 
 
 def test_parse_cron_fallback(caplog):
+    # parse_cadence preserves the legacy fallback for existing database rows;
+    # API-level validation rejects cron-like cadence values before persistence.
     assert parse_cadence("0 9 * * 1") == timedelta(days=1)
     assert "defaulting to 1 day" in caplog.text
+
+
+def test_validate_cadence_valid():
+    assert validate_cadence("daily") == "daily"
+    assert validate_cadence("2h") == "2h"
+
+
+def test_validate_cadence_invalid():
+    with pytest.raises(ValueError):
+        validate_cadence("xyz")
+    with pytest.raises(ValueError):
+        validate_cadence("0 9 * * *")
 
 
 def test_compute_next_run_daily():

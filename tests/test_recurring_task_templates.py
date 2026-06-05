@@ -61,6 +61,19 @@ def test_create_template_invalid_cadence(client):
     assert response.status_code == 422
 
 
+def test_create_template_invalid_cadence_garbage(client):
+    response = client.post("/api/recurring-task-templates", json=template_payload(cadence="xyz"))
+
+    assert response.status_code == 422
+    assert "Invalid cadence" in response.text
+
+
+def test_create_template_invalid_cadence_cron(client):
+    response = client.post("/api/recurring-task-templates", json=template_payload(cadence="0 9 * * *"))
+
+    assert response.status_code == 422
+
+
 def test_create_template_invalid_status(client):
     response = client.post("/api/recurring-task-templates", json=template_payload(status="blocked"))
 
@@ -135,6 +148,23 @@ def test_update_template(client):
     assert updated["cadence"] == "daily"
 
 
+def test_update_template_invalid_cadence(client):
+    template = create_template(client)
+
+    response = client.patch(f"/api/recurring-task-templates/{template['id']}", json={"cadence": "garbage"})
+
+    assert response.status_code == 422
+
+
+def test_update_template_valid_cadence(client):
+    template = create_template(client, cadence="daily")
+
+    response = client.patch(f"/api/recurring-task-templates/{template['id']}", json={"cadence": "weekly"})
+
+    assert response.status_code == 200
+    assert response.json()["cadence"] == "weekly"
+
+
 def test_update_template_enable_disable(client):
     template = create_template(client, enabled=True)
 
@@ -169,6 +199,27 @@ def test_default_metadata(client):
     template = create_template(client)
 
     assert template["metadata"] == "{}"
+
+
+def test_create_template_with_metadata(client):
+    template = create_template(client, metadata='{"color":"blue"}')
+
+    assert template["metadata"] == '{"color":"blue"}'
+
+
+def test_create_template_invalid_metadata(client):
+    response = client.post("/api/recurring-task-templates", json=template_payload(metadata="not json"))
+
+    assert response.status_code == 422
+
+
+def test_update_template_metadata(client):
+    template = create_template(client)
+
+    response = client.patch(f"/api/recurring-task-templates/{template['id']}", json={"metadata": '{"updated":true}'})
+
+    assert response.status_code == 200
+    assert response.json()["metadata"] == '{"updated":true}'
 
 
 def test_id_generation(client):

@@ -1515,7 +1515,7 @@ def create_recurring_task_template(session: Session, payload: RecurringTaskTempl
         cadence=payload.cadence,
         next_run_at=payload.next_run_at,
         enabled=int(payload.enabled),
-        metadata_="{}",
+        metadata_=payload.metadata,
         created_at=now,
         updated_at=now,
     )
@@ -1582,6 +1582,8 @@ def update_recurring_task_template(
     changes = payload.model_dump(exclude_unset=True)
     if "enabled" in changes:
         changes["enabled"] = int(changes["enabled"])
+    if "metadata" in changes:
+        template.metadata_ = changes.pop("metadata")
     for field, value in changes.items():
         setattr(template, field, value)
     if "project" in changes and template.project:

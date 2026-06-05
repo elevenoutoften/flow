@@ -76,6 +76,7 @@ class MaterializationResult:
     task_id: str | None = None
     skipped: bool = False
     skip_reason: str = ""
+    task_preview: dict | None = None
 
 
 @dataclass
@@ -103,7 +104,12 @@ def materialize_due_templates(
         if next_run_at > now:
             continue
         if dry_run:
-            materialized = MaterializationResult(template_id=template.id, skipped=True, skip_reason="dry_run")
+            materialized = MaterializationResult(
+                template_id=template.id,
+                skipped=True,
+                skip_reason="dry_run",
+                task_preview=_task_preview(template),
+            )
             result.skipped += 1
         else:
             materialized = _materialize_one(session, template, now)
@@ -132,6 +138,8 @@ def _materialize_one(session: Session, template: RecurringTaskTemplate, now: dat
                 impact=template.impact,
                 effort=template.effort,
                 risk=template.risk,
+                source_template_id=template.id,
+                metadata=template.metadata_,
             ),
         )
         session.flush()
@@ -162,6 +170,23 @@ def _task_description(template: RecurringTaskTemplate) -> str:
     if not description:
         return source
     return f"{description}\n\n{source}"
+
+
+def _task_preview(template: RecurringTaskTemplate) -> dict:
+    return {
+        "title": template.title,
+        "project": template.project,
+        "description": _task_description(template),
+        "acceptance_criteria": template.acceptance_criteria or "",
+        "priority": template.priority,
+        "status": template.status,
+        "complexity": template.complexity,
+        "impact": template.impact,
+        "effort": template.effort,
+        "risk": template.risk,
+        "source_template_id": template.id,
+        "metadata": template.metadata_,
+    }
 
 
 def _ensure_aware(value: datetime) -> datetime:

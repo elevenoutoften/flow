@@ -341,6 +341,8 @@ def ensure_compatible_schema(engine) -> None:
         "source_filename": "VARCHAR(500)",
         "source_line": "INTEGER",
         "import_batch_id": "VARCHAR(64)",
+        "source_template_id": "VARCHAR(32)",
+        "metadata": "TEXT NOT NULL DEFAULT '{}'",
         "source_title": "VARCHAR(240)",
         "claimer_key_id": "VARCHAR(64)",
         "version": "INTEGER NOT NULL DEFAULT 1",
@@ -357,6 +359,7 @@ def ensure_compatible_schema(engine) -> None:
         for column_name, column_type in additions.items():
             if column_name not in existing:
                 connection.execute(text(f"ALTER TABLE tasks ADD COLUMN {column_name} {column_type}"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_tasks_source_template_id ON tasks (source_template_id)"))
 
     if "agent_runs" in inspector.get_table_names():
         existing_agent_run_columns = {column["name"] for column in inspector.get_columns("agent_runs")}

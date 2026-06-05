@@ -129,9 +129,61 @@ def test_materialize_dry_run(client):
         assert result.details[0].template_id == template["id"]
         assert result.details[0].skipped is True
         assert result.details[0].skip_reason == "dry_run"
+        assert result.details[0].task_preview == {
+            "title": template["title"],
+            "project": template["project"],
+            "description": (
+                "Check new tasks and sort them.\n\n"
+                f"Created from recurring template {template['id']} ({template['name']})."
+            ),
+            "acceptance_criteria": template["acceptance_criteria"],
+            "priority": template["priority"],
+            "status": template["status"],
+            "complexity": template["complexity"],
+            "impact": template["impact"],
+            "effort": template["effort"],
+            "risk": template["risk"],
+            "source_template_id": template["id"],
+            "metadata": template["metadata"],
+        }
         assert list_tasks(db) == []
         next_run_at = get_recurring_task_template(db, template["id"]).next_run_at
         assert next_run_at.replace(tzinfo=timezone.utc) == NOW - timedelta(minutes=1)
+
+
+def test_materialize_dry_run_includes_task_preview(client):
+    with client.app.state.SessionLocal() as db:
+        template = _create_template(db, metadata='{"color":"blue"}')
+        result = materialize_due_templates(db, now=NOW, dry_run=True)
+
+        preview = result.details[0].task_preview
+        assert preview is not None
+        assert preview["title"] == template["title"]
+        assert preview["project"] == template["project"]
+        assert preview["priority"] == template["priority"]
+        assert preview["status"] == template["status"]
+        assert preview["source_template_id"] == template["id"]
+        assert preview["metadata"] == '{"color":"blue"}'
+
+
+def test_materialize_propagates_metadata(client):
+    with client.app.state.SessionLocal() as db:
+        _create_template(db, metadata='{"color":"blue"}')
+        materialize_due_templates(db, now=NOW)
+
+        created = get_task(db, "flow_000001")
+        assert created is not None
+        assert created.metadata_ == '{"color":"blue"}'
+
+
+def test_materialize_sets_source_template_id(client):
+    with client.app.state.SessionLocal() as db:
+        template = _create_template(db)
+        materialize_due_templates(db, now=NOW)
+
+        created = get_task(db, "flow_000001")
+        assert created is not None
+        assert created.source_template_id == template["id"]
 
 
 def test_materialize_idempotent(client):
@@ -204,3 +256,5 @@ def test_rest_materialize_dry_run_endpoint(client):
     assert body["dry_run"] is True
     assert body["details"][0]["skipped"] is True
     assert body["details"][0]["skip_reason"] == "dry_run"
+    assert body["details"][0]["task_preview"]["title"] == "Review the incoming task queue"
+    assert body["details"][0]["task_preview"]["source_template_id"] == body["details"][0]["template_id"]

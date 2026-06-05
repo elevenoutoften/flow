@@ -108,6 +108,8 @@ class TaskCreate(BaseModel):
     source_filename: str | None = None
     source_line: int | None = Field(default=None, ge=1)
     import_batch_id: str | None = None
+    source_template_id: str | None = None
+    metadata: str = "{}"
     source_title: str | None = None
 
     @field_validator("title", "project")
@@ -123,7 +125,7 @@ class TaskCreate(BaseModel):
     def clean_assignee(cls, value: str | None) -> str | None:
         return _clean_optional(value)
 
-    @field_validator("source_filename", "import_batch_id", "source_title")
+    @field_validator("source_filename", "import_batch_id", "source_template_id", "source_title")
     @classmethod
     def clean_optional_strings(cls, value: str | None) -> str | None:
         return _clean_optional(value)
@@ -132,6 +134,15 @@ class TaskCreate(BaseModel):
     @classmethod
     def clean_multiline(cls, value: str | None) -> str:
         return _clean_text(value)
+
+    @field_validator("metadata")
+    @classmethod
+    def validate_metadata(cls, value: str) -> str:
+        try:
+            json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise ValueError("metadata must be valid JSON") from exc
+        return value
 
 
 class TaskUpdate(BaseModel):
@@ -152,6 +163,8 @@ class TaskUpdate(BaseModel):
     source_filename: str | None = None
     source_line: int | None = Field(default=None, ge=1)
     import_batch_id: str | None = None
+    source_template_id: str | None = None
+    metadata: str | None = None
     source_title: str | None = None
 
     @field_validator("title", "project")
@@ -169,7 +182,7 @@ class TaskUpdate(BaseModel):
     def clean_assignee(cls, value: str | None) -> str | None:
         return _clean_optional(value)
 
-    @field_validator("source_filename", "import_batch_id", "source_title")
+    @field_validator("source_filename", "import_batch_id", "source_template_id", "source_title")
     @classmethod
     def clean_optional_strings(cls, value: str | None) -> str | None:
         return _clean_optional(value)
@@ -180,6 +193,17 @@ class TaskUpdate(BaseModel):
         if value is None:
             return None
         return _clean_text(value)
+
+    @field_validator("metadata")
+    @classmethod
+    def validate_metadata(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        try:
+            json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise ValueError("metadata must be valid JSON") from exc
+        return value
 
 
 class ClaimRequest(BaseModel):
@@ -300,6 +324,8 @@ class HandoffResponse(BaseModel):
 
 
 class TaskResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     id: str
     title: str
     status: str
@@ -318,6 +344,8 @@ class TaskResponse(BaseModel):
     source_filename: str | None
     source_line: int | None
     import_batch_id: str | None
+    source_template_id: str | None = Field(default=None, validation_alias="source_template_id")
+    metadata: str = Field(validation_alias="metadata_")
     source_title: str | None
     notes: list[TaskNoteResponse]
     latest_handoff: HandoffResponse | None = None
@@ -326,6 +354,8 @@ class TaskResponse(BaseModel):
 
 
 class TaskListResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     id: str
     title: str
     status: str
@@ -340,6 +370,8 @@ class TaskListResponse(BaseModel):
     effort: str
     risk: str
     description: str
+    source_template_id: str | None = None
+    metadata: str = Field(validation_alias="metadata_")
     created_at: datetime
     updated_at: datetime
 

@@ -80,6 +80,10 @@ class Task(Base):
     source_filename: Mapped[str | None] = mapped_column(String(500), nullable=True)
     source_line: Mapped[int | None] = mapped_column(Integer, nullable=True)
     import_batch_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    source_template_id: Mapped[str | None] = mapped_column(
+        String(32), ForeignKey("recurring_task_templates.id"), nullable=True, default=None, index=True
+    )
+    metadata_: Mapped[str] = mapped_column("metadata", Text, nullable=False, default="{}", server_default="{}")
     source_title: Mapped[str | None] = mapped_column(String(240), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
@@ -91,6 +95,7 @@ class Task(Base):
         cascade="all, delete-orphan",
         order_by="TaskNote.created_at",
     )
+    source_template: Mapped["RecurringTaskTemplate | None"] = relationship(foreign_keys=[source_template_id])
 
 
 class TaskNote(Base):

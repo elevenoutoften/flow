@@ -215,6 +215,8 @@ TOOLS: list[dict[str, Any]] = [
                 "project": {"type": "string", "default": "default"},
                 "description": {"type": "string", "default": ""},
                 "acceptance_criteria": {"type": "string", "default": ""},
+                "source_template_id": {"type": ["string", "null"]},
+                "metadata": {"type": "string", "default": "{}"},
             },
             "required": ["title"],
         },
@@ -245,6 +247,8 @@ TOOLS: list[dict[str, Any]] = [
                 "source_filename": {"type": ["string", "null"]},
                 "source_line": {"type": ["integer", "null"], "minimum": 1},
                 "import_batch_id": {"type": ["string", "null"]},
+                "source_template_id": {"type": ["string", "null"]},
+                "metadata": {"type": ["string", "null"]},
                 "source_title": {"type": ["string", "null"]},
             },
             "required": ["task_id"],
@@ -1156,6 +1160,8 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
                 project=arguments.get("project", default_project()),
                 description=arguments.get("description", ""),
                 acceptance_criteria=arguments.get("acceptance_criteria", ""),
+                source_template_id=arguments.get("source_template_id"),
+                metadata=arguments.get("metadata", "{}"),
             )
         except ValidationError as exc:
             raise JsonRpcError(-32602, "Invalid task payload.", exc.errors()) from exc
@@ -1528,15 +1534,17 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
 
         dry_run = optional_bool(arguments.get("dry_run"), default=False)
         result = materialize_due_templates(db, dry_run=dry_run)
-        details = [
-            {
+        details = []
+        for detail in result.details:
+            detail_dict = {
                 "template_id": detail.template_id,
                 "task_id": detail.task_id,
                 "skipped": detail.skipped,
                 "skip_reason": detail.skip_reason,
             }
-            for detail in result.details
-        ]
+            if detail.task_preview:
+                detail_dict["task_preview"] = detail.task_preview
+            details.append(detail_dict)
         return tool_result(
             {
                 "materialized": result.materialized,

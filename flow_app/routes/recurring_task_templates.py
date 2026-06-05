@@ -50,19 +50,22 @@ def api_materialize_templates(
     from ..scheduler import materialize_due_templates
 
     result = materialize_due_templates(db, dry_run=dry_run)
+    details = []
+    for detail in result.details:
+        detail_dict = {
+            "template_id": detail.template_id,
+            "task_id": detail.task_id,
+            "skipped": detail.skipped,
+            "skip_reason": detail.skip_reason,
+        }
+        if detail.task_preview:
+            detail_dict["task_preview"] = detail.task_preview
+        details.append(detail_dict)
     return {
         "materialized": result.materialized,
         "skipped": result.skipped,
         "dry_run": result.dry_run,
-        "details": [
-            {
-                "template_id": detail.template_id,
-                "task_id": detail.task_id,
-                "skipped": detail.skipped,
-                "skip_reason": detail.skip_reason,
-            }
-            for detail in result.details
-        ],
+        "details": details,
     }
 
 

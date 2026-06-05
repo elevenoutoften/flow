@@ -1266,6 +1266,8 @@ def serialize_task_list(task: Task) -> TaskListResponse:
         effort=task.effort,
         risk=task.risk,
         description=task.description,
+        source_template_id=task.source_template_id,
+        metadata=task.metadata_,
         created_at=_ensure_datetime(task.created_at),
         updated_at=_ensure_datetime(task.updated_at),
     )
@@ -1680,6 +1682,8 @@ def create_task(session: Session, payload: TaskCreate) -> Task:
         source_filename=payload.source_filename,
         source_line=payload.source_line,
         import_batch_id=payload.import_batch_id,
+        source_template_id=payload.source_template_id,
+        metadata_=payload.metadata,
         source_title=payload.source_title,
         created_at=now,
         updated_at=now,
@@ -1706,6 +1710,8 @@ def task_update_changes(payload: TaskUpdate) -> dict[str, object]:
     # Convert schema types to DB column types
     if "human_required" in changes:
         changes["human_required"] = int(changes["human_required"])
+    if "metadata" in changes:
+        changes["metadata_"] = changes.pop("metadata")
     if "assignee_type" in changes:
         changes["assignee_type"] = changes["assignee_type"].value if hasattr(changes["assignee_type"], "value") else changes["assignee_type"]
     for enum_field in ("complexity", "impact", "effort", "risk"):
@@ -1890,6 +1896,8 @@ def serialize_task(task: Task) -> TaskResponse:
         source_filename=task.source_filename,
         source_line=task.source_line,
         import_batch_id=task.import_batch_id,
+        source_template_id=task.source_template_id,
+        metadata=task.metadata_,
         source_title=task.source_title,
         notes=notes,
         latest_handoff=serialize_task_handoff(latest_handoff) if latest_handoff else None,

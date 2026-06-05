@@ -63,6 +63,15 @@ class MatchResult:
 
 
 @dataclass
+class ConditionError:
+    """Structured error for an invalid condition object."""
+
+    index: int
+    field: str
+    message: str
+
+
+@dataclass
 class ActionResult:
     type: str
     success: bool
@@ -79,6 +88,40 @@ class ActionResult:
 def set_notify_provider(provider: RulesNotifyProvider | None) -> None:
     global _notify_provider
     _notify_provider = provider
+
+
+def validate_conditions(conditions: list[dict]) -> list[ConditionError]:
+    """Validate condition objects against supported fields and operators."""
+    errors = []
+    for index, condition in enumerate(conditions):
+        if not isinstance(condition, dict):
+            errors.append(ConditionError(index, "condition", "Condition must be an object."))
+            continue
+
+        field = condition.get("field", "")
+        operator = condition.get("operator", "eq")
+        value = condition.get("value")
+
+        if field not in CONDITION_FIELDS:
+            fields = ", ".join(sorted(CONDITION_FIELDS))
+            errors.append(
+                ConditionError(index, "field", f"Unknown condition field: {field!r}. Must be one of: {fields}")
+            )
+            continue
+
+        if operator not in CONDITION_OPERATORS:
+            operators = ", ".join(sorted(CONDITION_OPERATORS))
+            errors.append(
+                ConditionError(index, "operator", f"Unknown operator: {operator!r}. Must be one of: {operators}")
+            )
+
+        if field.startswith("age_since_") and value is not None:
+            try:
+                float(value)
+            except (TypeError, ValueError):
+                errors.append(ConditionError(index, "value", f"Age value must be a number, got {value!r}"))
+
+    return errors
 
 
 def evaluate_conditions(conditions: list[dict], task_data: dict) -> bool:

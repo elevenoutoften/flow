@@ -284,3 +284,37 @@ def test_adapter_import_cli_preview(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert '"name": "test-agent"' in out
     assert '"would_create": true' in out
+
+
+def test_builtin_templates_have_command_allowlist():
+    """Built-in templates must have appropriate command_allowlist values."""
+    from flow_app.adapter_templates import BUILTIN_TEMPLATES
+
+    # CLI-based templates must have non-empty command_allowlist
+    cli_templates = {"hermes", "codex", "claude-code", "opencode", "opencrawl"}
+    for name in cli_templates:
+        template = BUILTIN_TEMPLATES[name]
+        assert template.command_allowlist, f"{name} template must have a non-empty command_allowlist"
+
+    # Remote-protocol and custom templates intentionally have empty allowlists
+    assert BUILTIN_TEMPLATES["mcp"].command_allowlist == ""
+    assert BUILTIN_TEMPLATES["custom-script"].command_allowlist == ""
+
+
+def test_instantiate_preserves_command_allowlist(client):
+    """Instantiating a template preserves its command_allowlist."""
+    response = client.post("/api/adapter-templates/codex/instantiate", json={"name": "allowlist-test-agent"})
+
+    assert response.status_code == 201, response.text
+    agent = response.json()
+    assert agent["command_allowlist"] == "codex"
+
+
+def test_instantiate_hermes_command_allowlist(client):
+    """Hermes template preserves multi-prefix command_allowlist."""
+    response = client.post("/api/adapter-templates/hermes/instantiate", json={"name": "hermes-allowlist-agent"})
+
+    assert response.status_code == 201, response.text
+    agent = response.json()
+    assert "python" in agent["command_allowlist"]
+    assert "hermes" in agent["command_allowlist"]

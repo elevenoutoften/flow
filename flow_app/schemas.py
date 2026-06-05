@@ -1336,6 +1336,13 @@ def _validate_json_array(value: str | None, field_name: str) -> str:
         raise ValueError(f"{field_name} must be a valid JSON array.") from exc
     if not isinstance(parsed, list):
         raise ValueError(f"{field_name} must be a valid JSON array.")
+    if field_name == "conditions" and parsed:
+        from .rules_engine import validate_conditions
+
+        errors = validate_conditions(parsed)
+        if errors:
+            details = "; ".join(f"condition {error.index}: {error.message}" for error in errors)
+            raise ValueError(f"Invalid conditions: {details}")
     return cleaned or "[]"
 
 

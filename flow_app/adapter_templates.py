@@ -153,6 +153,7 @@ BUILTIN_TEMPLATES: dict[str, AdapterTemplate] = {
         family="hermes",
         description="Hermes Agent CLI - delegates to sub-agents via Flow board",
         command="python -m flow_app.hermes_wrapper",
+        command_allowlist="python,hermes",
         capabilities="hermes",
         dispatch_statuses="todo",
         max_concurrency=1,
@@ -160,59 +161,64 @@ BUILTIN_TEMPLATES: dict[str, AdapterTemplate] = {
             "FLOW_BASE_URL,FLOW_API_KEY,FLOW_TASK_ID,FLOW_RUN_ID,FLOW_PROJECT,HERMES_COMMAND,HERMES_TIMEOUT,"
             "HERMES_AGENT_NAME,HOME,PATH"
         ),
-        notes="Set HERMES_COMMAND to the agent CLI (e.g. claude, codex). Requires Flow API key in environment.",
+        notes="Set HERMES_COMMAND to the agent CLI (e.g. claude, codex). Requires Flow API key in environment. command_allowlist restricts to python/hermes prefixes.",
     ),
     "codex": AdapterTemplate(
         name="codex",
         family="codex",
         description="OpenAI Codex CLI - autonomous coding agent with sandbox",
         command="codex exec --dangerously-bypass-approvals-and-sandbox -m gpt-5.5",
+        command_allowlist="codex",
         capabilities="codex",
         dispatch_statuses="todo",
         max_concurrency=1,
-        notes="Requires OpenAI API key. Use --dangerously-bypass-approvals-and-sandbox for autonomous mode.",
+        notes="Requires OpenAI API key. command_allowlist locks execution to codex prefix. Override --model via env or allowlist.",
     ),
     "claude-code": AdapterTemplate(
         name="claude-code",
         family="claude-code",
         description="Claude Code CLI - interactive coding assistant",
         command="claude --dangerously-skip-permissions",
+        command_allowlist="claude",
         capabilities="claude-code",
         dispatch_statuses="todo",
         max_concurrency=1,
-        notes="Requires Anthropic API key or Claude subscription. --dangerously-skip-permissions for autonomous mode.",
+        notes="Requires Anthropic API key or Claude subscription. command_allowlist locks execution to claude prefix.",
     ),
     "opencode": AdapterTemplate(
         name="opencode",
         family="opencode",
         description="OpenCode CLI - coding agent with model selection",
         command="opencode run --model opencode-go/qwen3.6-plus",
+        command_allowlist="opencode",
         capabilities="opencode",
         dispatch_statuses="todo",
         max_concurrency=1,
-        notes="Requires corresponding model API key. Specify model via --model flag.",
+        notes="Requires corresponding model API key. command_allowlist locks execution to opencode prefix.",
     ),
     "opencrawl": AdapterTemplate(
         name="opencrawl",
         family="opencrawl",
-        description="OpenClaw agent - web crawling and data extraction",
+        description="Opencrawl agent - web crawling and data extraction",
         command="opencrawl run",
+        command_allowlist="opencrawl",
         capabilities="opencrawl,crawl,extract",
         dispatch_statuses="",
         max_concurrency=2,
-        notes="Requires OpenClaw installation. Dispatch only via explicit trigger.",
+        notes="Requires opencrawl installation. Dispatch only via explicit trigger. command_allowlist locks to opencrawl prefix.",
     ),
     "mcp": AdapterTemplate(
         name="mcp",
         family="mcp",
         description="MCP Profile Agent - connects via Model Context Protocol",
         command="",
+        command_allowlist="",
         capabilities="mcp",
         dispatch_statuses="",
         agent_type="remote",
         notes=(
             "MCP agents connect via protocol, not CLI command. Set agent_type to 'remote'. Configure MCP server "
-            "URL via env_allowlist."
+            "URL via env_allowlist. command_allowlist is intentionally empty because remote agents do not execute CLI commands."
         ),
     ),
     "custom-script": AdapterTemplate(
@@ -220,12 +226,14 @@ BUILTIN_TEMPLATES: dict[str, AdapterTemplate] = {
         family="custom",
         description="Custom script agent - runs arbitrary shell commands",
         command="bash /path/to/script.sh",
+        command_allowlist="",
         capabilities="custom",
         dispatch_statuses="todo",
         max_concurrency=1,
         notes=(
             "Replace /path/to/script.sh with your actual script. Ensure script is executable. Limit env_allowlist "
-            "to required vars."
+            "to required vars. command_allowlist is intentionally empty because custom scripts vary; "
+            "operators should set a restrictive allowlist matching their script prefix when configuring."
         ),
     ),
 }

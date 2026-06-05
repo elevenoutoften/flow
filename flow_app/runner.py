@@ -19,7 +19,7 @@ from .main import ensure_compatible_schema
 from .models import Agent, AutomationRule, Task, utcnow
 from .repository import serialize_task, task_query
 from .realtime import publish_board_event
-from .rules_engine import CONDITION_FIELDS, MatchResult, emit_event, evaluate_conditions, execute_actions
+from .rules_engine import CONDITION_FIELDS, MatchResult, emit_event, evaluate_conditions, execute_actions, validate_conditions
 from .storage_helpers import get_comma_list
 from .webhook_cli import run_deliveries
 
@@ -249,6 +249,7 @@ def dry_run_automation_rules(
 
     evaluated_rules = 0
     matches: list[CronMatchResult] = []
+    invalid_conditions: list[dict] = []
     now = utcnow()
     for rule in rules:
         if trigger == "cron" and not _cron_config_matches(rule.trigger_config, now):
@@ -256,6 +257,20 @@ def dry_run_automation_rules(
         if not dry_run and trigger == "cron" and rule.last_run_at is not None and _same_minute(rule.last_run_at, now):
             continue
         evaluated_rules += 1
+        conditions = _parse_rule_array(rule.conditions)
+        if conditions is not None:
+            condition_errors = validate_conditions(conditions)
+            if condition_errors:
+                invalid_conditions.append(
+                    {
+                        "rule_id": rule.id,
+                        "rule_name": rule.name,
+                        "errors": [
+                            {"index": error.index, "field": error.field, "message": error.message}
+                            for error in condition_errors
+                        ],
+                    }
+                )
         rule_matches = _evaluate_scheduled_rule(session, rule, trigger=trigger, dry_run=dry_run)
         matches.extend(rule_matches)
         if not dry_run:
@@ -263,7 +278,11 @@ def dry_run_automation_rules(
             session.add(rule)
             session.flush()
 
-    return {"evaluated_rules": evaluated_rules, "matches": [match.to_dict() for match in matches]}
+    return {
+        "evaluated_rules": evaluated_rules,
+        "matches": [match.to_dict() for match in matches],
+        "invalid_conditions": invalid_conditions,
+    }
 
 
 def _evaluate_scheduled_rule(

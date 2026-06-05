@@ -8,13 +8,13 @@ Templates are useful when an operator wants a known-good starting point and stil
 
 | Name | Family | Agent Type | Recommended Role | Notes |
 |------|--------|------------|------------------|-------|
-| `hermes` | `hermes` | `cli` | `implementer` | Runs `flow_app.hermes_wrapper` and delegates to a configured agent CLI. |
-| `codex` | `codex` | `cli` | `implementer` | Runs Codex CLI in autonomous mode. |
-| `claude-code` | `claude-code` | `cli` | `implementer` or `reviewer` | Runs Claude Code CLI in autonomous mode. |
-| `opencode` | `opencode` | `cli` | `implementer` | Runs OpenCode with a configured model. |
-| `opencrawl` | `opencrawl` | `cli` | `read_only` or custom crawl role | Intended for explicit crawl/extract dispatches. |
-| `mcp` | `mcp` | `remote` | role depends on connected tool | Represents protocol-connected agents instead of subprocess commands. |
-| `custom-script` | `custom` | `cli` | narrowest role that can do the script work | Starting point for local scripts. |
+| `hermes` | `hermes` | `cli` | `implementer` | Runs `flow_app.hermes_wrapper` and delegates to a configured agent CLI. `command_allowlist=python,hermes`. |
+| `codex` | `codex` | `cli` | `implementer` | Runs Codex CLI in autonomous mode. `command_allowlist=codex`. |
+| `claude-code` | `claude-code` | `cli` | `implementer` or `reviewer` | Runs Claude Code CLI in autonomous mode. `command_allowlist=claude`. |
+| `opencode` | `opencode` | `cli` | `implementer` | Runs OpenCode with a configured model. `command_allowlist=opencode`. |
+| `opencrawl` | `opencrawl` | `cli` | `read_only` or custom crawl role | Intended for explicit crawl/extract dispatches. `command_allowlist=opencrawl`. |
+| `mcp` | `mcp` | `remote` | role depends on connected tool | Protocol-connected agents, no CLI command. `command_allowlist=""` (intentionally empty — remote agents do not execute CLI). |
+| `custom-script` | `custom` | `cli` | narrowest role that can do the script work | Starting point for local scripts. `command_allowlist=""` (intentionally empty — operators should set a restrictive allowlist matching their script). |
 
 See [Agent Roles](AgentRoles.md) for role and capability guidance.
 
@@ -135,5 +135,19 @@ For an agent family that does not match the built-ins, either instantiate `custo
 Template commands are validated at import time and reject obvious destructive or injection-oriented patterns such as `rm -rf`, `sudo`, shell backticks, `| bash`, arithmetic command substitution, and writes to `/dev`. Template working directories reject `..` path traversal.
 
 Keep `env_allowlist` minimal. Include only values the subprocess needs, such as Flow connection settings and provider credentials. Avoid passing broad host environment variables unless the command requires them.
+
+### Command Allowlist
+
+Built-in templates set `command_allowlist` to the command prefix that the agent should be allowed to execute. This restricts dispatch so agents cannot run arbitrary commands outside their configured prefix:
+
+- `hermes`: `python,hermes`
+- `codex`: `codex`
+- `claude-code`: `claude`
+- `opencode`: `opencode`
+- `opencrawl`: `opencrawl`
+- `mcp`: `""` (intentionally empty — remote agents do not execute CLI commands)
+- `custom-script`: `""` (intentionally empty — operators should set a restrictive allowlist matching their script)
+
+An empty `command_allowlist` is intentional only for `mcp` (remote protocol agents) and `custom-script` (where operators set their own prefix). All other templates use restrictive prefixes to enforce least-privilege execution.
 
 Command validation is a baseline guard, not a substitute for operator review. Treat template overrides and custom scripts as privileged configuration and assign the narrowest API key role that can complete the work.

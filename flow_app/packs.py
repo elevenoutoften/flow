@@ -30,7 +30,13 @@ from .repository import (
     update_automation_rule,
     update_webhook_config,
 )
-from .schemas import AgentCreate, AgentUpdate, AutomationRuleCreate, AutomationRuleUpdate
+from .schemas import (
+    AgentCreate,
+    AgentUpdate,
+    AutomationRuleCreate,
+    AutomationRuleUpdate,
+    WebhookConfigCreate,
+)
 from .secrets_resolver import redact_secret
 
 
@@ -175,6 +181,10 @@ def import_pack(
     imported: dict[str, int] = {"rules": 0, "agents": 0, "webhook_configs": 0, "notification_configs": 0}
     skipped: list[str] = []
 
+    entity_errors = _validate_pack_entities(db, pack)
+    if entity_errors:
+        return {"imported": {}, "skipped": [], "errors": entity_errors}
+
     if dry_run:
         for section in ("rules", "agents", "webhook_configs", "notification_configs"):
             entities = pack.get(section, [])
@@ -199,7 +209,7 @@ def import_pack(
             else:
                 create_automation_rule(db, AutomationRuleCreate(**_pack_rule_create(rule_data)))
                 imported["rules"] += 1
-        except (ValidationError, Exception) as exc:
+        except Exception as exc:
             skipped.append(f"rule '{name}': {exc}")
 
     # Import agents — upsert by name
@@ -218,7 +228,7 @@ def import_pack(
             else:
                 create_agent(db, AgentCreate(**_pack_agent_create(agent_data)))
                 imported["agents"] += 1
-        except (ValidationError, Exception) as exc:
+        except Exception as exc:
             skipped.append(f"agent '{name}': {exc}")
 
     # Import webhook configs — upsert by name
@@ -235,14 +245,15 @@ def import_pack(
                 update_webhook_config(db, existing, _pack_webhook_updates(wh_data))
                 imported["webhook_configs"] += 1
             else:
+                create_payload = _pack_webhook_create(wh_data)
                 create_webhook_config(
                     db,
-                    name=wh_data["name"],
-                    url=wh_data.get("url", ""),
-                    events=_split_events(wh_data.get("events", "")),
-                    project=wh_data.get("project", "*"),
-                    max_retries=wh_data.get("max_retries", 3),
-                    retry_backoff_seconds=wh_data.get("retry_backoff_seconds", 60),
+                    name=create_payload["name"],
+                    url=create_payload["url"],
+                    events=create_payload["events"],
+                    project=create_payload["project"],
+                    max_retries=create_payload["max_retries"],
+                    retry_backoff_seconds=create_payload["retry_backoff_seconds"],
                 )
                 imported["webhook_configs"] += 1
         except Exception as exc:
@@ -269,6 +280,51 @@ def _handle_import_conflict(section: str, name: str, conflict_policy: str, skipp
     logger.warning("Skipping existing pack import entity: section=%s name=%s", section, name)
     skipped.append(message)
     return True
+
+
+def _validate_pack_entities(db: Session, pack: dict) -> list[str]:
+    errors: list[str] = []
+
+    for rule_data in pack.get("rules", []):
+        if not isinstance(rule_data, dict) or not rule_data.get("name"):
+            continue
+        name = rule_data["name"]
+        existing = _get_automation_rule_by_name(db, name)
+        try:
+            if existing:
+                AutomationRuleUpdate(**_pack_rule_updates(rule_data))
+            else:
+                AutomationRuleCreate(**_pack_rule_create(rule_data))
+        except ValidationError as exc:
+            errors.append(f"rule '{name}': {exc}")
+
+    for agent_data in pack.get("agents", []):
+        if not isinstance(agent_data, dict) or not agent_data.get("name"):
+            continue
+        name = agent_data["name"]
+        existing = get_agent_by_name(db, name)
+        try:
+            if existing:
+                AgentUpdate(**_pack_agent_updates(agent_data))
+            else:
+                AgentCreate(**_pack_agent_create(agent_data))
+        except ValidationError as exc:
+            errors.append(f"agent '{name}': {exc}")
+
+    for wh_data in pack.get("webhook_configs", []):
+        if not isinstance(wh_data, dict) or not wh_data.get("name"):
+            continue
+        name = wh_data["name"]
+        existing = _get_webhook_config_by_name(db, name)
+        try:
+            if existing:
+                _validate_pack_webhook_update(existing, wh_data)
+            else:
+                WebhookConfigCreate(**_pack_webhook_create(wh_data))
+        except ValidationError as exc:
+            errors.append(f"webhook_config '{name}': {exc}")
+
+    return errors
 
 def _get_automation_rule_by_name(db: Session, name: str) -> AutomationRule | None:
     return db.scalars(select(AutomationRule).where(AutomationRule.name == name)).first()
@@ -414,3 +470,32 @@ def _pack_webhook_updates(data: dict) -> dict:
         if field in data:
             updates[field] = data[field]
     return updates
+
+
+def _pack_webhook_create(data: dict) -> dict:
+    return {
+        "name": data["name"],
+        "url": data.get("url", ""),
+        "events": _split_events(data.get("events", "")),
+        "project": data.get("project", "*"),
+        "max_retries": data.get("max_retries", 3),
+        "retry_backoff_seconds": data.get("retry_backoff_seconds", 60),
+    }
+
+
+def _validate_pack_webhook_update(existing: WebhookConfig, data: dict) -> None:
+    updates = _pack_webhook_updates(data)
+    create_payload = {
+        "name": existing.name,
+        "url": existing.url,
+        "events": _split_events(existing.events),
+        "project": existing.project,
+        "max_retries": existing.max_retries,
+        "retry_backoff_seconds": existing.retry_backoff_seconds,
+    }
+    for field, value in updates.items():
+        if field == "events":
+            create_payload[field] = _split_events(value)
+        elif field in create_payload:
+            create_payload[field] = value
+    WebhookConfigCreate(**create_payload)

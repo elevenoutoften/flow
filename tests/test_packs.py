@@ -280,6 +280,92 @@ def test_import_applies_entities(client):
     assert "import-test-agent" in agent_names
 
 
+def test_import_rejects_invalid_rule_trigger(client):
+    """Invalid trigger in a rule payload must return 422, not 200 with skipped."""
+    pack = {
+        "schema_version": PACK_SCHEMA_VERSION,
+        "name": "bad-trigger-pack",
+        "description": "",
+        "exported_at": "",
+        "rules": [
+            {
+                "name": "bad-rule",
+                "trigger": "not_a_trigger",
+                "conditions": "[]",
+                "actions": "[]",
+            }
+        ],
+        "agents": [],
+        "webhook_configs": [],
+        "notification_configs": [],
+    }
+
+    response = client.post("/api/packs/import", json=pack)
+    assert response.status_code == 422
+    assert any("not_a_trigger" in e or "Invalid" in e for e in response.json()["detail"]["errors"])
+
+    response = client.post("/api/packs/import?dry_run=1", json=pack)
+    assert response.status_code == 422
+    assert any("not_a_trigger" in e or "Invalid" in e for e in response.json()["detail"]["errors"])
+
+
+def test_import_rejects_invalid_rule_conditions(client):
+    """Invalid conditions JSON in a rule must return 422."""
+    pack = {
+        "schema_version": PACK_SCHEMA_VERSION,
+        "name": "bad-conditions-pack",
+        "description": "",
+        "exported_at": "",
+        "rules": [
+            {
+                "name": "bad-conditions-rule",
+                "trigger": "task_created",
+                "conditions": "not-valid-json",
+                "actions": "[]",
+            }
+        ],
+        "agents": [],
+        "webhook_configs": [],
+        "notification_configs": [],
+    }
+
+    response = client.post("/api/packs/import", json=pack)
+    assert response.status_code == 422
+
+    response = client.post("/api/packs/import?dry_run=1", json=pack)
+    assert response.status_code == 422
+
+
+def test_import_valid_pack_still_works(client):
+    """A valid pack must import successfully."""
+    pack = {
+        "schema_version": PACK_SCHEMA_VERSION,
+        "name": "valid-pack",
+        "description": "",
+        "exported_at": "",
+        "rules": [
+            {
+                "name": "valid-rule",
+                "trigger": "task_created",
+                "conditions": "[]",
+                "actions": "[]",
+            }
+        ],
+        "agents": [
+            {"name": "valid-agent"}
+        ],
+        "webhook_configs": [],
+        "notification_configs": [],
+    }
+
+    response = client.post("/api/packs/import", json=pack)
+    assert response.status_code == 200
+    result = response.json()
+    assert result["imported"]["rules"] >= 1
+    assert result["imported"]["agents"] >= 1
+    assert result["errors"] == []
+
+
 def test_import_invalid_schema_version(client):
     pack = {
         "schema_version": 99,

@@ -66,7 +66,7 @@ def api_import_pack(
         )
     pack = body.model_dump()
     errors = validate_pack(pack)
-    if errors and not dry_run:
+    if errors:
         raise HTTPException(status_code=422, detail={"errors": errors})
 
     try:

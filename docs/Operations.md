@@ -54,6 +54,10 @@ Flow reads all configuration from environment variables. No config files.
 | `FLOW_MAX_WEBHOOK_PAYLOAD_BYTES` | `65536` | Max stored webhook payload size |
 | `FLOW_MAX_WEBHOOK_RESPONSE_BYTES` | `4096` | Max stored webhook response body size |
 | `FLOW_MAX_WEBHOOK_DELIVERY_AGE_DAYS` | `30` | Retention window for webhook deliveries |
+| `FLOW_AUDIT_ENABLED` | `true` | Enable audit logging for tracked operations |
+| `FLOW_RATE_LIMIT_ENABLED` | `true` | Enable API rate limiting |
+| `FLOW_RATE_LIMIT_KEY_CREATION` | `10` | Max API key creation requests per 60-second rolling window |
+| `FLOW_RATE_LIMIT_MUTATIONS` | `120` | Max mutation requests per 60-second rolling window |
 
 ### Runner Configuration
 
@@ -386,6 +390,75 @@ Import uses `conflict_policy=skip` by default: existing entities are left unchan
 - `flow_pack_import(pack_json, dry_run, conflict_policy)` — imports pack from JSON string
 
 Both require `key:manage` permission (admin only).
+
+## Audit Log
+
+Flow can record audit events for sensitive and operator-relevant actions. Audit logging is enabled by default; set `FLOW_AUDIT_ENABLED=false` to disable it.
+
+Use `GET /api/audit-log` to inspect audit entries. This endpoint requires `audit:read` permission, which is admin-only by default.
+
+Supported query parameters:
+
+- `actor_id` — filter by the actor that performed the action
+- `action` — filter by action name
+- `target_type` — filter by the affected entity type
+- `limit` — cap the number of returned entries
+- `offset` — paginate through older entries
+
+Each audit entry records:
+
+- `actor_id`
+- `action`
+- `target_type`
+- `target_id`
+- `timestamp`
+- `detail` — JSON object with secrets redacted
+
+Audit records are append-only database entries. There is no cleanup command yet, so operators should rely on their database backup and retention policy until a cleanup feature exists.
+
+## Metrics
+
+Use `GET /api/metrics` to fetch a JSON metrics snapshot. This endpoint requires `audit:read` permission, which is admin-only by default.
+
+The response has two top-level sections:
+
+- `counters` — cumulative counts for tracked events
+- `timers` — timing data with `count`, `sum`, and `avg` for observed operations
+
+Tracked counters:
+
+- `task.created`
+- `task.moved`
+- `dispatch.count`
+- `dispatch.success`
+- `dispatch.error`
+- `runner.lease.created`
+- `runner.lease.completed`
+- `runner.lease.expired`
+- `webhook.delivered`
+- `webhook.failed`
+- `notification.success`
+- `notification.failed`
+- `notification.retrying`
+
+These counters are stored in memory and reset on server restart. If you need persistent metrics, scrape Flow from an external monitoring system and store them there.
+
+## Rate Limiting
+
+Flow rate limiting is enabled by default. Set `FLOW_RATE_LIMIT_ENABLED=false` to disable it entirely.
+
+Rate-limit settings:
+
+- `FLOW_RATE_LIMIT_KEY_CREATION=10` — maximum API key creation requests per 60-second rolling window
+- `FLOW_RATE_LIMIT_MUTATIONS=120` — maximum mutation requests per 60-second rolling window, including task create/update, agent dispatch, and similar write operations
+
+Rate limiting applies per IP for unauthenticated requests and per API key for authenticated requests.
+
+When a client exceeds a limit, Flow returns HTTP `429` with:
+
+```json
+{"detail": "Rate limit exceeded. Try again later."}
+```
 
 ## See Also
 

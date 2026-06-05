@@ -1139,7 +1139,7 @@ TOOLS: list[dict[str, Any]] = [
                 "conflict_policy": {
                     "type": "string",
                     "enum": ["update", "skip", "error"],
-                    "default": "update",
+                    "default": "skip",
                     "description": "How to handle existing entities with the same name.",
                 },
             },
@@ -2276,7 +2276,7 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
         import json
         pack_json_str = arguments.get("pack_json", "")
         dry_run = arguments.get("dry_run", False)
-        conflict_policy = arguments.get("conflict_policy", "update")
+        conflict_policy = arguments.get("conflict_policy", "skip")
         try:
             pack = json.loads(pack_json_str)
         except json.JSONDecodeError as exc:

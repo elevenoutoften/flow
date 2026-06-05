@@ -161,7 +161,7 @@ def import_pack(
     db: Session,
     pack: dict,
     dry_run: bool = False,
-    conflict_policy: str = "update",
+    conflict_policy: str = "skip",
 ) -> dict[str, Any]:
     """Import a pack, upserting by name. Returns summary."""
     errors = validate_pack(pack)

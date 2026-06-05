@@ -54,7 +54,7 @@ def api_import_pack(
     body: PackImportBody,
     request: Request,
     dry_run: int = 0,
-    conflict_policy: str = Query(default="update"),
+    conflict_policy: str = Query(default="skip"),
     db: Session = Depends(get_db),
     _actor: Actor = Depends(require_permission(Permission.KEY_MANAGE)),
 ):

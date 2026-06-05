@@ -378,7 +378,7 @@ curl -X POST -H "Authorization: Bearer $KEY" -H "Content-Type: application/json"
   -d @pack.json "http://localhost:8100/api/packs/import?dry_run=1"
 ```
 
-Import uses `conflict_policy=update` by default: existing entities are updated by name, and new ones are created. Use `conflict_policy=skip` to leave existing entities unchanged, or `conflict_policy=error` to fail on the first name collision. Notification channel config (Telegram, Discord) is settings-level — set those via environment variables, not pack import.
+Import uses `conflict_policy=skip` by default: existing entities are left unchanged on name collisions, and only new entities are created. Use `conflict_policy=update` to overwrite existing entities by name, or `conflict_policy=error` to fail on the first collision. Notification channel config (Telegram, Discord) is settings-level — set those via environment variables, not pack import.
 
 ### MCP Tools
 

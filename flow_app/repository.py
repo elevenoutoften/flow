@@ -830,13 +830,30 @@ def _redact_automation_actions(actions: str) -> str:
     return json.dumps(_redact_secret_keys(parsed))
 
 
+_SECRET_KEY_SUBSTRINGS = (
+    "secret",
+    "token",
+    "password",
+    "api_key",
+    "auth",
+    "credential",
+    "private",
+)
+
+
+def _is_secret_key(key: str) -> bool:
+    lower = key.lower()
+    normalized = lower.replace("-", "_")
+    return any(substr in normalized for substr in _SECRET_KEY_SUBSTRINGS)
+
+
 def _redact_secret_keys(value):
     if isinstance(value, list):
         return [_redact_secret_keys(item) for item in value]
     if isinstance(value, dict):
         redacted = {}
         for key, item in value.items():
-            if key in {"api_key", "secret", "token"} and isinstance(item, str):
+            if _is_secret_key(key) and isinstance(item, str):
                 redacted[key] = redact_secret(item)
             else:
                 redacted[key] = _redact_secret_keys(item)

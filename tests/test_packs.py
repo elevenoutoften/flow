@@ -73,6 +73,116 @@ def test_export_redacts_rule_action_secrets(client):
     assert redacted_actions[0]["headers"]["token"] == "***"
 
 
+def test_export_redacts_rule_action_secrets_case_insensitive(client):
+    actions = [
+        {
+            "type": "webhook",
+            "Authorization": "Bearer plain-token",
+            "X-Api-Key": "plain-api-key",
+            "headers": {
+                "authorization": "plain-header-auth",
+                "X-Auth-Token": "plain-header-token",
+            },
+            "body": {
+                "access_token": "plain-access-token",
+                "auth_token": "plain-auth-token",
+                "webhookSecret": "plain-webhook-secret",
+                "private_key": "plain-private-key",
+                "password": "plain-password",
+                "env_secret": "env:PACK_SECRET",
+                "file_secret": "file:/tmp/secret.txt",
+            },
+        }
+    ]
+    response = client.post("/api/automation-rules", json={
+        "name": "case-insensitive-secret-action-rule",
+        "trigger": "task_created",
+        "conditions": "[]",
+        "actions": json.dumps(actions),
+    })
+    assert response.status_code == 201, response.text
+
+    response = client.get("/api/packs/export")
+    assert response.status_code == 200
+    pack = response.json()
+    exported = next(rule for rule in pack["rules"] if rule["name"] == "case-insensitive-secret-action-rule")
+    redacted_actions = json.loads(exported["actions"])
+    action = redacted_actions[0]
+
+    assert action["Authorization"] == "***"
+    assert action["X-Api-Key"] == "***"
+    assert action["headers"]["authorization"] == "***"
+    assert action["headers"]["X-Auth-Token"] == "***"
+    assert action["body"]["access_token"] == "***"
+    assert action["body"]["auth_token"] == "***"
+    assert action["body"]["webhookSecret"] == "***"
+    assert action["body"]["private_key"] == "***"
+    assert action["body"]["password"] == "***"
+    assert action["body"]["env_secret"] == "env:PACK_SECRET"
+    assert action["body"]["file_secret"] == "file:/tmp/secret.txt"
+
+
+def test_export_preserves_env_and_file_references(client):
+    actions = [
+        {
+            "type": "webhook",
+            "api_key": "env:MY_API_KEY",
+            "headers": {"Authorization": "file:/run/secrets/auth.txt"},
+        }
+    ]
+    response = client.post("/api/automation-rules", json={
+        "name": "env-file-secret-reference-rule",
+        "trigger": "task_created",
+        "conditions": "[]",
+        "actions": json.dumps(actions),
+    })
+    assert response.status_code == 201, response.text
+
+    response = client.get("/api/packs/export")
+    assert response.status_code == 200
+    pack = response.json()
+    exported = next(rule for rule in pack["rules"] if rule["name"] == "env-file-secret-reference-rule")
+    redacted_actions = json.loads(exported["actions"])
+
+    assert redacted_actions[0]["api_key"] == "env:MY_API_KEY"
+    assert redacted_actions[0]["headers"]["Authorization"] == "file:/run/secrets/auth.txt"
+
+
+def test_export_does_not_redact_normal_keys(client):
+    actions = [
+        {
+            "type": "webhook",
+            "name": "notify-service",
+            "url": "https://example.com/hook",
+            "method": "POST",
+            "description": "Send a task event",
+            "id": "action-1",
+            "api_key": "plain-api-key",
+        }
+    ]
+    response = client.post("/api/automation-rules", json={
+        "name": "normal-keys-rule",
+        "trigger": "task_created",
+        "conditions": "[]",
+        "actions": json.dumps(actions),
+    })
+    assert response.status_code == 201, response.text
+
+    response = client.get("/api/packs/export")
+    assert response.status_code == 200
+    pack = response.json()
+    exported = next(rule for rule in pack["rules"] if rule["name"] == "normal-keys-rule")
+    redacted_actions = json.loads(exported["actions"])
+    action = redacted_actions[0]
+
+    assert action["name"] == "notify-service"
+    assert action["url"] == "https://example.com/hook"
+    assert action["method"] == "POST"
+    assert action["description"] == "Send a task event"
+    assert action["id"] == "action-1"
+    assert action["api_key"] == "***"
+
+
 def test_flow_serve_creates_lock_file(tmp_path, monkeypatch):
     from flow_app.config import reset_settings_cache
     from flow_app.serve import _ensure_lock_file
@@ -222,7 +332,7 @@ def test_import_upsert_existing(client):
             }
         ],
     }
-    response = client.post("/api/packs/import", json=pack_v2)
+    response = client.post("/api/packs/import?conflict_policy=update", json=pack_v2)
     assert response.status_code == 200
 
     # Verify the rule was updated
@@ -230,6 +340,53 @@ def test_import_upsert_existing(client):
     matching = [r for r in rules_resp.json().get("items", []) if r.get("name") == "upsert-rule"]
     assert len(matching) >= 1
     assert matching[0]["description"] == "updated"
+
+
+def test_import_default_conflict_policy_is_skip(client):
+    pack_v1 = {
+        "schema_version": PACK_SCHEMA_VERSION,
+        "name": "default-skip-pack",
+        "description": "v1",
+        "exported_at": "2026-06-05T00:00:00Z",
+        "rules": [
+            {
+                "name": "default-skip-rule",
+                "trigger": "task_created",
+                "description": "original",
+                "conditions": "[]",
+                "actions": "[]",
+            }
+        ],
+        "agents": [],
+        "webhook_configs": [],
+        "notification_configs": [],
+    }
+    response = client.post("/api/packs/import", json=pack_v1)
+    assert response.status_code == 200
+
+    pack_v2 = {
+        **pack_v1,
+        "description": "v2",
+        "rules": [
+            {
+                "name": "default-skip-rule",
+                "trigger": "task_created",
+                "description": "updated",
+                "conditions": "[]",
+                "actions": "[]",
+            }
+        ],
+    }
+    response = client.post("/api/packs/import", json=pack_v2)
+    assert response.status_code == 200
+    result = response.json()
+    assert result["imported"]["rules"] == 0
+    assert "rule 'default-skip-rule': skipped existing entity" in result["skipped"]
+
+    rules_resp = client.get("/api/automation-rules")
+    matching = [r for r in rules_resp.json().get("items", []) if r.get("name") == "default-skip-rule"]
+    assert len(matching) == 1
+    assert matching[0]["description"] == "original"
 
 
 def test_import_conflict_policy_skip(client):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 from flow_app.packs import PACK_SCHEMA_VERSION, export_pack, import_pack, validate_pack
 
@@ -42,6 +43,49 @@ def test_pack_export_redacts_runner_api_key_ref(client):
             break
     else:
         raise AssertionError("test-runner-pack not found in pack export")
+
+
+def test_export_redacts_rule_action_secrets(client):
+    actions = [
+        {
+            "type": "webhook",
+            "api_key": "plain-api-key",
+            "secret": "plain-secret",
+            "headers": {"token": "plain-token"},
+        }
+    ]
+    response = client.post("/api/automation-rules", json={
+        "name": "secret-action-rule",
+        "trigger": "task_created",
+        "conditions": "[]",
+        "actions": json.dumps(actions),
+    })
+    assert response.status_code == 201, response.text
+
+    response = client.get("/api/packs/export")
+    assert response.status_code == 200
+    pack = response.json()
+    exported = next(rule for rule in pack["rules"] if rule["name"] == "secret-action-rule")
+    redacted_actions = json.loads(exported["actions"])
+
+    assert redacted_actions[0]["api_key"] == "***"
+    assert redacted_actions[0]["secret"] == "***"
+    assert redacted_actions[0]["headers"]["token"] == "***"
+
+
+def test_flow_serve_creates_lock_file(tmp_path, monkeypatch):
+    from flow_app.config import reset_settings_cache
+    from flow_app.serve import _ensure_lock_file
+
+    monkeypatch.setenv("FLOW_DATA_DIR", str(tmp_path))
+    reset_settings_cache()
+    lock_path = _ensure_lock_file()
+    try:
+        assert lock_path.exists()
+        assert lock_path.read_text(encoding="utf-8") == str(os.getpid())
+    finally:
+        lock_path.unlink(missing_ok=True)
+        reset_settings_cache()
 
 
 def test_export_download_header(client):
@@ -186,6 +230,78 @@ def test_import_upsert_existing(client):
     matching = [r for r in rules_resp.json().get("items", []) if r.get("name") == "upsert-rule"]
     assert len(matching) >= 1
     assert matching[0]["description"] == "updated"
+
+
+def test_import_conflict_policy_skip(client):
+    pack_v1 = {
+        "schema_version": PACK_SCHEMA_VERSION,
+        "name": "skip-pack",
+        "description": "v1",
+        "exported_at": "2026-06-05T00:00:00Z",
+        "rules": [
+            {
+                "name": "skip-rule",
+                "trigger": "task_created",
+                "description": "original",
+                "conditions": "[]",
+                "actions": "[]",
+            }
+        ],
+        "agents": [],
+        "webhook_configs": [],
+        "notification_configs": [],
+    }
+    assert client.post("/api/packs/import", json=pack_v1).status_code == 200
+
+    pack_v2 = {
+        **pack_v1,
+        "description": "v2",
+        "rules": [
+            {
+                "name": "skip-rule",
+                "trigger": "task_created",
+                "description": "updated",
+                "conditions": "[]",
+                "actions": "[]",
+            }
+        ],
+    }
+    response = client.post("/api/packs/import?conflict_policy=skip", json=pack_v2)
+    assert response.status_code == 200
+    result = response.json()
+    assert result["imported"]["rules"] == 0
+    assert "rule 'skip-rule': skipped existing entity" in result["skipped"]
+
+    rules_resp = client.get("/api/automation-rules")
+    matching = [r for r in rules_resp.json().get("items", []) if r.get("name") == "skip-rule"]
+    assert len(matching) == 1
+    assert matching[0]["description"] == "original"
+
+
+def test_import_conflict_policy_error(client):
+    pack = {
+        "schema_version": PACK_SCHEMA_VERSION,
+        "name": "error-pack",
+        "description": "",
+        "exported_at": "2026-06-05T00:00:00Z",
+        "rules": [
+            {
+                "name": "error-rule",
+                "trigger": "task_created",
+                "conditions": "[]",
+                "actions": "[]",
+            }
+        ],
+        "agents": [],
+        "webhook_configs": [],
+        "notification_configs": [],
+    }
+    assert client.post("/api/packs/import", json=pack).status_code == 200
+
+    response = client.post("/api/packs/import?conflict_policy=error", json=pack)
+    assert response.status_code == 409
+    assert response.json()["detail"]["section"] == "rules"
+    assert response.json()["detail"]["name"] == "error-rule"
 
 
 def test_import_permission(client):

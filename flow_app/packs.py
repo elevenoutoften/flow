@@ -7,6 +7,7 @@ validated on import.
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Any
 
@@ -24,6 +25,7 @@ from .repository import (
     list_automation_rules,
     list_runners,
     list_webhook_configs,
+    _redact_automation_actions,
     update_agent,
     update_automation_rule,
     update_webhook_config,
@@ -33,9 +35,22 @@ from .secrets_resolver import redact_secret
 
 
 PACK_SCHEMA_VERSION = 1
+VALID_CONFLICT_POLICIES = {"update", "skip", "error"}
+
+logger = logging.getLogger(__name__)
+
+
+class PackImportConflict(Exception):
+    """Raised when a pack import collision is rejected by conflict policy."""
+
+    def __init__(self, section: str, name: str) -> None:
+        self.section = section
+        self.name = name
+        super().__init__(f"{section[:-1]} '{name}' already exists")
 
 # Fields that may contain secrets and must be redacted on export.
 _SECRET_FIELDS: dict[str, list[str]] = {
+    "rules": ["actions"],
     "webhook_configs": ["secret"],
     "notification_configs": ["api_key", "bot_token", "webhook_url"],
     "runners": ["api_key_ref"],
@@ -75,8 +90,12 @@ def _redact_entity(entity: dict, section: str) -> dict:
     """Redact secret fields in an entity dict."""
     secret_fields = _SECRET_FIELDS.get(section, [])
     for field in secret_fields:
-        if field in entity and entity[field]:
-            entity[field] = redact_secret(str(entity[field]))
+        if field not in entity or not entity[field]:
+            continue
+        if section == "rules" and field == "actions":
+            entity[field] = _redact_automation_actions(entity[field])
+            continue
+        entity[field] = redact_secret(str(entity[field]))
     return entity
 
 
@@ -138,9 +157,18 @@ def validate_pack(pack: dict) -> list[str]:
     return errors
 
 
-def import_pack(db: Session, pack: dict, dry_run: bool = False) -> dict[str, Any]:
+def import_pack(
+    db: Session,
+    pack: dict,
+    dry_run: bool = False,
+    conflict_policy: str = "update",
+) -> dict[str, Any]:
     """Import a pack, upserting by name. Returns summary."""
     errors = validate_pack(pack)
+    if conflict_policy not in VALID_CONFLICT_POLICIES:
+        errors.append(
+            f"Invalid conflict_policy: expected one of {sorted(VALID_CONFLICT_POLICIES)}, got {conflict_policy!r}"
+        )
     if errors:
         return {"imported": {}, "skipped": [], "errors": errors}
 
@@ -162,6 +190,8 @@ def import_pack(db: Session, pack: dict, dry_run: bool = False) -> dict[str, Any
             continue
         name = rule_data["name"]
         existing = _get_automation_rule_by_name(db, name)
+        if existing and _handle_import_conflict("rules", name, conflict_policy, skipped):
+            continue
         try:
             if existing:
                 update_automation_rule(db, existing, AutomationRuleUpdate(**_pack_rule_updates(rule_data)))
@@ -179,6 +209,8 @@ def import_pack(db: Session, pack: dict, dry_run: bool = False) -> dict[str, Any
             continue
         name = agent_data["name"]
         existing = get_agent_by_name(db, name)
+        if existing and _handle_import_conflict("agents", name, conflict_policy, skipped):
+            continue
         try:
             if existing:
                 update_agent(db, existing, AgentUpdate(**_pack_agent_updates(agent_data)))
@@ -196,6 +228,8 @@ def import_pack(db: Session, pack: dict, dry_run: bool = False) -> dict[str, Any
             continue
         name = wh_data["name"]
         existing = _get_webhook_config_by_name(db, name)
+        if existing and _handle_import_conflict("webhook_configs", name, conflict_policy, skipped):
+            continue
         try:
             if existing:
                 update_webhook_config(db, existing, _pack_webhook_updates(wh_data))
@@ -225,6 +259,16 @@ def import_pack(db: Session, pack: dict, dry_run: bool = False) -> dict[str, Any
 
 
 # --- Internal helpers for lookby-name that don't exist in repo yet ---
+
+def _handle_import_conflict(section: str, name: str, conflict_policy: str, skipped: list[str]) -> bool:
+    if conflict_policy == "update":
+        return False
+    if conflict_policy == "error":
+        raise PackImportConflict(section, name)
+    message = f"{section[:-1]} '{name}': skipped existing entity"
+    logger.warning("Skipping existing pack import entity: section=%s name=%s", section, name)
+    skipped.append(message)
+    return True
 
 def _get_automation_rule_by_name(db: Session, name: str) -> AutomationRule | None:
     return db.scalars(select(AutomationRule).where(AutomationRule.name == name)).first()

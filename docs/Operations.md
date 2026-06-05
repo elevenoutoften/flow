@@ -346,11 +346,11 @@ Backups are named `flow-backup-YYYYMMDD-HHMMSS.db`. The backup path is printed o
 
 ### `flow-backup restore <path>`
 
-Restores the database from a backup file. **The server must be stopped first** — a lock file prevents accidental overwrite while running.
+Restores the database from a backup file. **The server must be stopped first** — `flow-serve` creates and removes `.flow-server-lock` automatically, and restore refuses to overwrite the database while that lock is present.
 
 ```bash
-flow-serve stop                         # stop the server first
-flow-backup restore /path/to/backup.db  # restore
+# Stop the server first (Ctrl+C in the foreground, or kill the process)
+flow-backup restore /path/to/backup.db   # restore
 flow-backup restore --dry-run backup.db  # validate only, no overwrite
 ```
 
@@ -378,12 +378,12 @@ curl -X POST -H "Authorization: Bearer $KEY" -H "Content-Type: application/json"
   -d @pack.json "http://localhost:8100/api/packs/import?dry_run=1"
 ```
 
-Import upserts entities by name: existing entities are updated, new ones are created. Notification channel config (Telegram, Discord) is settings-level — set those via environment variables, not pack import.
+Import uses `conflict_policy=update` by default: existing entities are updated by name, and new ones are created. Use `conflict_policy=skip` to leave existing entities unchanged, or `conflict_policy=error` to fail on the first name collision. Notification channel config (Telegram, Discord) is settings-level — set those via environment variables, not pack import.
 
 ### MCP Tools
 
 - `flow_pack_export` — returns pack JSON string
-- `flow_pack_import(pack_json, dry_run)` — imports pack from JSON string
+- `flow_pack_import(pack_json, dry_run, conflict_policy)` — imports pack from JSON string
 
 Both require `key:manage` permission (admin only).
 

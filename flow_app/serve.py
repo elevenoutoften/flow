@@ -8,6 +8,7 @@ work out of the box by ensuring a stable session secret exists (see
 from __future__ import annotations
 
 import argparse
+import atexit
 import os
 import secrets
 from pathlib import Path
@@ -56,6 +57,17 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _ensure_lock_file() -> Path:
+    """Create the running-server lock marker used by restore safeguards."""
+    from .backup import _lock_marker_path
+
+    lock_path = _lock_marker_path()
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_text(str(os.getpid()), encoding="utf-8")
+    atexit.register(lock_path.unlink, missing_ok=True)
+    return lock_path
+
+
 def main(argv: list[str] | None = None) -> int:
     import uvicorn
 
@@ -81,13 +93,17 @@ def main(argv: list[str] | None = None) -> int:
 
     host = args.host or settings.host
     port = args.port or settings.port
+    lock_path = _ensure_lock_file()
 
     print(f"Flow listening on http://{host}:{port}")
     print("  Board UI        /            (sign in at /login with an API key)")
     print("  REST API        /api")
     print("  MCP (agents)    /mcp")
     print("  Agent onboarding /llms.txt")
-    uvicorn.run("flow_app.main:app", host=host, port=port, reload=args.reload)
+    try:
+        uvicorn.run("flow_app.main:app", host=host, port=port, reload=args.reload)
+    finally:
+        lock_path.unlink(missing_ok=True)
     return 0
 
 

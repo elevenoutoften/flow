@@ -1130,12 +1130,18 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "flow_pack_import",
         "title": "Import Flow Automation Pack",
-        "description": "Import an automation pack, upserting rules/agents/webhooks by name. Set dry_run to validate without writing.",
+        "description": "Import an automation pack. Set dry_run to validate without writing. conflict_policy controls name collisions.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "pack_json": {"type": "string", "description": "Pack JSON string to import."},
                 "dry_run": {"type": "boolean", "default": False, "description": "If true, validate without writing to the database."},
+                "conflict_policy": {
+                    "type": "string",
+                    "enum": ["update", "skip", "error"],
+                    "default": "update",
+                    "description": "How to handle existing entities with the same name.",
+                },
             },
             "required": ["pack_json"],
         },
@@ -2266,15 +2272,19 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
 
     if name == "flow_pack_import":
         require_tool_permission(actor, Permission.KEY_MANAGE)
-        from ..packs import import_pack
+        from ..packs import PackImportConflict, import_pack
         import json
         pack_json_str = arguments.get("pack_json", "")
         dry_run = arguments.get("dry_run", False)
+        conflict_policy = arguments.get("conflict_policy", "update")
         try:
             pack = json.loads(pack_json_str)
         except json.JSONDecodeError as exc:
             raise JsonRpcError(-32602, f"Invalid pack JSON: {exc}") from exc
-        result = import_pack(db, pack, dry_run=bool(dry_run))
+        try:
+            result = import_pack(db, pack, dry_run=bool(dry_run), conflict_policy=conflict_policy)
+        except PackImportConflict as exc:
+            raise JsonRpcError(-32602, str(exc), {"section": exc.section, "name": exc.name}) from exc
         if result["errors"]:
             raise JsonRpcError(-32602, "Pack validation failed.", result["errors"])
         return tool_result(

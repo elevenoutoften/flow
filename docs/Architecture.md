@@ -176,6 +176,10 @@ Retry backoff: `retry_backoff_seconds * 2^(attempts - 1)`.
 | Agent Subprocesses | Outbound | `subprocess.Popen` with env injection |
 | Automation Rules | Internal | Event evaluation in `rules_engine.py` |
 
+## Agent Roles and Capabilities
+
+See [Agent Roles and Capability Profiles](Modules/AgentRoles.md) for recommended role assignments, capability tags, and `dispatch_statuses` for common agent families.
+
 ## Important Invariants
 
 - **`done` is terminal.** No role can move a task out of `done`.

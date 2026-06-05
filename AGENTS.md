@@ -43,6 +43,8 @@ FLOW_AGENT_NAME=<your-agent>
 
 All REST/MCP calls authenticate with `Authorization: Bearer <key>`.
 
+Choose the narrowest API key role that fits the agent. Most coding agents should use `implementer`, review agents should use `reviewer`, and dashboards or notifiers should use `read_only`. See [docs/Modules/AgentRoles.md](docs/Modules/AgentRoles.md) for the recommended profiles.
+
 ### 3. Core work loop
 
 | Step | Call |
@@ -69,5 +71,6 @@ flow-serve --bootstrap --reload                 # run locally with auto-reload
 - Single FastAPI app + SQLite, no external services. App factory: `flow_app/main.py:create_app`.
 - All documentation lives in **[docs/](docs/)** — start at [docs/README.md](docs/README.md) for the
   module map ([Architecture](docs/Architecture.md), [Operations](docs/Operations.md),
-  [REST API](docs/Modules/REST-API.md), [MCP](docs/Modules/MCP.md), [Security](docs/Modules/Security.md)).
+  [REST API](docs/Modules/REST-API.md), [MCP](docs/Modules/MCP.md), [Security](docs/Modules/Security.md),
+  [Agent Roles](docs/Modules/AgentRoles.md)).
 - Contribution workflow and code style: [CONTRIBUTING.md](CONTRIBUTING.md).

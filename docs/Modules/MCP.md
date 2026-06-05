@@ -69,6 +69,8 @@ Same as the REST API: bearer token, session cookie, or trusted headers. Bearer t
 | `flow_heartbeat` | `dispatch` | Record heartbeat |
 | `flow_complete_run` | `dispatch` | Complete a run |
 
+When registering agents for MCP-driven workflows, choose the narrowest Flow role that fits the adapter. See [Agent Roles and Capability Profiles](AgentRoles.md) for recommended role assignments, capability tags, and `dispatch_statuses`.
+
 ### Automation Tools
 
 | Tool | Permission | Description |

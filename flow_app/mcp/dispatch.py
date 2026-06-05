@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from ..adapter_templates import BUILTIN_TEMPLATES
 from ..config import DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT, default_project
 from ..discord import DiscordNotificationProvider
 from ..dispatcher import DispatchError
@@ -583,6 +584,25 @@ TOOLS: list[dict[str, Any]] = [
         "inputSchema": {
             "type": "object",
             "properties": {"enabled_only": {"type": "boolean", "default": False}},
+        },
+    },
+    {
+        "name": "flow_list_adapter_templates",
+        "title": "List Flow Adapter Templates",
+        "description": "List built-in Flow adapter templates.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "flow_get_adapter_template",
+        "title": "Get Flow Adapter Template",
+        "description": "Read a built-in Flow adapter template by name.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"],
         },
     },
     {
@@ -1568,6 +1588,26 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
             f"Materialized {result.materialized} recurring template"
             f"{'s' if result.materialized != 1 else ''}; skipped {result.skipped}.",
         )
+
+    if name == "flow_list_adapter_templates":
+        require_tool_permission(actor, Permission.AGENT_READ)
+        templates = [
+            {"name": template.name, "family": template.family, "description": template.description}
+            for template in BUILTIN_TEMPLATES.values()
+        ]
+        return tool_result(
+            {"templates": templates, "count": len(templates)},
+            f"Found {len(templates)} Flow adapter template{'s' if len(templates) != 1 else ''}.",
+        )
+
+    if name == "flow_get_adapter_template":
+        require_tool_permission(actor, Permission.AGENT_READ)
+        template_name = require_string(arguments.get("name"), "name")
+        template = BUILTIN_TEMPLATES.get(template_name)
+        if template is None:
+            raise JsonRpcError(-32602, f"Adapter template not found: {template_name}")
+        data = template.model_dump()
+        return tool_result({"template": data}, f"Found Flow adapter template {data['name']}.")
 
     if name == "flow_list_agents":
         require_tool_permission(actor, Permission.AGENT_READ)

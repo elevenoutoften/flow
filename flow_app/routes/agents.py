@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from ..adapter_templates import AdapterTemplate, BUILTIN_TEMPLATES
 from ..audit import actor_id_for, audit
 from ..config import DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT
 from ..dispatcher import DispatchError
@@ -12,6 +15,7 @@ from ..repository import (
     count_agent_runs,
     create_agent_api_key,
     get_agent_api_key,
+    get_agent_by_name,
     list_agent_api_keys,
     revoke_agent_api_key,
     serialize_agent,
@@ -35,6 +39,83 @@ from .dependencies import _commit, get_db
 
 
 router = APIRouter()
+
+
+class AdapterTemplateSummary(BaseModel):
+    name: str
+    family: str
+    description: str
+
+
+class AdapterTemplateInstantiate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(..., min_length=1)
+    description: str | None = None
+    enabled: bool | None = None
+    agent_type: str | None = None
+    capabilities: str | None = None
+    command: str | None = None
+    command_allowlist: str | None = None
+    env_allowlist: str | None = None
+    working_directory: str | None = None
+    max_concurrency: int | None = Field(default=None, ge=1)
+    heartbeat_timeout_seconds: int | None = Field(default=None, ge=1)
+    stale_claim_timeout_seconds: int | None = Field(default=None, ge=1)
+    dispatch_statuses: str | None = None
+
+
+def _agent_payload_from_template(template: AdapterTemplate, payload: AdapterTemplateInstantiate) -> AgentCreate:
+    data = template.model_dump(exclude={"family", "notes"})
+    data["name"] = payload.name
+    data["description"] = template.description
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        if value is not None:
+            data[field] = value
+    return AgentCreate(**data)
+
+
+@router.get("/adapter-templates", response_model=list[AdapterTemplateSummary])
+def api_list_adapter_templates(
+        _actor: Actor = Depends(require_permission(Permission.AGENT_READ)),
+    ):
+        return [
+            AdapterTemplateSummary(name=template.name, family=template.family, description=template.description)
+            for template in BUILTIN_TEMPLATES.values()
+        ]
+
+
+@router.get("/adapter-templates/{name}", response_model=AdapterTemplate)
+def api_get_adapter_template(
+        name: str,
+        _actor: Actor = Depends(require_permission(Permission.AGENT_READ)),
+    ):
+        template = BUILTIN_TEMPLATES.get(name)
+        if template is None:
+            raise HTTPException(status_code=404, detail="Adapter template not found.")
+        return template
+
+
+@router.post("/adapter-templates/{name}/instantiate", response_model=AgentResponse, status_code=status.HTTP_201_CREATED)
+def api_instantiate_adapter_template(
+        name: str,
+        payload: AdapterTemplateInstantiate,
+        db: Session = Depends(get_db),
+        _actor: Actor = Depends(require_permission(Permission.AGENT_MANAGE)),
+    ):
+        template = BUILTIN_TEMPLATES.get(name)
+        if template is None:
+            raise HTTPException(status_code=404, detail="Adapter template not found.")
+        agent_payload = _agent_payload_from_template(template, payload)
+        if get_agent_by_name(db, agent_payload.name) is not None:
+            raise HTTPException(status_code=409, detail="Agent with this name already exists.")
+        svc = AgentService(db)
+        try:
+            agent = svc.create_agent(agent_payload)
+        except IntegrityError as exc:
+            db.rollback()
+            raise HTTPException(status_code=409, detail="Agent with this name already exists.") from exc
+        return serialize_agent(agent)
 
 @router.get("/api-keys", response_model=list[AgentApiKeyResponse])
 def api_list_agent_api_keys(

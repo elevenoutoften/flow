@@ -176,9 +176,12 @@ Retry backoff: `retry_backoff_seconds * 2^(attempts - 1)`.
 | Agent Subprocesses | Outbound | `subprocess.Popen` with env injection |
 | Automation Rules | Internal | Event evaluation in `rules_engine.py` |
 
+Adapter templates provide in-memory presets for common agent families before they become persisted agent records. They are exposed through REST and MCP for discovery and can be instantiated into normal `agents` rows. See [Adapter Templates](Modules/AdapterTemplates.md).
+
 ## Agent Roles and Capabilities
 
 See [Agent Roles and Capability Profiles](Modules/AgentRoles.md) for recommended role assignments, capability tags, and `dispatch_statuses` for common agent families.
+See [Adapter Templates](Modules/AdapterTemplates.md) for built-in presets that apply those defaults when creating agents.
 
 ## Important Invariants
 

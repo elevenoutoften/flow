@@ -60,6 +60,7 @@ Flow is an agent-first Kanban task board service. It is a single FastAPI applica
 | [MCP Interface](Modules/MCP.md) | JSON-RPC 2.0 tools for LLM agents |
 | [Security](Modules/Security.md) | Roles, permissions, authentication, API key management |
 | [Agent Roles](Modules/AgentRoles.md) | Recommended role assignments, capability tags, and dispatch profiles for agent families |
+| [Adapter Templates](Modules/AdapterTemplates.md) | Built-in agent adapter presets, instantiation, and validation guidance |
 
 ### Subsystems
 
@@ -67,6 +68,7 @@ Flow is an agent-first Kanban task board service. It is a single FastAPI applica
 |------|-------------|
 | [Tasks](Modules/Tasks.md) | Task model, board columns, status transitions, qualification fields |
 | [Dispatcher](Modules/Dispatcher.md) | Agent registry, subprocess dispatch, heartbeats, stale recovery |
+| [Adapter Templates](Modules/AdapterTemplates.md) | Declarative built-in templates for common agent families |
 | [Automation Rules](Modules/AutomationRules.md) | Event-driven rules engine with conditions and actions |
 | [Webhooks](Modules/Webhooks.md) | Outbound HTTP delivery, SSRF protection, secret encryption, retry |
 | [Handoff](Modules/Handoff.md) | Structured inter-agent transition protocol |

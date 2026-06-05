@@ -17,7 +17,7 @@ from ..audit import actor_id_for, audit
 from ..config import DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT
 from ..dispatcher import DispatchError
 from ..metrics import metrics
-from ..ratelimit import client_ip, key_creation_limiter
+from ..ratelimit import client_ip, key_creation_limiter, mutation_limiter
 from ..repository import (
     count_agent_runs,
     create_agent_api_key,
@@ -178,25 +178,40 @@ def api_get_agent(
 @router.post("/agents", response_model=AgentResponse, status_code=status.HTTP_201_CREATED)
 def api_create_agent(
         payload: AgentCreate,
+        request: Request,
         db: Session = Depends(get_db),
-        _actor: Actor = Depends(require_permission(Permission.AGENT_MANAGE)),
+        actor: Actor = Depends(require_permission(Permission.AGENT_MANAGE)),
     ):
+        mutation_limiter.check(actor.key_id or client_ip(request), request.app.state.settings.rate_limit_mutations)
         svc = AgentService(db)
         agent = svc.create_agent(payload)
+        audit(db, actor_id_for(actor), "agent.create", "agent", agent.id, {"name": agent.name})
+        _commit(db)
         return serialize_agent(agent)
 
 @router.patch("/agents/{agent_id}", response_model=AgentResponse)
 def api_update_agent(
         agent_id: str,
         payload: AgentUpdate,
+        request: Request,
         db: Session = Depends(get_db),
-        _actor: Actor = Depends(require_permission(Permission.AGENT_MANAGE)),
+        actor: Actor = Depends(require_permission(Permission.AGENT_MANAGE)),
     ):
+        mutation_limiter.check(actor.key_id or client_ip(request), request.app.state.settings.rate_limit_mutations)
         svc = AgentService(db)
         try:
             agent = svc.update_agent(agent_id, payload)
         except AgentNotFoundError as exc:
             raise HTTPException(status_code=404, detail=exc.message) from exc
+        audit(
+            db,
+            actor_id_for(actor),
+            "agent.update",
+            "agent",
+            agent.id,
+            {"changes": sorted(payload.model_fields_set)},
+        )
+        _commit(db)
         return serialize_agent(agent)
 
 @router.get("/agent-runs", response_model=PaginatedResponse)

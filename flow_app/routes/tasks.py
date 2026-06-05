@@ -234,7 +234,7 @@ def api_create_task_handoff(
         db: Session = Depends(get_db),
         actor: Actor = Depends(require_permission(Permission.HANDOFF_CREATE)),
     ):
-        _require_task(db, task_id)
+        task = _require_task(db, task_id)
         handoff = create_task_handoff(
             db,
             task_id,
@@ -250,6 +250,14 @@ def api_create_task_handoff(
             payload.next_recommended_agent,
             payload.capabilities,
             author_key_id=actor.key_id,
+        )
+        audit(
+            db,
+            actor_id_for(actor),
+            "task.handoff",
+            "task",
+            task_id,
+            {"to_status": task.status, "to_assignee": payload.next_recommended_agent},
         )
         _commit(db)
         publish_board_event("task_updated", _require_task(db, task_id), changed="handoff")
@@ -281,7 +289,7 @@ def api_link_task(
         task_id: str,
         payload: TaskLinkCreate,
         db: Session = Depends(get_db),
-        _actor: Actor = Depends(require_permission(Permission.LINKS_MANAGE)),
+        actor: Actor = Depends(require_permission(Permission.LINKS_MANAGE)),
     ):
         _require_task(db, task_id)
         if task_id not in {payload.parent_id, payload.child_id}:
@@ -290,6 +298,14 @@ def api_link_task(
             link = create_task_link(db, payload)
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
+        audit(
+            db,
+            actor_id_for(actor),
+            "task.link",
+            "task",
+            task_id,
+            {"parent_id": payload.parent_id, "link_type": payload.link_type},
+        )
         _commit(db)
         publish_board_event("task_updated", _require_task(db, task_id), changed="dependencies")
         return serialize_task_link(link)
@@ -299,13 +315,14 @@ def api_unlink_task(
         task_id: str,
         link_id: str,
         db: Session = Depends(get_db),
-        _actor: Actor = Depends(require_permission(Permission.LINKS_MANAGE)),
+        actor: Actor = Depends(require_permission(Permission.LINKS_MANAGE)),
     ):
         _require_task(db, task_id)
         link = next((item for item in list_task_links(db, task_id=task_id) if item.id == link_id), None)
         if link is None:
             raise HTTPException(status_code=404, detail="Task link not found.")
         delete_task_link(db, link_id)
+        audit(db, actor_id_for(actor), "task.unlink", "task", task_id, {"link_id": link_id})
         _commit(db)
         publish_board_event("task_updated", _require_task(db, task_id), changed="dependencies")
         return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -314,9 +331,11 @@ def api_unlink_task(
 def api_update_task(
         task_id: str,
         payload: TaskUpdate,
+        request: Request,
         db: Session = Depends(get_db),
         actor: Actor = Depends(require_permission(Permission.TASKS_READ)),
     ):
+        mutation_limiter.check(actor.key_id or client_ip(request), request.app.state.settings.rate_limit_mutations)
         task = _require_task(db, task_id)
         try:
             authorize_task_update(actor, task, payload)
@@ -326,6 +345,15 @@ def api_update_task(
             task = _make_task_service(db).update_task(task_id, payload, actor)
         except TaskConcurrentModificationError as exc:
             raise HTTPException(status_code=409, detail=exc.message)
+        audit(
+            db,
+            actor_id_for(actor),
+            "task.update",
+            "task",
+            task.id,
+            {"changes": sorted(payload.model_fields_set)},
+        )
+        _commit(db)
         return serialize_task(task)
 
 @router.post("/tasks/{task_id}/claim", response_model=TaskResponse)
@@ -357,14 +385,17 @@ def api_claim_task(
 def api_release_task(
         task_id: str,
         db: Session = Depends(get_db),
-        _actor: Actor = Depends(require_permission(Permission.TASKS_CLAIM)),
+        actor: Actor = Depends(require_permission(Permission.TASKS_CLAIM)),
     ):
+        old_status = _require_task(db, task_id).status
         try:
             task = _make_task_service(db).release_task(task_id)
         except TaskNotFoundError:
             raise HTTPException(status_code=404, detail="Task not found.")
         except TaskConcurrentModificationError as exc:
             raise HTTPException(status_code=409, detail=exc.message)
+        audit(db, actor_id_for(actor), "task.release", "task", task.id, {"from": old_status})
+        _commit(db)
         return serialize_task(task)
 
 @router.post("/tasks/{task_id}/move", response_model=TaskResponse)
@@ -396,24 +427,30 @@ def api_move_task(
 def api_add_note(
         task_id: str,
         payload: NoteRequest,
+        request: Request,
         db: Session = Depends(get_db),
         actor: Actor = Depends(require_permission(Permission.TASKS_NOTE)),
     ):
+        mutation_limiter.check(actor.key_id or client_ip(request), request.app.state.settings.rate_limit_mutations)
         try:
             task = _make_task_service(db).add_note(task_id, payload.note, actor, author=payload.author)
         except TaskNotFoundError:
             raise HTTPException(status_code=404, detail="Task not found.")
         except NotePermissionError as exc:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=exc.message)
+        audit(db, actor_id_for(actor), "task.note", "task", task.id, {"note_length": len(payload.note)})
+        _commit(db)
         return serialize_task(task)
 
 @router.post("/tasks/{task_id}/done", response_model=TaskResponse)
 def api_done_task(
         task_id: str,
         payload: DoneRequest,
+        request: Request,
         db: Session = Depends(get_db),
         actor: Actor = Depends(require_permission(Permission.TASKS_DONE)),
     ):
+        mutation_limiter.check(actor.key_id or client_ip(request), request.app.state.settings.rate_limit_mutations)
         try:
             task = _make_task_service(db).done_task(
                 task_id,
@@ -428,4 +465,6 @@ def api_done_task(
             raise HTTPException(status_code=403, detail=exc.message)
         except TaskConcurrentModificationError as exc:
             raise HTTPException(status_code=409, detail=exc.message)
+        audit(db, actor_id_for(actor), "task.done", "task", task.id, {})
+        _commit(db)
         return serialize_task(task)

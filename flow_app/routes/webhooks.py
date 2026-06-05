@@ -74,7 +74,7 @@ def api_update_webhook(
         webhook_id: str,
         payload: WebhookConfigUpdate,
         db: Session = Depends(get_db),
-        _actor: Actor = Depends(require_permission(Permission.WEBHOOK_MANAGE)),
+        actor: Actor = Depends(require_permission(Permission.WEBHOOK_MANAGE)),
     ):
         svc = WebhookService(db)
         try:
@@ -84,19 +84,24 @@ def api_update_webhook(
         except WebhookError as exc:
             status_code = 422 if exc.error_type == "invalid_event" else 400
             raise HTTPException(status_code=status_code, detail=exc.message) from exc
+        audit(db, actor_id_for(actor), "webhook.update", "webhook", config.id, {"name": config.name})
+        _commit(db)
         return serialize_webhook_config(config)
 
 @router.delete("/webhooks/{webhook_id}", status_code=status.HTTP_204_NO_CONTENT)
 def api_delete_webhook(
         webhook_id: str,
         db: Session = Depends(get_db),
-        _actor: Actor = Depends(require_permission(Permission.WEBHOOK_MANAGE)),
+        actor: Actor = Depends(require_permission(Permission.WEBHOOK_MANAGE)),
     ):
         svc = WebhookService(db)
         try:
+            config = svc.get_config(webhook_id)
             svc.delete_config(webhook_id)
         except WebhookNotFoundError as exc:
             raise HTTPException(status_code=404, detail=exc.message) from exc
+        audit(db, actor_id_for(actor), "webhook.delete", "webhook", webhook_id, {"name": config.name})
+        _commit(db)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 @router.get("/webhooks/{webhook_id}/deliveries", response_model=PaginatedResponse)

@@ -8,6 +8,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from ..config import FLOW_VERSION
+from ..ratelimit import auth_limiter, client_ip
 from ..repository import batch_dependency_summaries, list_agent_api_keys, list_projects, list_tasks, serialize_idea
 from ..schemas import STATUSES
 from ..security import (
@@ -218,6 +219,7 @@ def login_submit(
     api_key: str = Form(...),
     db: Session = Depends(get_db),
 ):
+    auth_limiter.check(client_ip(request))
     settings = request.app.state.settings
     if not settings.session_secret:
         # Session cookies can't be signed without a secret; flow-serve sets one automatically.

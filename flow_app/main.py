@@ -178,8 +178,11 @@ def create_app(
     @app.middleware("http")
     async def record_api_errors(request: Request, call_next):
         response = await call_next(request)
-        if request.url.path.startswith("/api/") and response.status_code >= 500:
-            metrics.inc("api.errors")
+        if request.url.path.startswith("/api/"):
+            if response.status_code >= 500:
+                metrics.inc("api.errors.5xx")
+            elif response.status_code >= 400:
+                metrics.inc("api.errors.4xx")
         return response
 
     @app.get("/healthz")

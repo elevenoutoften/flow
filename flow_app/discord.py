@@ -7,6 +7,7 @@ import httpx
 from sqlalchemy.orm import Session
 
 from .config import FlowSettings, get_settings
+from .metrics import metrics
 from .models import Task, utcnow
 from .notifications import NotificationProvider
 from .repository import create_notification_delivery, update_notification_delivery
@@ -53,6 +54,7 @@ class DiscordNotificationProvider(NotificationProvider):
                 last_response_code=None,
                 last_response_body=str(exc)[:2000],
             )
+            metrics.inc("notification.retrying" if status == "retrying" else "notification.failed")
             return
 
         body = response.text[:2000]
@@ -67,6 +69,7 @@ class DiscordNotificationProvider(NotificationProvider):
                 last_response_code=response.status_code,
                 last_response_body=body,
             )
+            metrics.inc("notification.success")
             return
 
         if response.status_code == 429 and attempts < delivery.max_retries:
@@ -80,6 +83,7 @@ class DiscordNotificationProvider(NotificationProvider):
                 last_response_code=response.status_code,
                 last_response_body=body,
             )
+            metrics.inc("notification.retrying")
             return
 
         update_notification_delivery(
@@ -91,6 +95,7 @@ class DiscordNotificationProvider(NotificationProvider):
             last_response_code=response.status_code,
             last_response_body=body,
         )
+        metrics.inc("notification.failed")
 
     @staticmethod
     def format_message(event: str, task: Task, changes: dict | None = None) -> str:

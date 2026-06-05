@@ -8,12 +8,12 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from ..audit import audit
+from ..audit import actor_id_for, audit
 from ..config import DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT
 from ..dispatcher import complete_run
 from ..models import Agent, AgentRun, RunnerLease, Task, utcnow
 from ..metrics import metrics
-from ..ratelimit import mutation_limiter
+from ..ratelimit import client_ip, mutation_limiter
 from ..repository import (
     count_runners,
     create_agent_run,
@@ -186,13 +186,16 @@ def api_get_runner(
 @router.post("/runners", response_model=RunnerResponse, status_code=status.HTTP_201_CREATED)
 def api_create_runner(
     payload: RunnerCreate,
+    request: Request,
     db: Session = Depends(get_db),
-    _actor: Actor = Depends(require_permission(Permission.RUNNER_MANAGE)),
+    actor: Actor = Depends(require_permission(Permission.RUNNER_MANAGE)),
 ):
+    mutation_limiter.check(actor.key_id or client_ip(request), request.app.state.settings.rate_limit_mutations)
     try:
         runner, _secret = create_runner(db, payload)
     except IntegrityError as exc:
         _handle_runner_conflict(db, exc)
+    audit(db, actor_id_for(actor), "runner.create", "runner", runner.id, {"name": runner.name})
     _commit(db)
     return serialize_runner(runner)
 
@@ -329,7 +332,7 @@ def api_update_runner(
     runner_id: str,
     payload: RunnerUpdate,
     db: Session = Depends(get_db),
-    _actor: Actor = Depends(require_permission(Permission.RUNNER_MANAGE)),
+    actor: Actor = Depends(require_permission(Permission.RUNNER_MANAGE)),
 ):
     runner = get_runner(db, runner_id)
     if runner is None:
@@ -338,6 +341,14 @@ def api_update_runner(
         runner = update_runner(db, runner, payload)
     except IntegrityError as exc:
         _handle_runner_conflict(db, exc)
+    audit(
+        db,
+        actor_id_for(actor),
+        "runner.update",
+        "runner",
+        runner.id,
+        {"changes": sorted(payload.model_fields_set)},
+    )
     _commit(db)
     return serialize_runner(runner)
 
@@ -346,14 +357,16 @@ def api_update_runner(
 def api_delete_runner(
     runner_id: str,
     db: Session = Depends(get_db),
-    _actor: Actor = Depends(require_permission(Permission.RUNNER_MANAGE)),
+    actor: Actor = Depends(require_permission(Permission.RUNNER_MANAGE)),
 ):
     runner = get_runner(db, runner_id)
     if runner is None:
         raise HTTPException(status_code=404, detail="Runner not found.")
+    old_name = runner.name
     try:
         runner = update_runner(db, runner, RunnerUpdate(enabled=False, status="offline"))
     except IntegrityError as exc:
         _handle_runner_conflict(db, exc)
+    audit(db, actor_id_for(actor), "runner.delete", "runner", runner.id, {"name": old_name})
     _commit(db)
     return serialize_runner(runner)

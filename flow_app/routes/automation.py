@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.orm import Session
 
 from ..audit import actor_id_for, audit
@@ -9,6 +9,7 @@ from ..repository import (
     count_automation_rules,
     serialize_automation_rule,
 )
+from ..ratelimit import client_ip, mutation_limiter
 from ..schemas import (
     AutomationDryRunRequest,
     AutomationEvent,
@@ -73,9 +74,11 @@ def api_get_automation_rule(
 @router.post("/automation-rules", response_model=AutomationRuleResponse, status_code=status.HTTP_201_CREATED)
 def api_create_automation_rule(
         payload: AutomationRuleCreate,
+        request: Request,
         db: Session = Depends(get_db),
         actor: Actor = Depends(require_permission(Permission.RULES_MANAGE)),
     ):
+        mutation_limiter.check(actor.key_id or client_ip(request), request.app.state.settings.rate_limit_mutations)
         svc = AutomationService(db)
         rule = svc.create_rule(payload)
         audit(db, actor_id_for(actor), "rule.create", "rule", rule.id)

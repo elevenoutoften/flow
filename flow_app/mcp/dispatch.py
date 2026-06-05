@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from ..audit import actor_id_for, audit
 from ..adapter_templates import (
     AdapterTemplateInstantiate,
     BUILTIN_TEMPLATES,
@@ -1424,6 +1425,15 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
             raise JsonRpcError(-32602, exc.message) from exc
         except TaskConcurrentModificationError as exc:
             raise JsonRpcError(-32603, exc.message) from exc
+        audit(
+            db,
+            actor_id_for(actor),
+            "task.human_required",
+            "task",
+            task.id,
+            {"required": arguments["human_required"]},
+        )
+        _commit(db)
         data = task_to_json(task)
         state = "set" if data["human_required"] else "cleared"
         return tool_result({"task": data}, f"Human-required state {state} for Flow task {data['id']}.")

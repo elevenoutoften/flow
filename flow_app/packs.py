@@ -14,7 +14,7 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .models import Agent, AutomationRule, WebhookConfig
+from .models import Agent, AutomationRule, Runner, WebhookConfig
 from .repository import (
     create_agent,
     create_automation_rule,
@@ -22,6 +22,7 @@ from .repository import (
     get_agent_by_name,
     list_agents,
     list_automation_rules,
+    list_runners,
     list_webhook_configs,
     update_agent,
     update_automation_rule,
@@ -37,6 +38,7 @@ PACK_SCHEMA_VERSION = 1
 _SECRET_FIELDS: dict[str, list[str]] = {
     "webhook_configs": ["secret"],
     "notification_configs": ["api_key", "bot_token", "webhook_url"],
+    "runners": ["api_key_ref"],
 }
 
 
@@ -51,6 +53,9 @@ def export_pack(db: Session) -> dict[str, Any]:
     webhooks = [
         _redact_entity(_serialize_webhook_raw(w), "webhook_configs") for w in list_webhook_configs(db)
     ]
+    runners = [
+        _redact_entity(_serialize_runner_raw(r), "runners") for r in list_runners(db, limit=10000)
+    ]
     notification_configs = _export_notification_configs()
 
     return {
@@ -61,6 +66,7 @@ def export_pack(db: Session) -> dict[str, Any]:
         "rules": rules,
         "agents": agents,
         "webhook_configs": webhooks,
+        "runners": runners,
         "notification_configs": notification_configs,
     }
 
@@ -283,6 +289,24 @@ def _serialize_webhook_raw(config: WebhookConfig) -> dict:
         "max_retries": config.max_retries,
         "retry_backoff_seconds": config.retry_backoff_seconds,
         "project": config.project,
+    }
+
+
+def _serialize_runner_raw(runner: Runner) -> dict:
+    return {
+        "id": runner.id,
+        "name": runner.name,
+        "description": runner.description,
+        "enabled": bool(runner.enabled),
+        "runner_type": runner.runner_type,
+        "capabilities": runner.capabilities,
+        "agent_names": runner.agent_names,
+        "lease_duration_seconds": runner.lease_duration_seconds,
+        "heartbeat_interval_seconds": runner.heartbeat_interval_seconds,
+        "max_concurrent_leases": runner.max_concurrent_leases,
+        "api_key_ref": runner.api_key_ref,
+        "last_seen_at": runner.last_seen_at.isoformat() if runner.last_seen_at else None,
+        "status": runner.status,
     }
 
 

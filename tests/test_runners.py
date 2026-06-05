@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+import pytest
+
 from flow_app.dispatcher import stale_recovery
 from flow_app.models import AgentRun, RunnerLease, Task, utcnow
 from flow_app.repository import create_runner_lease
@@ -105,6 +107,68 @@ def test_runner_crud_and_soft_delete(client):
     data = deleted.json()
     assert data["enabled"] is False
     assert data["status"] == "offline"
+
+
+def test_runner_api_key_ref_redacts_plaintext(client):
+    response = client.post(
+        "/api/runners",
+        json={
+            "name": "test-runner-redact",
+            "runner_type": "poll",
+            "api_key_ref": "sk-super-secret-key-12345",
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    assert response.json()["api_key_ref"] == "***"
+
+
+def test_runner_api_key_ref_preserves_env_reference(client):
+    response = client.post(
+        "/api/runners",
+        json={
+            "name": "test-runner-env-ref",
+            "runner_type": "poll",
+            "api_key_ref": "env:FLOW_RUNNER_KEY",
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    assert response.json()["api_key_ref"] == "env:FLOW_RUNNER_KEY"
+
+
+def test_runner_api_key_ref_preserves_file_reference(client):
+    response = client.post(
+        "/api/runners",
+        json={
+            "name": "test-runner-file-ref",
+            "runner_type": "poll",
+            "api_key_ref": "file:/etc/flow/runner-key",
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    assert response.json()["api_key_ref"] == "file:/etc/flow/runner-key"
+
+
+def test_runner_list_redacts_api_key_ref(client):
+    create_runner(
+        client,
+        name="test-runner-list-redact",
+        runner_type="poll",
+        api_key_ref="plaintext-secret-xyz",
+    )
+
+    response = client.get("/api/runners")
+
+    assert response.status_code == 200
+    runners = response.json()["items"]
+    for runner in runners:
+        if runner["name"] == "test-runner-list-redact":
+            assert runner["api_key_ref"] == "***"
+            break
+    else:
+        pytest.fail("test-runner-list-redact not found in runner list")
 
 
 def test_runner_list_filters(client):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 
 import pytest
 
@@ -56,6 +57,25 @@ def test_file_secret_outside_allowed_roots_is_rejected(tmp_path, monkeypatch):
         resolve_secret(f"file:{secret_file}")
 
 
+def test_file_secret_path_outside_allowed_roots_is_rejected(tmp_path, monkeypatch):
+    """Resolved paths outside allowed roots are rejected without requiring symlinks."""
+    allowed_root = tmp_path / "allowed"
+    outside_root = tmp_path / "outside"
+    allowed_root.mkdir()
+    outside_root.mkdir()
+    outside_secret = outside_root / "secret"
+    outside_secret.write_text("secret", encoding="utf-8")
+
+    monkeypatch.setenv("FLOW_SECRET_FILE_ROOTS", str(allowed_root))
+
+    with pytest.raises(SecretResolutionError, match="outside allowed"):
+        resolve_secret(f"file:{outside_secret}")
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Symlink creation requires elevated privileges on Windows",
+)
 def test_file_secret_symlink_escape_is_rejected(tmp_path, monkeypatch):
     allowed_root = tmp_path / "allowed"
     outside_root = tmp_path / "outside"

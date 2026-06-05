@@ -532,7 +532,7 @@ def serialize_runner(runner: Runner) -> RunnerResponse:
         lease_duration_seconds=runner.lease_duration_seconds,
         heartbeat_interval_seconds=runner.heartbeat_interval_seconds,
         max_concurrent_leases=runner.max_concurrent_leases,
-        api_key_ref=runner.api_key_ref,
+        api_key_ref=redact_secret(runner.api_key_ref),
         last_seen_at=_ensure_optional_datetime(runner.last_seen_at),
         status=runner.status,
         created_at=_ensure_datetime(runner.created_at),

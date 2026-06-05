@@ -31,6 +31,7 @@ from ..repository import (
     serialize_created_agent_api_key,
 )
 from ..schemas import (
+    AgentCreate,
     AgentApiKeyCreate,
     AgentApiKeyCreateResponse,
     AgentApiKeyResponse,

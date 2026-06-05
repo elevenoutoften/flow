@@ -25,6 +25,25 @@ def test_export_redacts_secrets(client):
             assert wh["secret"] in ("***", "")
 
 
+def test_pack_export_redacts_runner_api_key_ref(client):
+    client.post("/api/runners", json={
+        "name": "test-runner-pack",
+        "runner_type": "poll",
+        "api_key_ref": "plaintext-key-should-be-redacted",
+    })
+
+    response = client.get("/api/packs/export")
+
+    assert response.status_code == 200
+    pack = response.json()
+    for runner in pack.get("runners", []):
+        if runner["name"] == "test-runner-pack":
+            assert runner["api_key_ref"] == "***"
+            break
+    else:
+        raise AssertionError("test-runner-pack not found in pack export")
+
+
 def test_export_download_header(client):
     response = client.get("/api/packs/export?download=1")
     assert response.status_code == 200

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from sqlalchemy.orm import Session
 
 from flow_app.models import ApiKeyRole, AutomationRule
-from flow_app.models import Task
+from flow_app.models import Task, utcnow
 from flow_app.notifications import NotificationProvider, RulesNotifyProvider, register_notification_provider
 from flow_app.notifications import _registry as notification_registry
 from flow_app.repository import add_note, get_task
@@ -137,6 +137,113 @@ def test_condition_evaluation_operators():
     assert not evaluate_conditions([{"field": "assignee", "operator": "exists"}], data)
     assert not evaluate_conditions([{"field": "unknown", "operator": "eq", "value": "todo"}], data)
     assert not evaluate_conditions([{"field": "status", "operator": "unknown", "value": "todo"}], data)
+
+
+def test_create_rule_with_unknown_field(client):
+    response = client.post(
+        "/api/automation-rules",
+        json={
+            "name": "Bad field",
+            "trigger": "cron",
+            "conditions": json.dumps([{"field": "unknown_field", "operator": "eq", "value": "todo"}]),
+            "actions": json.dumps([{"type": "add_note", "body": "bad"}]),
+        },
+    )
+
+    assert response.status_code == 422
+    assert "unknown condition field" in response.text.lower()
+
+
+def test_create_rule_with_unknown_operator(client):
+    response = client.post(
+        "/api/automation-rules",
+        json={
+            "name": "Bad operator",
+            "trigger": "cron",
+            "conditions": json.dumps([{"field": "status", "operator": "matches", "value": "todo"}]),
+            "actions": json.dumps([{"type": "add_note", "body": "bad"}]),
+        },
+    )
+
+    assert response.status_code == 422
+    assert "unknown operator" in response.text.lower()
+
+
+def test_create_rule_with_age_non_numeric(client):
+    response = client.post(
+        "/api/automation-rules",
+        json={
+            "name": "Bad age",
+            "trigger": "cron",
+            "conditions": json.dumps([{"field": "age_since_updated", "operator": "gt", "value": "old"}]),
+            "actions": json.dumps([{"type": "add_note", "body": "bad"}]),
+        },
+    )
+
+    assert response.status_code == 422
+    assert "age" in response.text.lower() or "value" in response.text.lower()
+
+
+def test_create_rule_with_valid_conditions(client):
+    response = client.post(
+        "/api/automation-rules",
+        json={
+            "name": "Valid conditions",
+            "trigger": "cron",
+            "conditions": json.dumps(
+                [
+                    {"field": "status", "operator": "eq", "value": "todo"},
+                    {"field": "age_since_updated", "operator": "gt", "value": 60},
+                ]
+            ),
+            "actions": json.dumps([{"type": "add_note", "body": "valid"}]),
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    assert response.json()["name"] == "Valid conditions"
+
+
+def test_update_rule_with_invalid_conditions(client):
+    rule = create_rule(client)
+
+    response = client.patch(
+        f"/api/automation-rules/{rule['id']}",
+        json={"conditions": json.dumps([{"field": "unknown_field", "operator": "eq", "value": "todo"}])},
+    )
+
+    assert response.status_code == 422
+    assert "unknown condition field" in response.text.lower()
+
+
+def test_dry_run_with_invalid_conditions_in_db(client):
+    now = utcnow()
+    with client.app.state.SessionLocal() as db:
+        db.add(
+            AutomationRule(
+                id="rule_bad_conditions",
+                name="Bad stored conditions",
+                description="",
+                enabled=1,
+                priority=50,
+                trigger="cron",
+                trigger_config="",
+                conditions=json.dumps([{"field": "unknown_field", "operator": "eq", "value": "todo"}]),
+                actions=json.dumps([{"type": "add_note", "body": "bad"}]),
+                last_run_at=None,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        db.commit()
+
+    response = client.post("/api/automation-rules/dry-run", json={"trigger": "cron"})
+
+    assert response.status_code == 200, response.text
+    invalid_conditions = response.json()["invalid_conditions"]
+    assert invalid_conditions[0]["rule_id"] == "rule_bad_conditions"
+    assert invalid_conditions[0]["errors"][0]["field"] == "field"
+    assert "unknown condition field" in invalid_conditions[0]["errors"][0]["message"].lower()
 
 
 def test_evaluate_endpoint_matches_rules_in_priority_order_and_updates_last_run(client):
@@ -285,26 +392,20 @@ def test_age_condition_not_claimed(client, monkeypatch):
     assert response.json()["matches"] == []
 
 
-def test_age_condition_malformed(client, monkeypatch):
-    now = datetime(2026, 5, 25, 14, 30, 15, tzinfo=timezone.utc)
-    monkeypatch.setattr("flow_app.runner.utcnow", lambda: now)
-    monkeypatch.setattr("flow_app.rules_engine.utcnow", lambda: now)
-    task = create_task(client, status="todo")
-    create_rule(
-        client,
-        name="Bad age",
-        trigger="cron",
-        conditions=json.dumps([{"field": "age_since_updated", "operator": "gt", "value": "old"}]),
-        actions=json.dumps([{"type": "add_note", "body": "bad"}]),
+def test_age_condition_malformed(client):
+    """Creating a rule with a non-numeric age value should return a validation error."""
+    response = client.post(
+        "/api/automation-rules",
+        json={
+            "name": "Bad age",
+            "trigger": "cron",
+            "conditions": json.dumps([{"field": "age_since_updated", "operator": "gt", "value": "old"}]),
+            "actions": json.dumps([{"type": "add_note", "body": "bad"}]),
+        },
     )
 
-    with client.app.state.SessionLocal() as db:
-        get_task(db, task["id"]).updated_at = now - timedelta(days=8)
-        db.commit()
-
-    response = client.post("/api/automation-rules/dry-run", json={"trigger": "cron"})
-    assert response.status_code == 200, response.text
-    assert response.json()["matches"] == []
+    assert response.status_code == 422
+    assert "age" in response.text.lower() or "value" in response.text.lower()
 
 
 def test_cron_task_scanning(client, monkeypatch):

@@ -440,8 +440,10 @@ Tracked counters:
 - `notification.success`
 - `notification.failed`
 - `notification.retrying`
+- `api.errors.4xx`
+- `api.errors.5xx`
 
-These counters are stored in memory and reset on server restart. If you need persistent metrics, scrape Flow from an external monitoring system and store them there.
+The API error counters increment when `/api/*` requests return 4xx or 5xx responses. These counters are stored in memory and reset on server restart. If you need persistent metrics, scrape Flow from an external monitoring system and store them there.
 
 ## Rate Limiting
 

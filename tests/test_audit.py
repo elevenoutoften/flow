@@ -7,7 +7,7 @@ import httpx
 
 from flow_app.metrics import metrics
 from flow_app.repository import create_task
-from flow_app.ratelimit import key_creation_limiter
+from flow_app.ratelimit import key_creation_limiter, mutation_limiter
 from flow_app.schemas import TaskCreate
 from flow_app.telegram import TelegramNotificationProvider
 
@@ -99,6 +99,112 @@ def test_key_creation_rate_limit_returns_429(client):
     response = client.post("/api/api-keys", json={"name": "blocked", "role": "read_only"})
     assert response.status_code == 429
     assert response.json()["detail"] == "Rate limit exceeded. Try again later."
+
+
+def _set_mutation_limit(client, limit: int) -> None:
+    client.app.state.settings = replace(client.app.state.settings, rate_limit_mutations=limit)
+    mutation_limiter.reset()
+
+
+def test_mutation_rate_limit_returns_429_for_webhooks(client):
+    _set_mutation_limit(client, 3)
+
+    for index in range(3):
+        response = client.post(
+            "/api/webhooks",
+            json={
+                "name": f"limited-hook-{index}",
+                "url": "https://example.com/hook",
+                "events": ["task_created"],
+                "project": "*",
+            },
+        )
+        assert response.status_code == 201, response.text
+
+    response = client.post(
+        "/api/webhooks",
+        json={
+            "name": "limited-hook-blocked",
+            "url": "https://example.com/hook",
+            "events": ["task_created"],
+            "project": "*",
+        },
+    )
+    assert response.status_code == 429
+    assert response.json()["detail"] == "Rate limit exceeded. Try again later."
+
+
+def test_mutation_rate_limit_returns_429_for_task_handoff(client):
+    task = client.post("/api/tasks", json={"title": "Limited handoff task"}).json()
+    _set_mutation_limit(client, 3)
+
+    for index in range(3):
+        response = client.post(
+            f"/api/tasks/{task['id']}/handoff",
+            json={"summary": f"handoff summary {index}"},
+        )
+        assert response.status_code == 201, response.text
+
+    response = client.post(f"/api/tasks/{task['id']}/handoff", json={"summary": "blocked"})
+    assert response.status_code == 429
+    assert response.json()["detail"] == "Rate limit exceeded. Try again later."
+
+
+def test_mutation_rate_limit_returns_429_for_runners(client):
+    _set_mutation_limit(client, 3)
+
+    for index in range(3):
+        response = client.post("/api/runners", json={"name": f"limited-runner-{index}"})
+        assert response.status_code == 201, response.text
+
+    response = client.post("/api/runners", json={"name": "limited-runner-blocked"})
+    assert response.status_code == 429
+    assert response.json()["detail"] == "Rate limit exceeded. Try again later."
+
+
+def test_mutation_rate_limit_uses_actor_key_id(client):
+    first_key = client.post("/api/api-keys", json={"name": "limit-admin-one", "role": "admin"}).json()["api_key"]
+    second_key = client.post("/api/api-keys", json={"name": "limit-admin-two", "role": "admin"}).json()["api_key"]
+    first_headers = {"Authorization": f"Bearer {first_key}"}
+    second_headers = {"Authorization": f"Bearer {second_key}"}
+    _set_mutation_limit(client, 2)
+
+    for index in range(2):
+        response = client.post(
+            "/api/webhooks",
+            headers=first_headers,
+            json={
+                "name": f"first-key-hook-{index}",
+                "url": "https://example.com/hook",
+                "events": ["task_created"],
+                "project": "*",
+            },
+        )
+        assert response.status_code == 201, response.text
+
+    response = client.post(
+        "/api/webhooks",
+        headers=first_headers,
+        json={
+            "name": "first-key-blocked",
+            "url": "https://example.com/hook",
+            "events": ["task_created"],
+            "project": "*",
+        },
+    )
+    assert response.status_code == 429
+
+    response = client.post(
+        "/api/webhooks",
+        headers=second_headers,
+        json={
+            "name": "second-key-allowed",
+            "url": "https://example.com/hook",
+            "events": ["task_created"],
+            "project": "*",
+        },
+    )
+    assert response.status_code == 201, response.text
 
 
 def test_audit_read_permission_admin_can_read_implementer_cannot(client):

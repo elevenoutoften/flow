@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from uuid import uuid4
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
@@ -9,7 +9,7 @@ from ..audit import actor_id_for, audit
 from ..config import DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT
 from ..metrics import metrics
 from ..markdown_import import parse_markdown_tasks
-from ..ratelimit import client_ip, mutation_limiter
+from ..ratelimit import require_mutation_limit
 from ..repository import (
     count_tasks,
     create_task_handoff,
@@ -96,7 +96,11 @@ def api_preview_markdown_import(
                 item.duplicate_task_id = duplicate.id
         return MarkdownImportPreviewResponse(items=items)
 
-@router.post("/import/markdown/commit", response_model=MarkdownImportCommitResponse)
+@router.post(
+    "/import/markdown/commit",
+    response_model=MarkdownImportCommitResponse,
+    dependencies=[Depends(require_mutation_limit)],
+)
 def api_commit_markdown_import(
         payload: MarkdownImportCommitRequest,
         db: Session = Depends(get_db),
@@ -182,14 +186,17 @@ def api_list_tasks(
         total = count_tasks(db, project=project, status=status_filter, assignee=assignee, unclaimed=unclaimed)
         return {"items": items, "total": total, "limit": limit, "offset": offset}
 
-@router.post("/tasks", response_model=TaskResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/tasks",
+    response_model=TaskResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_mutation_limit)],
+)
 def api_create_task(
         payload: TaskCreate,
-        request: Request,
         db: Session = Depends(get_db),
         actor: Actor = Depends(require_permission(Permission.TASKS_CREATE)),
     ):
-        mutation_limiter.check(actor.key_id or client_ip(request), request.app.state.settings.rate_limit_mutations)
         task = _make_task_service(db).create_task(payload, actor)
         metrics.inc("task.created")
         audit(db, actor_id_for(actor), "task.create", "task", task.id, {"status": task.status, "project": task.project})
@@ -226,8 +233,18 @@ def api_get_task_handoff(
             raise HTTPException(status_code=404, detail="Task handoff not found.")
         return serialize_task_handoff(handoff)
 
-@router.post("/tasks/{task_id}/handoffs", response_model=HandoffResponse, status_code=status.HTTP_201_CREATED)
-@router.post("/tasks/{task_id}/handoff", response_model=HandoffResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/tasks/{task_id}/handoffs",
+    response_model=HandoffResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_mutation_limit)],
+)
+@router.post(
+    "/tasks/{task_id}/handoff",
+    response_model=HandoffResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_mutation_limit)],
+)
 def api_create_task_handoff(
         task_id: str,
         payload: HandoffRequest,
@@ -284,7 +301,12 @@ def api_get_dependencies(
         except ValueError:
             raise HTTPException(status_code=404, detail="Task not found.")
 
-@router.post("/tasks/{task_id}/link", response_model=TaskLinkResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/tasks/{task_id}/link",
+    response_model=TaskLinkResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_mutation_limit)],
+)
 def api_link_task(
         task_id: str,
         payload: TaskLinkCreate,
@@ -310,7 +332,11 @@ def api_link_task(
         publish_board_event("task_updated", _require_task(db, task_id), changed="dependencies")
         return serialize_task_link(link)
 
-@router.delete("/tasks/{task_id}/link/{link_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/tasks/{task_id}/link/{link_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_mutation_limit)],
+)
 def api_unlink_task(
         task_id: str,
         link_id: str,
@@ -327,15 +353,13 @@ def api_unlink_task(
         publish_board_event("task_updated", _require_task(db, task_id), changed="dependencies")
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
-@router.patch("/tasks/{task_id}", response_model=TaskResponse)
+@router.patch("/tasks/{task_id}", response_model=TaskResponse, dependencies=[Depends(require_mutation_limit)])
 def api_update_task(
         task_id: str,
         payload: TaskUpdate,
-        request: Request,
         db: Session = Depends(get_db),
         actor: Actor = Depends(require_permission(Permission.TASKS_READ)),
     ):
-        mutation_limiter.check(actor.key_id or client_ip(request), request.app.state.settings.rate_limit_mutations)
         task = _require_task(db, task_id)
         try:
             authorize_task_update(actor, task, payload)
@@ -356,15 +380,13 @@ def api_update_task(
         _commit(db)
         return serialize_task(task)
 
-@router.post("/tasks/{task_id}/claim", response_model=TaskResponse)
+@router.post("/tasks/{task_id}/claim", response_model=TaskResponse, dependencies=[Depends(require_mutation_limit)])
 def api_claim_task(
         task_id: str,
         payload: ClaimRequest,
-        request: Request,
         db: Session = Depends(get_db),
         actor: Actor = Depends(require_permission(Permission.TASKS_CLAIM)),
     ):
-        mutation_limiter.check(actor.key_id or client_ip(request), request.app.state.settings.rate_limit_mutations)
         try:
             task = _make_task_service(db).claim_task(task_id, actor, agent_name=payload.agent_name)
         except TaskNotFoundError:
@@ -381,7 +403,7 @@ def api_claim_task(
         _commit(db)
         return serialize_task(task)
 
-@router.post("/tasks/{task_id}/release", response_model=TaskResponse)
+@router.post("/tasks/{task_id}/release", response_model=TaskResponse, dependencies=[Depends(require_mutation_limit)])
 def api_release_task(
         task_id: str,
         db: Session = Depends(get_db),
@@ -398,15 +420,13 @@ def api_release_task(
         _commit(db)
         return serialize_task(task)
 
-@router.post("/tasks/{task_id}/move", response_model=TaskResponse)
+@router.post("/tasks/{task_id}/move", response_model=TaskResponse, dependencies=[Depends(require_mutation_limit)])
 def api_move_task(
         task_id: str,
         payload: MoveRequest,
-        request: Request,
         db: Session = Depends(get_db),
         actor: Actor = Depends(require_permission(Permission.TASKS_MOVE)),
     ):
-        mutation_limiter.check(actor.key_id or client_ip(request), request.app.state.settings.rate_limit_mutations)
         old_status = _require_task(db, task_id).status
         try:
             task = _make_task_service(db).move_task(task_id, payload.status, actor)
@@ -423,15 +443,13 @@ def api_move_task(
         _commit(db)
         return serialize_task(task)
 
-@router.post("/tasks/{task_id}/note", response_model=TaskResponse)
+@router.post("/tasks/{task_id}/note", response_model=TaskResponse, dependencies=[Depends(require_mutation_limit)])
 def api_add_note(
         task_id: str,
         payload: NoteRequest,
-        request: Request,
         db: Session = Depends(get_db),
         actor: Actor = Depends(require_permission(Permission.TASKS_NOTE)),
     ):
-        mutation_limiter.check(actor.key_id or client_ip(request), request.app.state.settings.rate_limit_mutations)
         try:
             task = _make_task_service(db).add_note(task_id, payload.note, actor, author=payload.author)
         except TaskNotFoundError:
@@ -442,15 +460,13 @@ def api_add_note(
         _commit(db)
         return serialize_task(task)
 
-@router.post("/tasks/{task_id}/done", response_model=TaskResponse)
+@router.post("/tasks/{task_id}/done", response_model=TaskResponse, dependencies=[Depends(require_mutation_limit)])
 def api_done_task(
         task_id: str,
         payload: DoneRequest,
-        request: Request,
         db: Session = Depends(get_db),
         actor: Actor = Depends(require_permission(Permission.TASKS_DONE)),
     ):
-        mutation_limiter.check(actor.key_id or client_ip(request), request.app.state.settings.rate_limit_mutations)
         try:
             task = _make_task_service(db).done_task(
                 task_id,

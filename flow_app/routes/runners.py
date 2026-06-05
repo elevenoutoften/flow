@@ -13,7 +13,7 @@ from ..config import DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT
 from ..dispatcher import complete_run
 from ..models import Agent, AgentRun, RunnerLease, Task, utcnow
 from ..metrics import metrics
-from ..ratelimit import client_ip, mutation_limiter
+from ..ratelimit import require_mutation_limit
 from ..repository import (
     count_runners,
     create_agent_run,
@@ -183,14 +183,17 @@ def api_get_runner(
     return serialize_runner(runner)
 
 
-@router.post("/runners", response_model=RunnerResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/runners",
+    response_model=RunnerResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_mutation_limit)],
+)
 def api_create_runner(
     payload: RunnerCreate,
-    request: Request,
     db: Session = Depends(get_db),
     actor: Actor = Depends(require_permission(Permission.RUNNER_MANAGE)),
 ):
-    mutation_limiter.check(actor.key_id or client_ip(request), request.app.state.settings.rate_limit_mutations)
     try:
         runner, _secret = create_runner(db, payload)
     except IntegrityError as exc:
@@ -200,14 +203,17 @@ def api_create_runner(
     return serialize_runner(runner)
 
 
-@router.post("/runners/{runner_id}/poll", response_model=LeaseResponse | list[LeaseResponse] | None)
+@router.post(
+    "/runners/{runner_id}/poll",
+    response_model=LeaseResponse | list[LeaseResponse] | None,
+    dependencies=[Depends(require_mutation_limit)],
+)
 def api_poll_runner(
     runner_id: str,
     request: Request,
     response: Response,
     db: Session = Depends(get_db),
 ):
-    mutation_limiter.check(runner_id, request.app.state.settings.rate_limit_mutations)
     runner = _require_polling_runner(db, runner_id, request)
     now = utcnow()
     runner.last_seen_at = now
@@ -254,7 +260,11 @@ def api_poll_runner(
     return serialize_runner_lease(lease, task, agent)
 
 
-@router.post("/runners/{runner_id}/leases/{lease_id}/heartbeat", response_model=LeaseResponse)
+@router.post(
+    "/runners/{runner_id}/leases/{lease_id}/heartbeat",
+    response_model=LeaseResponse,
+    dependencies=[Depends(require_mutation_limit)],
+)
 def api_heartbeat_runner_lease(
     runner_id: str,
     lease_id: str,
@@ -293,7 +303,11 @@ def api_heartbeat_runner_lease(
     return serialize_runner_lease(lease)
 
 
-@router.post("/runners/{runner_id}/leases/{lease_id}/complete", response_model=LeaseResponse)
+@router.post(
+    "/runners/{runner_id}/leases/{lease_id}/complete",
+    response_model=LeaseResponse,
+    dependencies=[Depends(require_mutation_limit)],
+)
 def api_complete_runner_lease(
     runner_id: str,
     lease_id: str,
@@ -327,7 +341,7 @@ def api_complete_runner_lease(
     return serialize_runner_lease(lease, task, agent)
 
 
-@router.patch("/runners/{runner_id}", response_model=RunnerResponse)
+@router.patch("/runners/{runner_id}", response_model=RunnerResponse, dependencies=[Depends(require_mutation_limit)])
 def api_update_runner(
     runner_id: str,
     payload: RunnerUpdate,
@@ -353,7 +367,7 @@ def api_update_runner(
     return serialize_runner(runner)
 
 
-@router.delete("/runners/{runner_id}", response_model=RunnerResponse)
+@router.delete("/runners/{runner_id}", response_model=RunnerResponse, dependencies=[Depends(require_mutation_limit)])
 def api_delete_runner(
     runner_id: str,
     db: Session = Depends(get_db),

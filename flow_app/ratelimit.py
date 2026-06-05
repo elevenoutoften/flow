@@ -6,9 +6,10 @@ import threading
 import time
 from collections import defaultdict
 
-from fastapi import HTTPException, Request
+from fastapi import Cookie, Header, HTTPException, Request
 
 from .config import get_settings
+from .security import SESSION_COOKIE_NAME, resolve_actor
 
 
 class RateLimiter:
@@ -40,6 +41,31 @@ def client_ip(request: Request) -> str:
     if request.client is None:
         return "unknown"
     return request.client.host
+
+
+async def require_mutation_limit(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
+    x_axis_admin: str | None = Header(default=None),
+    x_axis_user: str | None = Header(default=None),
+    x_axis_agent: str | None = Header(default=None),
+) -> None:
+    settings = request.app.state.settings
+    session_factory = request.app.state.SessionLocal
+    with session_factory() as db:
+        actor = resolve_actor(
+            db,
+            authorization,
+            x_axis_admin,
+            x_axis_user,
+            x_axis_agent,
+            trusted_headers=settings.trusted_headers,
+            session_cookie=session_cookie,
+            session_secret=settings.session_secret or None,
+        )
+    key = actor.key_id if actor and actor.key_id else client_ip(request)
+    mutation_limiter.check(key, settings.rate_limit_mutations)
 
 
 key_creation_limiter = RateLimiter(max_requests=10, window_seconds=60)

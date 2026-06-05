@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from ..packs import VALID_CONFLICT_POLICIES, PackImportConflict, export_pack, import_pack, validate_pack
+from ..ratelimit import require_mutation_limit
 from ..security import Actor, Permission, require_permission
 from .dependencies import get_db
 
@@ -48,7 +49,7 @@ def api_export_pack(
     return pack
 
 
-@router.post("/packs/import")
+@router.post("/packs/import", dependencies=[Depends(require_mutation_limit)])
 def api_import_pack(
     body: PackImportBody,
     request: Request,

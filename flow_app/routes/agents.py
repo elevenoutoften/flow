@@ -17,7 +17,7 @@ from ..audit import actor_id_for, audit
 from ..config import DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT
 from ..dispatcher import DispatchError
 from ..metrics import metrics
-from ..ratelimit import client_ip, key_creation_limiter, mutation_limiter
+from ..ratelimit import client_ip, key_creation_limiter, require_mutation_limit
 from ..repository import (
     count_agent_runs,
     create_agent_api_key,
@@ -139,7 +139,11 @@ def api_create_agent_api_key(
         _commit(db)
         return serialize_created_agent_api_key(api_key, raw_key)
 
-@router.post("/api-keys/{api_key_id}/revoke", response_model=AgentApiKeyResponse)
+@router.post(
+        "/api-keys/{api_key_id}/revoke",
+        response_model=AgentApiKeyResponse,
+        dependencies=[Depends(require_mutation_limit)],
+    )
 def api_revoke_agent_api_key(
         api_key_id: str,
         db: Session = Depends(get_db),
@@ -175,29 +179,30 @@ def api_get_agent(
             raise HTTPException(status_code=404, detail=exc.message) from exc
         return serialize_agent(agent)
 
-@router.post("/agents", response_model=AgentResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+        "/agents",
+        response_model=AgentResponse,
+        status_code=status.HTTP_201_CREATED,
+        dependencies=[Depends(require_mutation_limit)],
+    )
 def api_create_agent(
         payload: AgentCreate,
-        request: Request,
         db: Session = Depends(get_db),
         actor: Actor = Depends(require_permission(Permission.AGENT_MANAGE)),
     ):
-        mutation_limiter.check(actor.key_id or client_ip(request), request.app.state.settings.rate_limit_mutations)
         svc = AgentService(db)
         agent = svc.create_agent(payload)
         audit(db, actor_id_for(actor), "agent.create", "agent", agent.id, {"name": agent.name})
         _commit(db)
         return serialize_agent(agent)
 
-@router.patch("/agents/{agent_id}", response_model=AgentResponse)
+@router.patch("/agents/{agent_id}", response_model=AgentResponse, dependencies=[Depends(require_mutation_limit)])
 def api_update_agent(
         agent_id: str,
         payload: AgentUpdate,
-        request: Request,
         db: Session = Depends(get_db),
         actor: Actor = Depends(require_permission(Permission.AGENT_MANAGE)),
     ):
-        mutation_limiter.check(actor.key_id or client_ip(request), request.app.state.settings.rate_limit_mutations)
         svc = AgentService(db)
         try:
             agent = svc.update_agent(agent_id, payload)
@@ -245,7 +250,7 @@ def api_get_agent_run(
             raise HTTPException(status_code=404, detail=exc.message) from exc
         return serialize_agent_run(run)
 
-@router.post("/agents/{agent_id}/dispatch", response_model=AgentRunResponse)
+@router.post("/agents/{agent_id}/dispatch", response_model=AgentRunResponse, dependencies=[Depends(require_mutation_limit)])
 def api_dispatch_agent(
         agent_id: str,
         request: Request,
@@ -290,7 +295,11 @@ def api_heartbeat_agent_run(
             raise HTTPException(status_code=404, detail=exc.message) from exc
         return serialize_agent_run(run)
 
-@router.post("/agent-runs/{run_id}/complete", response_model=AgentRunResponse)
+@router.post(
+        "/agent-runs/{run_id}/complete",
+        response_model=AgentRunResponse,
+        dependencies=[Depends(require_mutation_limit)],
+    )
 def api_complete_agent_run(
         run_id: str,
         db: Session = Depends(get_db),
@@ -306,7 +315,7 @@ def api_complete_agent_run(
         _commit(db)
         return serialize_agent_run(run)
 
-@router.post("/agent-runs/stale-recovery")
+@router.post("/agent-runs/stale-recovery", dependencies=[Depends(require_mutation_limit)])
 def api_stale_recovery(
         db: Session = Depends(get_db),
         _actor: Actor = Depends(require_permission(Permission.TASKS_EDIT)),

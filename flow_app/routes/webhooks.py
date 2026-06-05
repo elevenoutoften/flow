@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from ..audit import actor_id_for, audit
 from ..config import DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT
 from ..models import utcnow
+from ..ratelimit import require_mutation_limit
 from ..repository import (
     count_webhook_deliveries,
     serialize_webhook_config,
@@ -30,7 +31,12 @@ from .dependencies import _commit, _require_webhook_delivery, get_db
 
 router = APIRouter()
 
-@router.post("/webhooks", response_model=WebhookConfigCreateResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+        "/webhooks",
+        response_model=WebhookConfigCreateResponse,
+        status_code=status.HTTP_201_CREATED,
+        dependencies=[Depends(require_mutation_limit)],
+    )
 def api_create_webhook(
         payload: WebhookConfigCreate,
         db: Session = Depends(get_db),
@@ -69,7 +75,7 @@ def api_get_webhook(
             raise HTTPException(status_code=404, detail=exc.message) from exc
         return serialize_webhook_config(config)
 
-@router.patch("/webhooks/{webhook_id}", response_model=WebhookConfigResponse)
+@router.patch("/webhooks/{webhook_id}", response_model=WebhookConfigResponse, dependencies=[Depends(require_mutation_limit)])
 def api_update_webhook(
         webhook_id: str,
         payload: WebhookConfigUpdate,
@@ -88,7 +94,11 @@ def api_update_webhook(
         _commit(db)
         return serialize_webhook_config(config)
 
-@router.delete("/webhooks/{webhook_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+        "/webhooks/{webhook_id}",
+        status_code=status.HTTP_204_NO_CONTENT,
+        dependencies=[Depends(require_mutation_limit)],
+    )
 def api_delete_webhook(
         webhook_id: str,
         db: Session = Depends(get_db),
@@ -138,6 +148,7 @@ def api_get_webhook_delivery(
 @router.post(
         "/webhooks/{webhook_id}/deliveries/{delivery_id}/retry",
         response_model=WebhookDeliveryRetryResponse,
+        dependencies=[Depends(require_mutation_limit)],
     )
 def api_retry_webhook_delivery(
         webhook_id: str,

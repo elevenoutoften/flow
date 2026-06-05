@@ -46,7 +46,7 @@ Conditions are a JSON array. All conditions must match (AND logic).
 ]
 ```
 
-**Supported fields:** `status`, `project`, `priority`, `assignee`, `assignee_type`, `human_required`, `title`, `latest_handoff`
+**Supported fields:** `status`, `project`, `priority`, `assignee`, `assignee_type`, `human_required`, `title`, `latest_handoff`, `age_since_updated`, `age_since_created`, `age_since_claimed`
 
 **Supported operators:** `eq`, `ne`, `in`, `not_in`, `contains`, `gt`, `lt`, `gte`, `lte`, `exists`, `not_exists`
 
@@ -84,6 +84,62 @@ Actions are a JSON array returned when all conditions match. Flow validates JSON
 
 The runner evaluates cron rules each pass. `_cron_config_matches()` checks minute, hour, and day_of_week fields. Supports exact values and `*/N` divisors.
 
+Cron rules with task conditions scan tasks and execute actions once per matching task. Age condition values are seconds since the task timestamp.
+
+## Stale Task Policy Examples
+
+### Notify when task is idle for 7 days
+
+```json
+{
+  "name": "Stale task notification",
+  "trigger": "cron",
+  "trigger_config": "{\"minute\": \"0\", \"hour\": \"9\", \"day_of_week\": \"*\"}",
+  "conditions": [
+    {"field": "status", "operator": "in", "value": ["todo", "doing"]},
+    {"field": "age_since_updated", "operator": "gt", "value": 604800}
+  ],
+  "actions": [
+    {"type": "notify", "message": "Task {{task_id}} has not been updated in 7 days"}
+  ]
+}
+```
+
+### Add note when task has been in review for 3 days
+
+```json
+{
+  "name": "Review stagnation alert",
+  "trigger": "cron",
+  "trigger_config": "{\"minute\": \"0\", \"hour\": \"9\", \"day_of_week\": \"*\"}",
+  "conditions": [
+    {"field": "status", "operator": "eq", "value": "review"},
+    {"field": "age_since_updated", "operator": "gt", "value": 259200}
+  ],
+  "actions": [
+    {"type": "add_note", "body": "This task has been in review for 3+ days without activity."}
+  ]
+}
+```
+
+### Escalate unclaimed tasks after 2 days
+
+```json
+{
+  "name": "Unclaimed task escalation",
+  "trigger": "cron",
+  "trigger_config": "{\"minute\": \"*/30\", \"hour\": \"*\", \"day_of_week\": \"1-5\"}",
+  "conditions": [
+    {"field": "status", "operator": "eq", "value": "todo"},
+    {"field": "assignee", "operator": "exists"},
+    {"field": "age_since_created", "operator": "gt", "value": 172800}
+  ],
+  "actions": [
+    {"type": "notify", "message": "Unclaimed task {{task_id}} is over 2 days old"}
+  ]
+}
+```
+
 ## REST API
 
 | Method | Path | Permission |
@@ -93,6 +149,7 @@ The runner evaluates cron rules each pass. `_cron_config_matches()` checks minut
 | `POST` | `/api/automation-rules` | `rules:manage` |
 | `PATCH` | `/api/automation-rules/{id}` | `rules:manage` |
 | `POST` | `/api/automation-rules/evaluate` | `rules:evaluate` |
+| `POST` | `/api/automation-rules/dry-run` | `rules:evaluate` |
 
 ## MCP Tools
 
@@ -103,6 +160,7 @@ The runner evaluates cron rules each pass. `_cron_config_matches()` checks minut
 | `flow_create_automation_rule` | `rules:manage` |
 | `flow_update_automation_rule` | `rules:manage` |
 | `flow_evaluate_rules` | `rules:evaluate` |
+| `flow_dry_run_automation_rules` | `rules:evaluate` |
 
 ## Evaluation Flow
 

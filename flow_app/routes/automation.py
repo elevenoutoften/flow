@@ -10,6 +10,7 @@ from ..repository import (
     serialize_automation_rule,
 )
 from ..schemas import (
+    AutomationDryRunRequest,
     AutomationEvent,
     AutomationRuleCreate,
     AutomationRuleResponse,
@@ -45,6 +46,16 @@ def api_evaluate_automation_rules(
         svc = AutomationService(db)
         matches = svc.evaluate_rules(payload, actor=actor)
         return {"matches": matches, "count": len(matches)}
+
+@router.post("/automation-rules/dry-run")
+def api_dry_run_automation_rules(
+        payload: AutomationDryRunRequest,
+        db: Session = Depends(get_db),
+        _actor: Actor = Depends(require_permission(Permission.RULES_EVALUATE)),
+    ):
+        from ..runner import dry_run_automation_rules
+
+        return dry_run_automation_rules(db, trigger=payload.trigger, rule_id=payload.rule_id, dry_run=True)
 
 @router.get("/automation-rules/{rule_id}", response_model=AutomationRuleResponse)
 def api_get_automation_rule(

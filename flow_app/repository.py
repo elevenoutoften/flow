@@ -1863,6 +1863,16 @@ def serialize_task_handoff(handoff: TaskHandoff) -> HandoffResponse:
     )
 
 
+def _derive_claimed_at(task: Task) -> datetime | None:
+    assignee = (task.assignee or "").strip().lower()
+    for note in sorted(task.notes, key=lambda note: (_ensure_datetime(note.created_at), note.id)):
+        author = (note.author or "").strip().lower()
+        body = (note.body or "").lower()
+        if (assignee and author == assignee) or "claimed by" in body or "claimed" in body:
+            return _ensure_datetime(note.created_at)
+    return None
+
+
 def serialize_task(task: Task) -> TaskResponse:
     notes = [
         TaskNoteResponse(
@@ -1901,6 +1911,7 @@ def serialize_task(task: Task) -> TaskResponse:
         source_title=task.source_title,
         notes=notes,
         latest_handoff=serialize_task_handoff(latest_handoff) if latest_handoff else None,
+        claimed_at=_derive_claimed_at(task),
         created_at=_ensure_datetime(task.created_at),
         updated_at=_ensure_datetime(task.updated_at),
     )

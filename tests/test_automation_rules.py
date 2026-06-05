@@ -10,7 +10,7 @@ from flow_app.models import ApiKeyRole, AutomationRule
 from flow_app.models import Task
 from flow_app.notifications import NotificationProvider, RulesNotifyProvider, register_notification_provider
 from flow_app.notifications import _registry as notification_registry
-from flow_app.repository import get_task
+from flow_app.repository import add_note, get_task
 from flow_app.runner import _run_cron_rules
 from flow_app.rules_engine import emit_event
 from flow_app.rules_engine import evaluate_conditions
@@ -193,6 +193,183 @@ def test_cron_rule_fires_when_last_run_was_previous_minute(client, monkeypatch):
         db.refresh(rule_model)
         assert rule_model.last_run_at is not None
         assert rule_model.last_run_at.replace(tzinfo=timezone.utc) != previous_run_at
+
+
+def test_age_condition_updated_at(client, monkeypatch):
+    now = datetime(2026, 5, 25, 14, 30, 15, tzinfo=timezone.utc)
+    monkeypatch.setattr("flow_app.runner.utcnow", lambda: now)
+    monkeypatch.setattr("flow_app.rules_engine.utcnow", lambda: now)
+    task = create_task(client, status="todo")
+    rule = create_rule(
+        client,
+        name="Stale updated",
+        trigger="cron",
+        conditions=json.dumps([{"field": "age_since_updated", "operator": "gt", "value": 604800}]),
+        actions=json.dumps([{"type": "add_note", "body": "stale"}]),
+    )
+
+    with client.app.state.SessionLocal() as db:
+        task_model = get_task(db, task["id"])
+        task_model.updated_at = now - timedelta(days=8)
+        db.commit()
+
+    response = client.post("/api/automation-rules/dry-run", json={"rule_id": rule["id"]})
+    assert response.status_code == 200, response.text
+    matches = response.json()["matches"]
+    assert [match["task_id"] for match in matches] == [task["id"]]
+
+
+def test_age_condition_created_at(client, monkeypatch):
+    now = datetime(2026, 5, 25, 14, 30, 15, tzinfo=timezone.utc)
+    monkeypatch.setattr("flow_app.runner.utcnow", lambda: now)
+    monkeypatch.setattr("flow_app.rules_engine.utcnow", lambda: now)
+    stale = create_task(client, status="todo", title="old")
+    fresh = create_task(client, status="todo", title="new")
+    create_rule(
+        client,
+        name="Old created",
+        trigger="cron",
+        conditions=json.dumps([{"field": "age_since_created", "operator": "gt", "value": 172800}]),
+        actions=json.dumps([{"type": "add_note", "body": "old"}]),
+    )
+
+    with client.app.state.SessionLocal() as db:
+        get_task(db, stale["id"]).created_at = now - timedelta(days=3)
+        get_task(db, fresh["id"]).created_at = now - timedelta(hours=1)
+        db.commit()
+
+    response = client.post("/api/automation-rules/dry-run", json={"trigger": "cron"})
+    assert response.status_code == 200, response.text
+    assert [match["task_id"] for match in response.json()["matches"]] == [stale["id"]]
+
+
+def test_age_condition_claimed_at(client, monkeypatch):
+    now = datetime(2026, 5, 25, 14, 30, 15, tzinfo=timezone.utc)
+    monkeypatch.setattr("flow_app.runner.utcnow", lambda: now)
+    monkeypatch.setattr("flow_app.rules_engine.utcnow", lambda: now)
+    task = create_task(client, status="doing", assignee="agent-one")
+    create_rule(
+        client,
+        name="Old claim",
+        trigger="cron",
+        conditions=json.dumps([{"field": "age_since_claimed", "operator": "gt", "value": 172800}]),
+        actions=json.dumps([{"type": "add_note", "body": "old claim"}]),
+    )
+
+    with client.app.state.SessionLocal() as db:
+        task_model = get_task(db, task["id"])
+        note = add_note(db, task_model, "claimed by agent-one", author="agent-one")
+        note.created_at = now - timedelta(days=3)
+        db.commit()
+
+    response = client.post("/api/automation-rules/dry-run", json={"trigger": "cron"})
+    assert response.status_code == 200, response.text
+    assert [match["task_id"] for match in response.json()["matches"]] == [task["id"]]
+
+
+def test_age_condition_not_claimed(client, monkeypatch):
+    now = datetime(2026, 5, 25, 14, 30, 15, tzinfo=timezone.utc)
+    monkeypatch.setattr("flow_app.runner.utcnow", lambda: now)
+    monkeypatch.setattr("flow_app.rules_engine.utcnow", lambda: now)
+    create_task(client, status="todo")
+    create_rule(
+        client,
+        name="No claim",
+        trigger="cron",
+        conditions=json.dumps([{"field": "age_since_claimed", "operator": "gt", "value": 1}]),
+        actions=json.dumps([{"type": "add_note", "body": "old claim"}]),
+    )
+
+    response = client.post("/api/automation-rules/dry-run", json={"trigger": "cron"})
+    assert response.status_code == 200, response.text
+    assert response.json()["matches"] == []
+
+
+def test_age_condition_malformed(client, monkeypatch):
+    now = datetime(2026, 5, 25, 14, 30, 15, tzinfo=timezone.utc)
+    monkeypatch.setattr("flow_app.runner.utcnow", lambda: now)
+    monkeypatch.setattr("flow_app.rules_engine.utcnow", lambda: now)
+    task = create_task(client, status="todo")
+    create_rule(
+        client,
+        name="Bad age",
+        trigger="cron",
+        conditions=json.dumps([{"field": "age_since_updated", "operator": "gt", "value": "old"}]),
+        actions=json.dumps([{"type": "add_note", "body": "bad"}]),
+    )
+
+    with client.app.state.SessionLocal() as db:
+        get_task(db, task["id"]).updated_at = now - timedelta(days=8)
+        db.commit()
+
+    response = client.post("/api/automation-rules/dry-run", json={"trigger": "cron"})
+    assert response.status_code == 200, response.text
+    assert response.json()["matches"] == []
+
+
+def test_cron_task_scanning(client, monkeypatch):
+    now = datetime(2026, 5, 25, 14, 30, 15, tzinfo=timezone.utc)
+    monkeypatch.setattr("flow_app.runner.utcnow", lambda: now)
+    monkeypatch.setattr("flow_app.rules_engine.utcnow", lambda: now)
+    stale_todo = create_task(client, status="todo", title="stale todo")
+    stale_done = create_task(client, status="done", title="stale done")
+    fresh_todo = create_task(client, status="todo", title="fresh todo")
+    create_rule(
+        client,
+        name="Scan stale todos",
+        trigger="cron",
+        conditions=json.dumps(
+            [
+                {"field": "status", "operator": "eq", "value": "todo"},
+                {"field": "age_since_updated", "operator": "gt", "value": 604800},
+            ]
+        ),
+        actions=json.dumps([{"type": "add_note", "body": "stale todo note"}]),
+    )
+
+    with client.app.state.SessionLocal() as db:
+        get_task(db, stale_todo["id"]).updated_at = now - timedelta(days=8)
+        get_task(db, stale_done["id"]).updated_at = now - timedelta(days=8)
+        get_task(db, fresh_todo["id"]).updated_at = now - timedelta(hours=1)
+        db.commit()
+        assert _run_cron_rules(db, dry_run=False) == 1
+        db.commit()
+
+    stale_notes = [note["body"] for note in client.get(f"/api/tasks/{stale_todo['id']}").json()["notes"]]
+    done_notes = [note["body"] for note in client.get(f"/api/tasks/{stale_done['id']}").json()["notes"]]
+    fresh_notes = [note["body"] for note in client.get(f"/api/tasks/{fresh_todo['id']}").json()["notes"]]
+    assert "stale todo note" in stale_notes
+    assert "stale todo note" not in done_notes
+    assert "stale todo note" not in fresh_notes
+
+
+def test_cron_dry_run(client, monkeypatch):
+    now = datetime(2026, 5, 25, 14, 30, 15, tzinfo=timezone.utc)
+    monkeypatch.setattr("flow_app.runner.utcnow", lambda: now)
+    monkeypatch.setattr("flow_app.rules_engine.utcnow", lambda: now)
+    task = create_task(client, status="todo")
+    rule = create_rule(
+        client,
+        name="Dry run stale",
+        trigger="cron",
+        conditions=json.dumps([{"field": "age_since_updated", "operator": "gt", "value": 604800}]),
+        actions=json.dumps([{"type": "add_note", "body": "dry run should not write"}]),
+    )
+
+    with client.app.state.SessionLocal() as db:
+        get_task(db, task["id"]).updated_at = now - timedelta(days=8)
+        db.commit()
+
+    response = client.post("/api/automation-rules/dry-run", json={"trigger": "cron"})
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["evaluated_rules"] == 1
+    assert payload["matches"][0]["rule_id"] == rule["id"]
+    assert payload["matches"][0]["task_id"] == task["id"]
+
+    notes = client.get(f"/api/tasks/{task['id']}").json()["notes"]
+    assert "dry run should not write" not in [note["body"] for note in notes]
+    assert client.get(f"/api/automation-rules/{rule['id']}").json()["last_run_at"] is None
 
 
 def test_emit_event_with_rule_id_only_executes_that_rule(client):

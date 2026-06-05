@@ -79,6 +79,7 @@ from ..repository import (
     update_workspace_config,
 )
 from ..schemas import (
+    AutomationDryRunRequest,
     AutomationEvent,
     AutomationRuleCreate,
     AutomationRuleUpdate,
@@ -1025,6 +1026,18 @@ TOOLS: list[dict[str, Any]] = [
                 "data": {"type": ["object", "null"]},
             },
             "required": ["trigger"],
+        },
+    },
+    {
+        "name": "flow_dry_run_automation_rules",
+        "title": "Dry Run Flow Automation Rules",
+        "description": "Dry-run Flow automation rules without executing actions.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "trigger": {"type": "string", "default": "cron"},
+                "rule_id": {"type": ["string", "null"]},
+            },
         },
     },
     {
@@ -2060,6 +2073,23 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
         return tool_result(
             {"matches": matches, "count": len(matches)},
             f"Matched {len(matches)} Flow automation rule{'s' if len(matches) != 1 else ''}.",
+        )
+
+    if name == "flow_dry_run_automation_rules":
+        require_tool_permission(actor, Permission.RULES_EVALUATE)
+        try:
+            payload = AutomationDryRunRequest(
+                trigger=arguments.get("trigger", "cron"),
+                rule_id=arguments.get("rule_id"),
+            )
+        except ValidationError as exc:
+            raise JsonRpcError(-32602, "Invalid automation dry-run payload.", exc.errors()) from exc
+        from ..runner import dry_run_automation_rules
+
+        result = dry_run_automation_rules(db, trigger=payload.trigger, rule_id=payload.rule_id, dry_run=True)
+        return tool_result(
+            result,
+            f"Dry-run evaluated {result['evaluated_rules']} Flow automation rule{'s' if result['evaluated_rules'] != 1 else ''}.",
         )
 
     if name == "flow_pack_export":

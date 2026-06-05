@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import json
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .models import ApiKeyRole, AutomationRule, Task, WebhookDelivery
+from .models import ApiKeyRole, AutomationRule, Task, WebhookDelivery, utcnow
 from .notifications import RulesNotifyProvider
 from .repository import (
     add_note,
@@ -34,6 +35,9 @@ CONDITION_FIELDS = {
     "human_required",
     "title",
     "latest_handoff",
+    "age_since_updated",
+    "age_since_created",
+    "age_since_claimed",
 }
 CONDITION_OPERATORS = {"eq", "ne", "in", "not_in", "contains", "gt", "lt", "gte", "lte", "exists", "not_exists"}
 TRIGGERS = {"task_created", "task_moved", "task_claimed", "task_completed", "task_blocked", "cron"}
@@ -46,6 +50,16 @@ class MatchResult:
     rule_name: str
     actions: list[dict]
     task_id: str | None
+
+    def to_dict(self, *, matched_conditions: bool = True, skip_reason: str = "") -> dict[str, Any]:
+        return {
+            "rule_id": self.rule_id,
+            "rule_name": self.rule_name,
+            "task_id": self.task_id,
+            "matched_conditions": matched_conditions,
+            "actions": self.actions,
+            "skip_reason": skip_reason,
+        }
 
 
 @dataclass
@@ -79,7 +93,14 @@ def evaluate_conditions(conditions: list[dict], task_data: dict) -> bool:
         if operator not in CONDITION_OPERATORS:
             return False
 
-        actual = task_data.get(field)
+        actual = _condition_actual_value(field, task_data)
+        if field.startswith("age_since_") and actual is None:
+            return False
+        if field.startswith("age_since_"):
+            try:
+                value = float(value)
+            except (TypeError, ValueError):
+                return False
 
         if operator == "eq" and actual != value:
             return False
@@ -106,6 +127,40 @@ def evaluate_conditions(conditions: list[dict], task_data: dict) -> bool:
         if operator == "not_exists" and actual is not None:
             return False
     return True
+
+
+def _condition_actual_value(field: str, task_data: dict) -> Any:
+    if field == "age_since_updated":
+        return _age_seconds(task_data.get("updated_at"))
+    if field == "age_since_created":
+        return _age_seconds(task_data.get("created_at"))
+    if field == "age_since_claimed":
+        return _age_seconds(task_data.get("claimed_at"))
+    return task_data.get(field)
+
+
+def _age_seconds(value: Any) -> float | None:
+    timestamp = _parse_datetime(value)
+    if timestamp is None:
+        return None
+    return max(0.0, (utcnow() - timestamp).total_seconds())
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def match_rules(
@@ -415,15 +470,17 @@ def emit_event(
     data: dict | None = None,
     actor: Actor | None = None,
     rule_id: str | None = None,
+    dry_run: bool = False,
 ) -> list[dict]:
     """Emit an event, execute matched rule actions, and return serializable results."""
     matches = match_rules(session, trigger, task_id, data, rule_id=rule_id)
     results = []
     for match in matches:
+        if dry_run:
+            results.append(match.to_dict())
+            continue
         rule = session.get(AutomationRule, match.rule_id)
         if rule:
-            from .models import utcnow
-
             rule.last_run_at = utcnow()
             session.add(rule)
         action_results = execute_actions(session, match, trigger=trigger, actor=actor, data=data)

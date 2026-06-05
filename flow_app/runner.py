@@ -17,8 +17,9 @@ from .database import build_engine, build_session_factory, default_database_url
 from .dispatcher import DispatchError, _next_capable_task, complete_run, dispatch_one, stale_recovery
 from .main import ensure_compatible_schema
 from .models import Agent, AutomationRule, Task, utcnow
+from .repository import serialize_task, task_query
 from .realtime import publish_board_event
-from .rules_engine import emit_event
+from .rules_engine import CONDITION_FIELDS, MatchResult, emit_event, evaluate_conditions, execute_actions
 from .storage_helpers import get_comma_list
 from .webhook_cli import run_deliveries
 
@@ -43,6 +44,26 @@ class PassResult:
     recurring_materialized: int = 0
     recurring_skipped: int = 0
     webhook_deliveries: int = 0
+
+
+@dataclass
+class CronMatchResult:
+    rule_id: str
+    rule_name: str
+    task_id: str | None
+    matched: bool
+    actions: list[dict]
+    skip_reason: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "rule_id": self.rule_id,
+            "rule_name": self.rule_name,
+            "task_id": self.task_id,
+            "matched_conditions": self.matched,
+            "actions": self.actions,
+            "skip_reason": self.skip_reason,
+        }
 
 
 def load_runner_config(*, require_profiles: bool = True) -> RunnerConfig:
@@ -203,28 +224,93 @@ def _run_stale_recovery(session: Session, *, dry_run: bool) -> int:
 
 
 def _run_cron_rules(session: Session, *, dry_run: bool) -> int:
+    result = dry_run_automation_rules(session, trigger="cron", dry_run=dry_run)
+    logger.info("Cron automation produced %s matches", len(result["matches"]))
+    return len(result["matches"])
+
+
+def dry_run_automation_rules(
+    session: Session,
+    *,
+    trigger: str = "cron",
+    rule_id: str | None = None,
+    dry_run: bool = True,
+) -> dict:
     rules = list(
         session.scalars(
             select(AutomationRule)
             .where(AutomationRule.enabled == 1)
-            .where(AutomationRule.trigger == "cron")
+            .where(AutomationRule.trigger == trigger)
             .order_by(AutomationRule.priority.desc())
         ).all()
     )
-    matches = 0
+    if rule_id is not None:
+        rules = [rule for rule in rules if rule.id == rule_id]
+
+    evaluated_rules = 0
+    matches: list[CronMatchResult] = []
     now = utcnow()
     for rule in rules:
-        if not _cron_config_matches(rule.trigger_config, now):
+        if trigger == "cron" and not _cron_config_matches(rule.trigger_config, now):
             continue
-        if rule.last_run_at is not None and _same_minute(rule.last_run_at, now):
+        if not dry_run and trigger == "cron" and rule.last_run_at is not None and _same_minute(rule.last_run_at, now):
             continue
+        evaluated_rules += 1
+        rule_matches = _evaluate_scheduled_rule(session, rule, trigger=trigger, dry_run=dry_run)
+        matches.extend(rule_matches)
+        if not dry_run:
+            rule.last_run_at = now
+            session.add(rule)
+            session.flush()
+
+    return {"evaluated_rules": evaluated_rules, "matches": [match.to_dict() for match in matches]}
+
+
+def _evaluate_scheduled_rule(
+    session: Session,
+    rule: AutomationRule,
+    *,
+    trigger: str,
+    dry_run: bool,
+) -> list[CronMatchResult]:
+    conditions = _parse_rule_array(rule.conditions)
+    if conditions is None:
+        return [CronMatchResult(rule.id, rule.name, None, False, [], "invalid_conditions")]
+    actions = _parse_rule_array(rule.actions)
+    if actions is None:
+        return [CronMatchResult(rule.id, rule.name, None, False, [], "invalid_actions")]
+
+    if not _conditions_reference_task_fields(conditions):
         if dry_run:
-            logger.info("Would fire cron automation rule %s (%s)", rule.name, rule.id)
+            matched = evaluate_conditions(conditions, {"rule_id": rule.id, "rule_name": rule.name})
+            return [CronMatchResult(rule.id, rule.name, None, matched, actions)] if matched else []
+        results = emit_event(session, trigger, data={"rule_id": rule.id, "rule_name": rule.name}, rule_id=rule.id)
+        return [
+            CronMatchResult(
+                result["rule_id"],
+                result["rule_name"],
+                result.get("task_id"),
+                True,
+                result.get("actions", []),
+            )
+            for result in results
+        ]
+
+    rule_matches: list[CronMatchResult] = []
+    for task in _tasks_for_rule(session, conditions):
+        task_data = serialize_task(task).model_dump(mode="json")
+        if not evaluate_conditions(conditions, task_data):
             continue
-        results = _emit_single_cron_rule(session, rules, rule)
-        matches += len(results)
-    logger.info("Cron automation produced %s matches", matches)
-    return matches
+        rule_matches.append(CronMatchResult(rule.id, rule.name, task.id, True, actions))
+        if dry_run:
+            continue
+        execute_actions(
+            session,
+            MatchResult(rule_id=rule.id, rule_name=rule.name, actions=actions, task_id=task.id),
+            trigger=trigger,
+            data={"rule_id": rule.id, "rule_name": rule.name},
+        )
+    return rule_matches
 
 
 def _run_recurring_templates(session: Session, *, dry_run: bool):
@@ -241,8 +327,37 @@ def _run_recurring_templates(session: Session, *, dry_run: bool):
     return result
 
 
-def _emit_single_cron_rule(session: Session, rules: list[AutomationRule], rule: AutomationRule) -> list[dict]:
-    return emit_event(session, "cron", data={"rule_id": rule.id, "rule_name": rule.name}, rule_id=rule.id)
+def _parse_rule_array(raw: str | None) -> list[dict] | None:
+    try:
+        parsed = json.loads(raw or "[]")
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(parsed, list):
+        return None
+    return parsed
+
+
+def _conditions_reference_task_fields(conditions: list[dict]) -> bool:
+    return any(isinstance(condition, dict) and condition.get("field") in CONDITION_FIELDS for condition in conditions)
+
+
+def _tasks_for_rule(session: Session, conditions: list[dict]) -> list[Task]:
+    stmt = task_query()
+    project = _project_eq_filter(conditions)
+    if project:
+        stmt = stmt.where(Task.project == project)
+    return list(session.scalars(stmt).all())
+
+
+def _project_eq_filter(conditions: list[dict]) -> str | None:
+    for condition in conditions:
+        if not isinstance(condition, dict):
+            continue
+        if condition.get("field") == "project" and condition.get("operator", "eq") == "eq":
+            value = condition.get("value")
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return None
 
 
 def _same_minute(left: datetime, right: datetime) -> bool:

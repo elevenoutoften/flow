@@ -349,6 +349,7 @@ class TaskResponse(BaseModel):
     source_title: str | None
     notes: list[TaskNoteResponse]
     latest_handoff: HandoffResponse | None = None
+    claimed_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -1454,4 +1455,22 @@ class AutomationEvent(BaseModel):
     @field_validator("task_id", "project")
     @classmethod
     def clean_optional_strings(cls, value: str | None) -> str | None:
+        return _clean_optional(value)
+
+
+class AutomationDryRunRequest(BaseModel):
+    trigger: str = "cron"
+    rule_id: str | None = None
+
+    @field_validator("trigger")
+    @classmethod
+    def validate_trigger(cls, value: str) -> str:
+        cleaned = value.strip()
+        if cleaned not in AUTOMATION_TRIGGERS:
+            raise ValueError("Invalid automation trigger.")
+        return cleaned
+
+    @field_validator("rule_id")
+    @classmethod
+    def clean_rule_id(cls, value: str | None) -> str | None:
         return _clean_optional(value)

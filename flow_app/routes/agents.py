@@ -1,11 +1,18 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from pydantic import BaseModel, ConfigDict, Field
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from ..adapter_templates import AdapterTemplate, BUILTIN_TEMPLATES
+from ..adapter_templates import (
+    AdapterTemplate,
+    AdapterTemplateInstantiate,
+    AdapterTemplatePreview,
+    BUILTIN_TEMPLATES,
+    agent_payload_from_template,
+    preview_from_template,
+)
 from ..audit import actor_id_for, audit
 from ..config import DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT
 from ..dispatcher import DispatchError
@@ -27,7 +34,6 @@ from ..schemas import (
     AgentApiKeyCreate,
     AgentApiKeyCreateResponse,
     AgentApiKeyResponse,
-    AgentCreate,
     AgentResponse,
     AgentRunResponse,
     AgentUpdate,
@@ -45,34 +51,6 @@ class AdapterTemplateSummary(BaseModel):
     name: str
     family: str
     description: str
-
-
-class AdapterTemplateInstantiate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    name: str = Field(..., min_length=1)
-    description: str | None = None
-    enabled: bool | None = None
-    agent_type: str | None = None
-    capabilities: str | None = None
-    command: str | None = None
-    command_allowlist: str | None = None
-    env_allowlist: str | None = None
-    working_directory: str | None = None
-    max_concurrency: int | None = Field(default=None, ge=1)
-    heartbeat_timeout_seconds: int | None = Field(default=None, ge=1)
-    stale_claim_timeout_seconds: int | None = Field(default=None, ge=1)
-    dispatch_statuses: str | None = None
-
-
-def _agent_payload_from_template(template: AdapterTemplate, payload: AdapterTemplateInstantiate) -> AgentCreate:
-    data = template.model_dump(exclude={"family", "notes"})
-    data["name"] = payload.name
-    data["description"] = template.description
-    for field, value in payload.model_dump(exclude_unset=True).items():
-        if value is not None:
-            data[field] = value
-    return AgentCreate(**data)
 
 
 @router.get("/adapter-templates", response_model=list[AdapterTemplateSummary])
@@ -96,19 +74,42 @@ def api_get_adapter_template(
         return template
 
 
+@router.post("/adapter-templates/{name}/preview", response_model=AdapterTemplatePreview)
+def api_preview_adapter_template(
+        name: str,
+        payload: AdapterTemplateInstantiate,
+        db: Session = Depends(get_db),
+        _actor: Actor = Depends(require_permission(Permission.AGENT_READ)),
+    ):
+        template = BUILTIN_TEMPLATES.get(name)
+        if template is None:
+            raise HTTPException(status_code=404, detail="Adapter template not found.")
+        agent_payload = agent_payload_from_template(template, payload)
+        existing = get_agent_by_name(db, agent_payload.name)
+        return preview_from_template(template, payload, conflict_with=existing.id if existing is not None else None)
+
+
 @router.post("/adapter-templates/{name}/instantiate", response_model=AgentResponse, status_code=status.HTTP_201_CREATED)
 def api_instantiate_adapter_template(
         name: str,
         payload: AdapterTemplateInstantiate,
+        response: Response,
         db: Session = Depends(get_db),
         _actor: Actor = Depends(require_permission(Permission.AGENT_MANAGE)),
     ):
         template = BUILTIN_TEMPLATES.get(name)
         if template is None:
             raise HTTPException(status_code=404, detail="Adapter template not found.")
-        agent_payload = _agent_payload_from_template(template, payload)
-        if get_agent_by_name(db, agent_payload.name) is not None:
-            raise HTTPException(status_code=409, detail="Agent with this name already exists.")
+        agent_payload = agent_payload_from_template(template, payload)
+        existing = get_agent_by_name(db, agent_payload.name)
+        if existing is not None:
+            if payload.on_collision == "error":
+                raise HTTPException(status_code=409, detail="Agent with this name already exists.")
+            response.status_code = status.HTTP_200_OK
+            if payload.on_collision == "skip":
+                return serialize_agent(existing)
+            agent = AgentService(db).update_agent(existing.id, AgentUpdate(**agent_payload.model_dump()))
+            return serialize_agent(agent)
         svc = AgentService(db)
         try:
             agent = svc.create_agent(agent_payload)

@@ -8,7 +8,12 @@ from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from ..adapter_templates import BUILTIN_TEMPLATES
+from ..adapter_templates import (
+    AdapterTemplateInstantiate,
+    BUILTIN_TEMPLATES,
+    agent_payload_from_template,
+    preview_from_template,
+)
 from ..config import DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT, default_project
 from ..discord import DiscordNotificationProvider
 from ..dispatcher import DispatchError
@@ -36,6 +41,7 @@ from ..repository import (
     delete_task_link,
     evaluate_rules,
     get_agent,
+    get_agent_by_name,
     get_agent_run,
     get_automation_rule,
     get_webhook_config,
@@ -603,6 +609,57 @@ TOOLS: list[dict[str, Any]] = [
             "type": "object",
             "properties": {"name": {"type": "string"}},
             "required": ["name"],
+        },
+    },
+    {
+        "name": "flow_preview_adapter_template",
+        "title": "Preview Flow Adapter Template",
+        "description": "Preview the agent that would be created from a built-in Flow adapter template.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "template": {"type": "string", "description": "Built-in template name."},
+                "name": {"type": "string", "description": "Agent name to create."},
+                "description": {"type": "string"},
+                "enabled": {"type": "boolean"},
+                "agent_type": {"type": "string"},
+                "capabilities": {"type": "string"},
+                "command": {"type": "string"},
+                "command_allowlist": {"type": "string"},
+                "env_allowlist": {"type": "string"},
+                "working_directory": {"type": "string"},
+                "max_concurrency": {"type": "integer", "minimum": 1},
+                "heartbeat_timeout_seconds": {"type": "integer", "minimum": 1},
+                "stale_claim_timeout_seconds": {"type": "integer", "minimum": 1},
+                "dispatch_statuses": {"type": "string"},
+            },
+            "required": ["template", "name"],
+        },
+    },
+    {
+        "name": "flow_instantiate_adapter_template",
+        "title": "Instantiate Flow Adapter Template",
+        "description": "Create or update an agent from a built-in Flow adapter template.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "template": {"type": "string", "description": "Built-in template name."},
+                "name": {"type": "string", "description": "Agent name to create."},
+                "description": {"type": "string"},
+                "enabled": {"type": "boolean"},
+                "agent_type": {"type": "string"},
+                "capabilities": {"type": "string"},
+                "command": {"type": "string"},
+                "command_allowlist": {"type": "string"},
+                "env_allowlist": {"type": "string"},
+                "working_directory": {"type": "string"},
+                "max_concurrency": {"type": "integer", "minimum": 1},
+                "heartbeat_timeout_seconds": {"type": "integer", "minimum": 1},
+                "stale_claim_timeout_seconds": {"type": "integer", "minimum": 1},
+                "dispatch_statuses": {"type": "string"},
+                "on_collision": {"type": "string", "enum": ["error", "skip", "update"], "default": "error"},
+            },
+            "required": ["template", "name"],
         },
     },
     {
@@ -1609,6 +1666,62 @@ def call_tool(db: Session, params: dict[str, Any], actor: Actor | None) -> dict[
         data = template.model_dump()
         return tool_result({"template": data}, f"Found Flow adapter template {data['name']}.")
 
+    if name == "flow_preview_adapter_template":
+        require_tool_permission(actor, Permission.AGENT_READ)
+        template_name = require_string(arguments.get("template"), "template")
+        template = BUILTIN_TEMPLATES.get(template_name)
+        if template is None:
+            raise JsonRpcError(-32602, f"Adapter template not found: {template_name}")
+        try:
+            payload = AdapterTemplateInstantiate(**adapter_template_arguments(arguments))
+        except ValidationError as exc:
+            raise JsonRpcError(-32602, "Invalid adapter template payload.", exc.errors()) from exc
+        agent_payload = agent_payload_from_template(template, payload)
+        existing = get_agent_by_name(db, agent_payload.name)
+        preview = preview_from_template(template, payload, conflict_with=existing.id if existing is not None else None)
+        data = preview.model_dump()
+        suffix = " would be created" if data["would_create"] else f" conflicts with {data['conflict_with']}"
+        return tool_result({"preview": data}, f"Previewed Flow adapter template {template_name}: {data['name']}{suffix}.")
+
+    if name == "flow_instantiate_adapter_template":
+        require_tool_permission(actor, Permission.AGENT_MANAGE)
+        template_name = require_string(arguments.get("template"), "template")
+        template = BUILTIN_TEMPLATES.get(template_name)
+        if template is None:
+            raise JsonRpcError(-32602, f"Adapter template not found: {template_name}")
+        try:
+            payload = AdapterTemplateInstantiate(**adapter_template_arguments(arguments))
+        except ValidationError as exc:
+            raise JsonRpcError(-32602, "Invalid adapter template payload.", exc.errors()) from exc
+        agent_payload = agent_payload_from_template(template, payload)
+        existing = get_agent_by_name(db, agent_payload.name)
+        svc = AgentService(db)
+        if existing is not None:
+            if payload.on_collision == "error":
+                raise JsonRpcError(-32602, f"Agent with this name already exists: {agent_payload.name}")
+            if payload.on_collision == "skip":
+                data = agent_to_json(existing)
+                return tool_result(
+                    {"agent": data, "created": False, "collision": "skip"},
+                    f"Skipped existing Flow agent {data['id']}: {data['name']}",
+                )
+            agent = svc.update_agent(existing.id, AgentUpdate(**agent_payload.model_dump()))
+            data = agent_to_json(agent)
+            return tool_result(
+                {"agent": data, "created": False, "collision": "update"},
+                f"Updated Flow agent {data['id']} from adapter template {template_name}: {data['name']}",
+            )
+        try:
+            agent = svc.create_agent(agent_payload)
+        except IntegrityError as exc:
+            db.rollback()
+            raise JsonRpcError(-32602, f"Agent with this name already exists: {agent_payload.name}") from exc
+        data = agent_to_json(agent)
+        return tool_result(
+            {"agent": data, "created": True, "collision": None},
+            f"Created Flow agent {data['id']} from adapter template {template_name}: {data['name']}",
+        )
+
     if name == "flow_list_agents":
         require_tool_permission(actor, Permission.AGENT_READ)
         enabled_only = optional_bool(arguments.get("enabled_only"), default=False)
@@ -2274,6 +2387,10 @@ def webhook_delivery_to_json(delivery) -> dict[str, Any]:
 
 def update_arguments(arguments: dict[str, Any], allowed_fields: set[str], id_field: str) -> dict[str, Any]:
     return {field: value for field, value in arguments.items() if field != id_field and field in allowed_fields}
+
+
+def adapter_template_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
+    return {field: value for field, value in arguments.items() if field != "template"}
 
 
 def require_string(value: Any, field: str) -> str:

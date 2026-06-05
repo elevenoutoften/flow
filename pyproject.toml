@@ -31,6 +31,7 @@ flow-serve = "flow_app.serve:main"
 flow-runner = "flow_app.runner:main"
 flow-bootstrap = "flow_app.bootstrap:main"
 flow-backup = "flow_app.backup:main"
+flow-adapter-import = "flow_app.adapter_import:main"
 
 [project.urls]
 Repository = "https://github.com/elevenoutoften/flow"

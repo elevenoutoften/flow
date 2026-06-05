@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from .schemas import AgentCreate
 
 
 class AdapterTemplate(BaseModel):
@@ -50,6 +52,99 @@ class AdapterTemplate(BaseModel):
         if ".." in value:
             raise ValueError("Working directory must not contain '..'")
         return value
+
+
+class AdapterTemplateInstantiate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(..., min_length=1, max_length=120)
+    description: str | None = None
+    enabled: bool | None = None
+    agent_type: str | None = None
+    capabilities: str | None = None
+    command: str | None = None
+    command_allowlist: str | None = None
+    env_allowlist: str | None = None
+    working_directory: str | None = None
+    max_concurrency: int | None = Field(default=None, ge=1)
+    heartbeat_timeout_seconds: int | None = Field(default=None, ge=1)
+    stale_claim_timeout_seconds: int | None = Field(default=None, ge=1)
+    dispatch_statuses: str | None = None
+    on_collision: Literal["error", "skip", "update"] = "error"
+
+
+class AdapterTemplatePreview(BaseModel):
+    """Preview of what instantiate would create, without persisting."""
+
+    name: str
+    agent_type: str
+    command: str
+    capabilities: str
+    dispatch_statuses: str
+    env_allowlist: str
+    working_directory: str
+    max_concurrency: int
+    heartbeat_timeout_seconds: int
+    stale_claim_timeout_seconds: int
+    description: str
+    notes: str
+    source_template: str
+    overrides_applied: list[str]
+    would_create: bool = True
+    conflict_with: str | None = None
+
+
+TEMPLATE_OVERRIDE_FIELDS = {
+    "name",
+    "description",
+    "enabled",
+    "agent_type",
+    "capabilities",
+    "command",
+    "command_allowlist",
+    "env_allowlist",
+    "working_directory",
+    "max_concurrency",
+    "heartbeat_timeout_seconds",
+    "stale_claim_timeout_seconds",
+    "dispatch_statuses",
+}
+
+
+def adapter_template_overrides(payload: AdapterTemplateInstantiate) -> dict[str, object]:
+    return {
+        field: value
+        for field, value in payload.model_dump(exclude_unset=True).items()
+        if field in TEMPLATE_OVERRIDE_FIELDS and value is not None
+    }
+
+
+def agent_payload_from_template(template: AdapterTemplate, payload: AdapterTemplateInstantiate) -> AgentCreate:
+    data = template.model_dump(exclude={"family", "notes"})
+    data["name"] = payload.name
+    data["description"] = template.description
+    data.update(adapter_template_overrides(payload))
+    return AgentCreate(**data)
+
+
+def preview_from_template(
+    template: AdapterTemplate,
+    payload: AdapterTemplateInstantiate,
+    *,
+    conflict_with: str | None = None,
+) -> AdapterTemplatePreview:
+    agent_payload = agent_payload_from_template(template, payload)
+    data = agent_payload.model_dump()
+    data.update(
+        {
+            "notes": template.notes,
+            "source_template": template.name,
+            "overrides_applied": sorted(adapter_template_overrides(payload)),
+            "would_create": conflict_with is None,
+            "conflict_with": conflict_with,
+        }
+    )
+    return AdapterTemplatePreview(**data)
 
 
 BUILTIN_TEMPLATES: dict[str, AdapterTemplate] = {

@@ -53,6 +53,15 @@ def create_task(client, **overrides) -> dict:
     return response.json()
 
 
+def link_tasks(client, parent_id: str, child_id: str, link_type: str = "blocks") -> dict:
+    response = client.post(
+        f"/api/tasks/{parent_id}/link",
+        json={"parent_id": parent_id, "child_id": child_id, "link_type": link_type},
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
 def create_runner_with_key(client, **overrides) -> tuple[dict, str]:
     key = overrides.pop("api_key_ref", "runner-secret")
     runner = create_runner(client, api_key_ref=key, **overrides)
@@ -271,6 +280,68 @@ def test_runner_poll_no_work(client):
 
     assert response.status_code == 204
     assert response.content == b""
+
+
+def test_runner_poll_skips_blocked_tasks(client):
+    create_agent(client)
+    parent = create_task(client, title="Parent blocker", status="todo", human_required=True)
+    child = create_task(client, title="Blocked child", status="todo", priority=100)
+    link_tasks(client, parent["id"], child["id"], "blocks")
+    runner, key = create_runner_with_key(client, agent_names="implementer")
+
+    response = client.post(f"/api/runners/{runner['id']}/poll", headers=bearer_headers(key))
+
+    assert response.status_code == 204
+    assert response.content == b""
+    fetched = client.get(f"/api/tasks/{child['id']}").json()
+    assert fetched["status"] == "todo"
+    assert fetched["assignee"] is None
+
+
+def test_runner_poll_skips_task_when_agent_at_concurrency_limit(client):
+    agent = create_agent(client, max_concurrency=1)
+    first_task = create_task(client, title="First task", status="todo", priority=100)
+    second_task = create_task(client, title="Second task", status="todo", priority=90)
+    runner, key = create_runner_with_key(
+        client,
+        agent_names=agent["name"],
+        max_concurrent_leases=2,
+    )
+    first = client.post(f"/api/runners/{runner['id']}/poll", headers=bearer_headers(key))
+    assert first.status_code == 200, first.text
+    assert first.json()["task_id"] == first_task["id"]
+
+    response = client.post(f"/api/runners/{runner['id']}/poll", headers=bearer_headers(key))
+
+    assert response.status_code == 204
+    assert response.content == b""
+    fetched = client.get(f"/api/tasks/{second_task['id']}").json()
+    assert fetched["status"] == "todo"
+    assert fetched["assignee"] is None
+
+
+def test_runner_poll_resolves_dependency_and_leases(client):
+    agent = create_agent(client)
+    parent = create_task(client, title="Parent blocker", status="todo", human_required=True)
+    child = create_task(client, title="Blocked child", status="todo", priority=100)
+    link_tasks(client, parent["id"], child["id"], "depends_on")
+    runner, key = create_runner_with_key(client, agent_names=agent["name"])
+
+    blocked = client.post(f"/api/runners/{runner['id']}/poll", headers=bearer_headers(key))
+    assert blocked.status_code == 204
+
+    with client.app.state.SessionLocal() as db:
+        stored_parent = db.get(Task, parent["id"])
+        stored_parent.status = "done"
+        stored_parent.updated_at = utcnow()
+        db.commit()
+
+    response = client.post(f"/api/runners/{runner['id']}/poll", headers=bearer_headers(key))
+
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["task_id"] == child["id"]
+    assert data["agent_name"] == agent["name"]
 
 
 def test_runner_poll_picks_up_remote_dispatched_run(client):

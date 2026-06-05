@@ -23,6 +23,8 @@ from ..repository import (
     get_agent_by_name,
     get_runner,
     get_runner_lease,
+    is_dispatch_ready,
+    list_agent_runs,
     list_runners,
     runner_lease_to_json,
     serialize_runner_lease,
@@ -98,6 +100,9 @@ def _eligible_task_for_runner(db: Session, runner):
         agent = get_agent_by_name(db, agent_name)
         if agent is None or not agent.enabled:
             continue
+        running = list_agent_runs(db, agent_id=agent.id, status="running")
+        if len(running) >= agent.max_concurrency:
+            continue
         statuses = get_agent_dispatch_statuses(agent) if agent.dispatch_statuses else ["backlog", "todo"]
         stmt = (
             select(Task)
@@ -108,9 +113,9 @@ def _eligible_task_for_runner(db: Session, runner):
             )
             .order_by(Task.priority.desc(), Task.created_at, Task.id)
         )
-        task = db.scalars(stmt).first()
-        if task is not None:
-            return agent, task
+        for task in db.scalars(stmt).all():
+            if is_dispatch_ready(db, task, allowed_statuses=set(statuses)):
+                return agent, task
     return None, None
 
 

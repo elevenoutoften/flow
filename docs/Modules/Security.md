@@ -126,6 +126,10 @@ Bearer tokens take precedence over headers and cookies.
 2. Session cookie
 3. Trusted headers (if enabled)
 
+### Runner Credentials
+
+Runners authenticate via scoped API keys with `RUNNER_READ` for polling and heartbeats or `RUNNER_MANAGE` for creating runners and updating configuration. The `api_key_ref` field supports secure secret references (`env:`, `file:`) and is always redacted in API responses. See [Runner Security](RunnerSecurity.md) for details.
+
 ## API Key Management
 
 ### Creation
@@ -151,5 +155,6 @@ Admin keys grant full access including key management. Treat them as secrets:
 ## See Also
 
 - [REST API](REST-API.md) — endpoint reference
+- [Runner Security](RunnerSecurity.md) — runner credentials, lease boundaries, and dispatch readiness
 - [Architecture](../Architecture.md) — system design
 - [Operations](../Operations.md) — deployment configuration

@@ -128,7 +128,11 @@ Bearer tokens take precedence over headers and cookies.
 
 ### Runner Credentials
 
-Runners authenticate via scoped API keys with `RUNNER_READ` for polling and heartbeats or `RUNNER_MANAGE` for creating runners and updating configuration. The `api_key_ref` field supports secure secret references (`env:`, `file:`) and is always redacted in API responses. See [Runner Security](RunnerSecurity.md) for details.
+Runners authenticate via scoped API keys with `RUNNER_READ` (for polling, heartbeats) or `RUNNER_MANAGE` (for creating runners, updating configuration) permissions. The `api_key_ref` field supports secure secret references (`env:`, `file:`) and is always redacted in API responses. See [Runner Security](RunnerSecurity.md) for details.
+
+### Agent Command Safety
+
+Never embed secrets in agent `command` fields. Use `env:` or `file:` secret references for credentials, and set `command_allowlist` to restrict agents to their intended CLI prefix. See [Agent Roles](AgentRoles.md) for workspace isolation, secret reference guidance, and command allowlist best practices.
 
 ## API Key Management
 

@@ -102,6 +102,66 @@ The `dispatch_statuses` field controls which task states an agent can be auto-di
 - `dispatch_statuses`: workflow-specific or empty
 - Rationale: execution agents often need task movement and note posting, but many should run only when explicitly dispatched
 
+## Workspace Isolation
+
+Each agent should run in its own workspace directory. Set `working_directory` on the agent record to a dedicated path. Do not share working directories between agents unless they are part of the same coordinated pipeline.
+
+For CLI agents (Codex, Claude Code, OpenCode, custom scripts), the working directory should be the root of the project repository the agent operates on. For remote agents (MCP), working directory is often irrelevant since the agent connects over the network.
+
+### Isolation Strategies
+
+| Strategy | When to Use | How |
+|----------|-------------|-----|
+| Separate directories | Multiple agents on the same host | Set `working_directory` to per-agent checkout paths |
+| Container isolation | Agents that need full environment separation | Run agents inside Docker containers with volume mounts |
+| User/permission boundaries | Agents from different trust domains | Run agents under separate OS users with restricted permissions |
+| Network namespaces | Agents that make outbound network calls | Use container networking or VPN segmentation |
+
+### Preventing Workspace Contention
+
+- Set `max_concurrency=1` when an agent writes to a shared repository to prevent concurrent write conflicts.
+- Use `command_allowlist` to restrict agents to their intended CLI prefix (e.g., `codex` for Codex agents).
+- Never store secrets in working directories — use `env:` or `file:` secret references instead.
+
+## Secrets and Command Safety
+
+### No Secrets in Commands
+
+Never embed API keys, tokens, passwords, or other secrets directly in the `command` field. The command string is stored in the database and visible via the API. Use secret references instead:
+
+- **`env:ENV_VAR_NAME`** — resolves from the process environment at dispatch time
+- **`file:/path/to/secret`** — resolves from a file at dispatch time, restricted to allowed roots
+
+Example — **incorrect**:
+```
+command: "curl -H 'Authorization: Bearer sk-abc123' https://api.example.com"
+```
+
+Example — **correct**:
+```
+command: "curl -H 'Authorization: Bearer' $(cat /etc/flow/webhook-secret)"
+env_allowlist: "FLOW_API_KEY,WEBHOOK_SECRET"
+```
+
+Or, better yet, let the agent's own configuration read from the environment:
+
+```
+command: "codex exec --dangerously-bypass-approvals-and-sandbox -m gpt-5.5"
+env_allowlist: "OPENAI_API_KEY,FLOW_BASE_URL,FLOW_API_KEY"
+```
+
+The `env_allowlist` field controls which environment variables are passed to the subprocess. Keep it minimal — only include variables the agent actually needs.
+
+### Command Allowlist
+
+Set `command_allowlist` to the CLI prefix(es) the agent is allowed to execute. This prevents an agent from running arbitrary commands outside its intended scope:
+
+- `codex` → only commands starting with `codex`
+- `python,hermes` → commands starting with `python` or `hermes`
+- Empty → no restriction (use only for remote/MCP agents or when operators will set their own allowlist)
+
+See [Adapter Templates](AdapterTemplates.md) for the built-in template allowlists.
+
 ## Security Best Practices
 
 - Never use the `admin` role for automated agents unless there is no narrower role that satisfies the workflow.
@@ -112,6 +172,9 @@ The `dispatch_statuses` field controls which task states an agent can be auto-di
 - Set `max_concurrency` conservatively to avoid resource exhaustion, runaway subprocesses, or workspace contention.
 - Leave `dispatch_statuses` empty when an agent should only run through explicit dispatch or automation rules.
 - Rotate and reissue API keys when an adapter changes hands, environment, or trust boundary.
+- Never embed secrets in `command` — use `env:` or `file:` references and `env_allowlist` to pass credentials to subprocesses.
+- Set `command_allowlist` to restrict agents to their intended CLI prefix.
+- Isolate agent workspaces with `working_directory` and container boundaries when running multiple agents on the same host.
 
 ## Selection Checklist
 
@@ -123,6 +186,7 @@ The `dispatch_statuses` field controls which task states an agent can be auto-di
 
 ## See Also
 
-- [Security](Security.md) for the exact permission model and API key roles
+- [Security](Security.md) for the exact permission model, API key roles, and secret reference guidance
+- [Adapter Templates](AdapterTemplates.md) for built-in adapter presets with command allowlists
 - [MCP Interface](MCP.md) for agent connectivity and tool exposure
 - [Architecture](../Architecture.md) for lifecycle, invariants, and dispatch behavior

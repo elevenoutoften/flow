@@ -403,12 +403,14 @@ def _execute_spawn(session: Session, task: Task | None, action: dict) -> ActionR
     from .dispatcher import DispatchError, dispatch_one
 
     try:
+        explicit_api_key = resolve_secret(_first_present(action.get("api_key")) or "")
+        explicit_base_url = resolve_secret(_first_present(action.get("base_url")) or "")
         run = dispatch_one(
             session,
             agent,
             task,
-            api_key=resolve_secret(_first_present(action.get("api_key")) or ""),
-            base_url=resolve_secret(_first_present(action.get("base_url")) or ""),
+            api_key=explicit_api_key or None,
+            base_url=explicit_base_url or None,
         )
     except (DispatchError, SecretResolutionError) as exc:
         return ActionResult("spawn", False, str(exc), {"agent_id": agent.id})

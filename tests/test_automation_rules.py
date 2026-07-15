@@ -818,6 +818,39 @@ def test_rule_spawn_action_dispatches_agent_and_reports_failures(client, monkeyp
     assert "registered" in failure_result["message"]
 
 
+def test_rule_spawn_dispatch_without_api_key_mints_scoped_key(client, monkeypatch):
+    task = create_task(client)
+    agent = client.post(
+        "/api/agents",
+        json={"name": "automation-agent", "capabilities": "backend", "command": "echo hello"},
+    ).json()
+    captured = {}
+
+    def fake_popen(args, **kwargs):
+        captured["env"] = kwargs["env"]
+        return SimpleNamespace(pid=12345)
+
+    class NoopThread:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr("flow_app.dispatcher.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("flow_app.dispatcher.threading.Thread", NoopThread)
+    create_rule(client, actions=json.dumps([{"type": "spawn", "agent_id": agent["id"]}]))
+
+    response = client.post("/api/automation-rules/evaluate", json={"trigger": "task_created", "task_id": task["id"]})
+
+    result = response.json()["matches"][0]["action_results"][0]
+    api_keys = client.get("/api/api-keys").json()
+    assert result["success"] is True
+    assert captured["env"]["FLOW_API_KEY"].startswith("flow_")
+    assert captured["env"]["FLOW_BASE_URL"] == "http://0.0.0.0:8100"
+    assert any(key["name"].startswith("dispatch-run_") and key["role"] == "implementer" for key in api_keys)
+
+
 def test_rule_webhook_action_creates_delivery(client):
     task = create_task(client)
     webhook = client.post(

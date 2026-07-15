@@ -168,6 +168,7 @@ class AgentRun(Base):
     status: Mapped[str] = mapped_column(String(24), nullable=False, default="pending", index=True)
     pid: Mapped[int | None] = mapped_column(Integer, nullable=True)
     exit_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    scoped_key_id: Mapped[str | None] = mapped_column(String(32), nullable=True, default=None)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

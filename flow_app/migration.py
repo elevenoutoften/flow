@@ -59,6 +59,7 @@ def ensure_compatible_schema(engine) -> None:
                     status VARCHAR(24) NOT NULL DEFAULT 'pending',
                     pid INTEGER,
                     exit_code INTEGER,
+                    scoped_key_id VARCHAR(32),
                     started_at DATETIME,
                     finished_at DATETIME,
                     last_heartbeat_at DATETIME,
@@ -363,9 +364,12 @@ def ensure_compatible_schema(engine) -> None:
 
     if "agent_runs" in inspector.get_table_names():
         existing_agent_run_columns = {column["name"] for column in inspector.get_columns("agent_runs")}
-        if "workspace_state" not in existing_agent_run_columns:
+        if "workspace_state" not in existing_agent_run_columns or "scoped_key_id" not in existing_agent_run_columns:
             with engine.begin() as connection:
-                connection.execute(text("ALTER TABLE agent_runs ADD COLUMN workspace_state TEXT NOT NULL DEFAULT ''"))
+                if "scoped_key_id" not in existing_agent_run_columns:
+                    connection.execute(text("ALTER TABLE agent_runs ADD COLUMN scoped_key_id VARCHAR(32)"))
+                if "workspace_state" not in existing_agent_run_columns:
+                    connection.execute(text("ALTER TABLE agent_runs ADD COLUMN workspace_state TEXT NOT NULL DEFAULT ''"))
 
     if "webhook_configs" in inspector.get_table_names():
         existing_webhook_config_columns = {column["name"] for column in inspector.get_columns("webhook_configs")}

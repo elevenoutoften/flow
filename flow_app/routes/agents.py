@@ -264,7 +264,7 @@ def api_dispatch_agent(
                 agent_id,
                 task_id,
                 base_url=str(request.base_url).rstrip("/"),
-                api_key_value=request.headers.get("authorization", "").removeprefix("Bearer ").strip(),
+                api_key_value="",
             )
         except AgentNotFoundError as exc:
             metrics.inc("dispatch.error")

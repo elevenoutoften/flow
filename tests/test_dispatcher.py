@@ -3,15 +3,17 @@ from __future__ import annotations
 
 import json
 import sys
+from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from flow_app.database import Base, build_engine, build_session_factory
-from flow_app.dispatcher import DispatchError, _next_capable_task, dispatch_loop, dispatch_one
+from flow_app.dispatcher import DispatchError, _next_capable_task, complete_run, dispatch_loop, dispatch_one, stale_recovery
 from flow_app.main import create_app
-from flow_app.models import AgentRun, Task
+from flow_app.models import AgentApiKey, AgentRun, ApiKeyRole, Task, utcnow
 from flow_app.repository import create_agent as repo_create_agent
 from flow_app.repository import create_task as repo_create_task
 from flow_app.repository import create_task_link as repo_create_task_link
@@ -530,6 +532,128 @@ class TestCommandAllowlist:
 
 
 class TestAgentRunLifecycle:
+    def test_dispatch_one_mints_scoped_key_when_api_key_missing(self, tmp_path, monkeypatch):
+        db = _db(tmp_path)
+        captured = {}
+
+        def fake_popen(args, **kwargs):
+            captured["env"] = kwargs["env"]
+            return SimpleNamespace(pid=12345)
+
+        monkeypatch.setattr("flow_app.dispatcher.subprocess.Popen", fake_popen)
+        monkeypatch.setattr("flow_app.dispatcher.threading.Thread", _NoopThread)
+        try:
+            agent = repo_create_agent(db, AgentCreate(name="worker", command=_success_command()))
+            task = repo_create_task(db, TaskCreate(title="Mint key", status="todo"))
+
+            run = dispatch_one(db, agent, task, base_url="http://flow.test")
+
+            api_key = db.get(AgentApiKey, run.scoped_key_id)
+            assert api_key is not None
+            assert api_key.name == f"dispatch-{run.id}"
+            assert api_key.role == ApiKeyRole.implementer.value
+            assert api_key.revoked_at is None
+            assert captured["env"]["FLOW_API_KEY"].startswith("flow_")
+            assert captured["env"]["FLOW_API_KEY"] != ""
+            assert captured["env"]["FLOW_BASE_URL"] == "http://flow.test"
+        finally:
+            db.close()
+
+    def test_dispatch_one_uses_explicit_api_key_without_minting(self, tmp_path, monkeypatch):
+        db = _db(tmp_path)
+        captured = {}
+
+        def fake_popen(args, **kwargs):
+            captured["env"] = kwargs["env"]
+            return SimpleNamespace(pid=12345)
+
+        monkeypatch.setattr("flow_app.dispatcher.subprocess.Popen", fake_popen)
+        monkeypatch.setattr("flow_app.dispatcher.threading.Thread", _NoopThread)
+        try:
+            agent = repo_create_agent(db, AgentCreate(name="worker", command=_success_command()))
+            task = repo_create_task(db, TaskCreate(title="Explicit key", status="todo"))
+
+            run = dispatch_one(db, agent, task, api_key="explicit-key", base_url="http://flow.test")
+
+            assert run.scoped_key_id is None
+            assert captured["env"]["FLOW_API_KEY"] == "explicit-key"
+            assert db.scalars(select(AgentApiKey)).all() == []
+        finally:
+            db.close()
+
+    def test_complete_run_revokes_scoped_key(self, tmp_path, monkeypatch):
+        db = _db(tmp_path)
+
+        def fake_popen(args, **kwargs):
+            return SimpleNamespace(pid=12345)
+
+        monkeypatch.setattr("flow_app.dispatcher.subprocess.Popen", fake_popen)
+        monkeypatch.setattr("flow_app.dispatcher.threading.Thread", _NoopThread)
+        try:
+            agent = repo_create_agent(db, AgentCreate(name="worker", command=_success_command()))
+            task = repo_create_task(db, TaskCreate(title="Complete revokes", status="todo"))
+            run = dispatch_one(db, agent, task, base_url="http://flow.test")
+
+            complete_run(db, run, exit_code=0)
+
+            api_key = db.get(AgentApiKey, run.scoped_key_id)
+            assert api_key is not None
+            assert api_key.revoked_at is not None
+        finally:
+            db.close()
+
+    def test_stale_recovery_revokes_scoped_key(self, tmp_path, monkeypatch):
+        db = _db(tmp_path)
+
+        def fake_popen(args, **kwargs):
+            return SimpleNamespace(pid=12345)
+
+        monkeypatch.setattr("flow_app.dispatcher.subprocess.Popen", fake_popen)
+        monkeypatch.setattr("flow_app.dispatcher.threading.Thread", _NoopThread)
+        try:
+            agent = repo_create_agent(
+                db,
+                AgentCreate(name="worker", command=_success_command(), stale_claim_timeout_seconds=1),
+            )
+            task = repo_create_task(db, TaskCreate(title="Stale revokes", status="todo"))
+            run = dispatch_one(db, agent, task, base_url="http://flow.test")
+            run.last_heartbeat_at = utcnow() - timedelta(seconds=10)
+            db.flush()
+
+            recovered = stale_recovery(db)
+
+            api_key = db.get(AgentApiKey, run.scoped_key_id)
+            assert recovered == [run.id]
+            assert api_key is not None
+            assert api_key.revoked_at is not None
+        finally:
+            db.close()
+
+    def test_manual_dispatch_mints_key_instead_of_forwarding_bearer_token(self, tmp_path, monkeypatch):
+        captured = {}
+
+        def fake_popen(args, **kwargs):
+            captured["env"] = kwargs["env"]
+            return SimpleNamespace(pid=12345)
+
+        monkeypatch.setattr("flow_app.dispatcher.subprocess.Popen", fake_popen)
+        monkeypatch.setattr("flow_app.dispatcher.threading.Thread", _NoopThread)
+
+        with _client(tmp_path) as c:
+            agent = create_agent(c)
+            task = create_task(c)
+            caller_key = c.post("/api/api-keys", json={"name": "caller-admin", "role": "admin"}).json()["api_key"]
+
+            r = c.post(
+                f"/api/agents/{agent['id']}/dispatch",
+                params={"task_id": task["id"]},
+                headers={"Authorization": f"Bearer {caller_key}"},
+            )
+
+            assert r.status_code == 200, r.text
+            assert captured["env"]["FLOW_API_KEY"] != caller_key
+            assert captured["env"]["FLOW_API_KEY"].startswith("flow_")
+
     def test_dispatch_creates_run(self, tmp_path):
         with _client(tmp_path) as c:
             agent = create_agent(c)

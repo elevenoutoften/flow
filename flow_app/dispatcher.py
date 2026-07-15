@@ -28,12 +28,15 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .metrics import metrics
-from .models import Agent, AgentRun, Runner, RunnerLease, Task, utcnow
+from .config import get_settings
+from .models import Agent, AgentRun, ApiKeyRole, Runner, RunnerLease, Task, utcnow
 from .repository import (
     add_note,
+    create_agent_api_key,
     create_agent_run,
     find_capable_agents,
     get_agent_by_name,
+    get_agent_api_key,
     get_project,
     get_task,
     is_dispatch_ready,
@@ -41,9 +44,10 @@ from .repository import (
     list_tasks,
     list_workspace_configs,
     mark_run_workspace_cleaned,
+    revoke_agent_api_key,
     save_run_workspace_state,
 )
-from .schemas import TaskUpdate
+from .schemas import AgentApiKeyCreate, TaskUpdate
 from .repository import update_task
 from .storage_helpers import get_agent_dispatch_statuses, get_comma_list
 from .workspace import cleanup_workspace, provision_workspace
@@ -68,8 +72,8 @@ def dispatch_one(
     session: Session,
     agent: Agent,
     task: Task,
-    api_key: str,
-    base_url: str,
+    api_key: str | None = None,
+    base_url: str | None = None,
     session_factory: Callable[[], Session] | None = None,
 ) -> AgentRun:
     if not agent.enabled:
@@ -106,6 +110,11 @@ def dispatch_one(
     run.last_heartbeat_at = now
     run.updated_at = now
     command = _substitute_command(command_template, agent=agent, task=task, run=run)
+    env_api_key = (api_key or "").strip()
+    if not env_api_key:
+        key_id, env_api_key = _mint_scoped_key(session, run.id)
+        run.scoped_key_id = key_id
+    env_base_url = _dispatch_base_url(base_url)
 
     if agent.agent_type == "remote":
         logger.info(
@@ -119,12 +128,13 @@ def dispatch_one(
         session.flush()
         return run
 
-    env = _build_env(agent, task, run, api_key=api_key, base_url=base_url)
+    env = _build_env(agent, task, run, api_key=env_api_key, base_url=env_base_url)
     workspace = _provision_run_workspace(session, task, run)
     if workspace is not None and not workspace.ready:
         run.status = "crashed"
         run.finished_at = utcnow()
         run.updated_at = run.finished_at
+        _revoke_scoped_key(session, run)
         error_msg = workspace.error or "Workspace provisioning failed."
         add_note(session, task, f"Workspace provisioning failed for {agent.name}: {error_msg}", author="dispatcher")
         _cleanup_run_workspace(session, run)
@@ -147,6 +157,7 @@ def dispatch_one(
         run.status = "crashed"
         run.finished_at = utcnow()
         run.updated_at = run.finished_at
+        _revoke_scoped_key(session, run)
         add_note(session, task, f"Agent dispatch failed for {agent.name}: {exc}", author="dispatcher")
         if workspace is not None:
             _cleanup_run_workspace(session, run)
@@ -176,6 +187,7 @@ def complete_run(session: Session, run: AgentRun, exit_code: int) -> AgentRun:
     run.status = "done" if exit_code == 0 else "crashed"
     run.finished_at = utcnow()
     run.updated_at = run.finished_at
+    _revoke_scoped_key(session, run)
     if task is not None:
         if exit_code == 0:
             add_note(session, task, f"Agent run {run.id} completed successfully.", author="dispatcher")
@@ -212,7 +224,9 @@ def stale_recovery(session: Session) -> list[str]:
             continue
         task = session.get(Task, run.task_id)
         run.status = "stale"
+        run.finished_at = now
         run.updated_at = now
+        _revoke_scoped_key(session, run)
         if task is not None:
             if task.status == "doing":
                 task.status = "todo"
@@ -244,6 +258,7 @@ def stale_recovery(session: Session) -> list[str]:
             run.status = "stale"
             run.finished_at = now
             run.updated_at = now
+            _revoke_scoped_key(session, run)
             session.add(run)
             recovered.append(run.id)
         session.add(lease)
@@ -267,10 +282,10 @@ def stale_recovery(session: Session) -> list[str]:
 def dispatch_loop(
     session: Session,
     agent_name: str,
-    api_key: str,
-    base_url: str,
-    continuous: bool,
-    interval: float,
+    api_key: str | None = None,
+    base_url: str | None = None,
+    continuous: bool = False,
+    interval: float = 5.0,
     session_factory: Callable[[], Session] | None = None,
 ) -> list[AgentRun]:
     agent = get_agent_by_name(session, agent_name)
@@ -281,7 +296,9 @@ def dispatch_loop(
     while True:
         task = _next_capable_task(session, agent)
         if task is not None:
-            dispatched.append(dispatch_one(session, agent, task, api_key, base_url, session_factory=session_factory))
+            dispatched.append(
+                dispatch_one(session, agent, task, api_key=api_key, base_url=base_url, session_factory=session_factory)
+            )
             session.commit()
         if not continuous:
             return dispatched
@@ -318,6 +335,40 @@ def _build_env(agent: Agent, task: Task, run: AgentRun, *, api_key: str, base_ur
         }
     )
     return env
+
+
+def _mint_scoped_key(session: Session, run_id: str) -> tuple[str, str]:
+    """Mint an implementer-scoped API key for a dispatch run.
+
+    Returns (api_key_id, raw_key).
+    """
+    api_key, raw_key = create_agent_api_key(
+        session,
+        AgentApiKeyCreate(
+            name=f"dispatch-{run_id}",
+            role=ApiKeyRole.implementer,
+            description=f"Auto-minted for run {run_id}",
+        ),
+    )
+    return api_key.id, raw_key
+
+
+def _dispatch_base_url(base_url: str | None) -> str:
+    cleaned = (base_url or "").strip().rstrip("/")
+    if cleaned:
+        return cleaned
+    settings = get_settings()
+    if settings.public_url:
+        return settings.public_url
+    return f"http://{settings.host}:{settings.port}"
+
+
+def _revoke_scoped_key(session: Session, run: AgentRun) -> None:
+    if not run.scoped_key_id:
+        return
+    api_key = get_agent_api_key(session, run.scoped_key_id)
+    if api_key is not None:
+        revoke_agent_api_key(session, api_key)
 
 
 def _provision_run_workspace(session: Session, task: Task, run: AgentRun):

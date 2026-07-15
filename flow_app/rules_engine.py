@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
+import logging
 from typing import Any
 
 from sqlalchemy import select
@@ -43,6 +44,7 @@ CONDITION_FIELDS = {
 CONDITION_OPERATORS = {"eq", "ne", "in", "not_in", "contains", "gt", "lt", "gte", "lte", "exists", "not_exists"}
 TRIGGERS = {"task_created", "task_moved", "task_claimed", "task_completed", "task_blocked", "cron"}
 _notify_provider: RulesNotifyProvider | None = None
+_logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -249,11 +251,13 @@ def match_rules(
         try:
             conditions = json.loads(rule.conditions) if rule.conditions else []
         except (json.JSONDecodeError, TypeError):
+            _logger.warning("Rule %s (%s) has malformed conditions JSON, skipping.", rule.id, rule.name)
             continue
         if evaluate_conditions(conditions, task_data):
             try:
                 actions = json.loads(rule.actions) if rule.actions else []
             except (json.JSONDecodeError, TypeError):
+                _logger.warning("Rule %s (%s) has malformed actions JSON, skipping.", rule.id, rule.name)
                 continue
             results.append(
                 MatchResult(

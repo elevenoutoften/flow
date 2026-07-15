@@ -1454,6 +1454,7 @@ class AutomationRuleResponse(BaseModel):
     last_run_at: datetime | None
     created_at: datetime
     updated_at: datetime
+    broken: bool = False
 
 
 class AutomationEvent(BaseModel):

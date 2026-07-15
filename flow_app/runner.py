@@ -10,7 +10,7 @@ import time
 from collections.abc import Callable
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import select, update as sqlalchemy_update
 from sqlalchemy.orm import Session
 
 from .cron import cron_field_matches, cron_string_matches
@@ -255,8 +255,27 @@ def dry_run_automation_rules(
     for rule in rules:
         if trigger == "cron" and not _cron_config_matches(rule.trigger_config, now):
             continue
-        if not dry_run and trigger == "cron" and rule.last_run_at is not None and _same_minute(rule.last_run_at, now):
-            continue
+        if not dry_run and trigger == "cron":
+            # Atomic dedupe: only proceed if last_run_at is absent or before
+            # the current minute. This prevents two runner instances (or an
+            # embedded worker + external runner) from double-firing the same
+            # cron rule in the same minute.
+            minute_start = now.replace(second=0, microsecond=0)
+            result = session.execute(
+                sqlalchemy_update(AutomationRule)
+                .where(
+                    AutomationRule.id == rule.id,
+                    AutomationRule.enabled == 1,
+                )
+                .where(
+                    (AutomationRule.last_run_at.is_(None))
+                    | (AutomationRule.last_run_at < minute_start)
+                )
+                .values(last_run_at=now)
+            )
+            if (result.rowcount or 0) == 0:
+                continue
+            session.expire(rule)
         evaluated_rules += 1
         conditions = _parse_rule_array(rule.conditions)
         if conditions is not None:
@@ -275,9 +294,22 @@ def dry_run_automation_rules(
         rule_matches = _evaluate_scheduled_rule(session, rule, trigger=trigger, dry_run=dry_run)
         matches.extend(rule_matches)
         if not dry_run:
-            rule.last_run_at = now
-            session.add(rule)
-            session.flush()
+            all_succeeded = all(m.skip_reason == "" for m in rule_matches)
+            if trigger == "cron":
+                # Cron already stamped last_run_at atomically above.
+                # If actions failed, clear it so the rule retries next pass.
+                if not all_succeeded:
+                    rule = session.get(AutomationRule, rule.id)
+                    if rule:
+                        rule.last_run_at = None
+                        session.add(rule)
+                        session.flush()
+            else:
+                # Non-cron: stamp last_run_at only if all actions succeeded.
+                if all_succeeded:
+                    rule.last_run_at = now
+                    session.add(rule)
+                    session.flush()
 
     return {
         "evaluated_rules": evaluated_rules,

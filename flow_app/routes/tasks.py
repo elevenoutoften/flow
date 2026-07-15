@@ -28,6 +28,7 @@ from ..repository import (
     serialize_task_list,
 )
 from ..realtime import publish_board_event
+from ..rules_engine import emit_event
 from ..schemas import (
     MarkdownImportCommitRequest,
     MarkdownImportCommitResponse,
@@ -145,7 +146,11 @@ def api_commit_markdown_import(
 
         _commit(db)
         for task in created_tasks:
+            # Emit task_created events so automation rules/webhooks fire
+            # for imported tasks, same as tasks created via the API.
+            emit_event(db, "task_created", task_id=task.id, data={"task_id": task.id, "project": task.project})
             publish_board_event("task_created", task, import_batch_id=batch_id)
+        _commit(db)
         return MarkdownImportCommitResponse(import_batch_id=batch_id, created=created, skipped=skipped)
 
 @router.get("/tasks/next", response_model=TaskResponse)

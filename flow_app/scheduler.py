@@ -124,6 +124,10 @@ def materialize_due_templates(
 
 def _materialize_one(session: Session, template: RecurringTaskTemplate, now: datetime) -> MaterializationResult:
     """Materialize a single template into a task and advance next_run_at."""
+    # Compute the next run from the previous next_run_at, not from now.
+    # This prevents scheduler drift: a 09:00 daily task that runs at 09:01
+    # should still schedule the next run for 09:00 tomorrow, not 09:01.
+    scheduled_at = _ensure_aware(template.next_run_at)
     try:
         task = create_task(
             session,
@@ -148,7 +152,7 @@ def _materialize_one(session: Session, template: RecurringTaskTemplate, now: dat
         update_recurring_task_template(
             session,
             template,
-            RecurringTaskTemplateUpdate(next_run_at=compute_next_run(template.cadence, now)),
+            RecurringTaskTemplateUpdate(next_run_at=compute_next_run(template.cadence, scheduled_at)),
         )
         add_note(
             session,

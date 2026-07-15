@@ -817,7 +817,20 @@ def serialize_automation_rule(rule: AutomationRule) -> AutomationRuleResponse:
         last_run_at=_ensure_optional_datetime(rule.last_run_at),
         created_at=_ensure_datetime(rule.created_at),
         updated_at=_ensure_datetime(rule.updated_at),
+        broken=_is_rule_broken(rule),
     )
+
+
+def _is_rule_broken(rule: AutomationRule) -> bool:
+    """Check if a rule has malformed conditions or actions JSON."""
+    for field in (rule.conditions, rule.actions):
+        if not field:
+            continue
+        try:
+            json.loads(field)
+        except (json.JSONDecodeError, TypeError):
+            return True
+    return False
 
 
 def _redact_automation_actions(actions: str) -> str:

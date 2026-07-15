@@ -93,7 +93,10 @@ def test_materialize_due_template(client):
         assert created.description.endswith(f"Created from recurring template {template['id']} ({template['name']}).")
 
         updated = get_recurring_task_template(db, template["id"])
-        assert updated.next_run_at.replace(tzinfo=timezone.utc) == NOW + timedelta(days=1)
+        # next_run_at is computed from the previous next_run_at (NOW - 1min),
+        # not from NOW, to prevent scheduler drift.
+        prev_next_run = NOW - timedelta(minutes=1)
+        assert updated.next_run_at.replace(tzinfo=timezone.utc) == prev_next_run + timedelta(days=1)
 
 
 def test_materialize_skips_not_due(client):

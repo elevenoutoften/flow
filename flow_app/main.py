@@ -7,7 +7,7 @@ import logging
 import os
 from pathlib import Path
 
-from fastapi import FastAPI, Header, Request, status
+from fastapi import FastAPI, Header, HTTPException, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
@@ -17,7 +17,7 @@ from sqlalchemy import text
 from .config import FlowSettings, get_settings
 from .database import Base, build_engine, build_session_factory, default_database_url
 from .dispatcher import set_session_factory
-from .mcp import JsonRpcError, error_response, exception_response, handle_mcp_message
+from .mcp import READ_ONLY_TOOLS, JsonRpcError, error_response, exception_response, handle_mcp_message
 from .migration import ensure_compatible_schema
 from .metrics import metrics
 from .repository import ensure_project
@@ -244,6 +244,20 @@ def create_app(
                 session_cookie=request.cookies.get(SESSION_COOKIE_NAME),
                 session_secret=request.app.state.settings.session_secret or None,
             )
+            method = payload.get("method", "") if isinstance(payload, dict) else ""
+            if method == "tools/call":
+                tool_name = payload.get("params", {}).get("name", "")
+                if tool_name not in READ_ONLY_TOOLS:
+                    from .ratelimit import client_ip, mutation_limiter
+
+                    key = actor.key_id if actor and actor.key_id else client_ip(request)
+                    try:
+                        mutation_limiter.check(key, request.app.state.settings.rate_limit_mutations)
+                    except HTTPException:
+                        return JSONResponse(
+                            error_response(request_id, JsonRpcError(-32600, "Rate limit exceeded. Try again later.")),
+                            status_code=429,
+                        )
             response_payload = handle_mcp_message(db, payload, actor)
         except JsonRpcError as exc:
             response_payload = error_response(request_id, exc)

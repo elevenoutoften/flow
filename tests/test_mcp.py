@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 import logging
 
 from flow_app.mcp import dispatch
+from flow_app.ratelimit import mutation_limiter
 
 
 def rpc(client, method, params=None, request_id=1):
@@ -30,6 +32,11 @@ def create_task(client, **overrides):
 
 def bearer_headers(api_key: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {api_key}"}
+
+
+def _set_mutation_limit(client, limit: int) -> None:
+    client.app.state.settings = replace(client.app.state.settings, rate_limit_mutations=limit)
+    mutation_limiter.reset()
 
 
 def create_mcp_webhook(client, **overrides):
@@ -388,6 +395,57 @@ def test_mcp_read_only_call_cannot_create_task(client, no_auth_client):
     error = response.json()["error"]
     assert error["code"] == -32603
     assert "tasks:create" in error["message"]
+
+
+def test_mcp_mutating_tool_calls_are_rate_limited_per_actor_key(client):
+    key = client.post("/api/api-keys", json={"name": "mcp-admin", "role": "admin"}).json()["api_key"]
+    headers = bearer_headers(key)
+    _set_mutation_limit(client, 2)
+
+    for index in range(2):
+        response = client.post(
+            "/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": index + 1,
+                "method": "tools/call",
+                "params": {"name": "flow_create_task", "arguments": {"title": f"Limited MCP task {index}"}},
+            },
+            headers=headers,
+        )
+        assert response.status_code == 200, response.text
+
+    blocked = client.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {"name": "flow_create_task", "arguments": {"title": "Blocked MCP task"}},
+        },
+        headers=headers,
+    )
+
+    assert blocked.status_code == 429
+    body = blocked.json()
+    assert body["error"]["code"] == -32600
+    assert body["error"]["message"] == "Rate limit exceeded. Try again later."
+    assert "result" not in body
+
+
+def test_mcp_read_only_tool_calls_bypass_mutation_limit(client):
+    create_task(client, title="Readable MCP task")
+    _set_mutation_limit(client, 1)
+
+    for request_id in range(1, 4):
+        response = rpc(
+            client,
+            "tools/call",
+            {"name": "flow_list_tasks", "arguments": {"project": "default"}},
+            request_id=request_id,
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["result"]["structuredContent"]["total"] == 1
 
 
 def test_mcp_flow_update_task_updates_task(client):

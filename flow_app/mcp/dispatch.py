@@ -153,6 +153,32 @@ _webhook_notifier = WebhookNotificationProvider()
 _telegram_notifier = TelegramNotificationProvider()
 _discord_notifier = DiscordNotificationProvider()
 
+READ_ONLY_TOOLS = {
+    "flow_list_tasks",
+    "flow_get_task",
+    "flow_get_dependencies",
+    "flow_list_task_links",
+    "flow_get_task_handoffs",
+    "flow_board_summary",
+    "flow_list_audit_logs",
+    "flow_list_ideas",
+    "flow_list_recurring_task_templates",
+    "flow_get_recurring_task_template",
+    "flow_list_agents",
+    "flow_list_adapter_templates",
+    "flow_get_adapter_template",
+    "flow_preview_adapter_template",
+    "flow_get_agent",
+    "flow_list_runners",
+    "flow_get_runner",
+    "flow_list_webhooks",
+    "flow_get_webhook",
+    "flow_list_webhook_deliveries",
+    "flow_get_webhook_delivery",
+    "flow_list_workspace_configs",
+    "flow_get_workspace_config",
+}
+
 
 def _commit(db: Session) -> None:
     try:

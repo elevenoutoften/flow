@@ -15,6 +15,8 @@ from ..models import Agent, AgentRun, RunnerLease, Task, utcnow
 from ..metrics import metrics
 from ..ratelimit import require_mutation_limit
 from ..repository import (
+    cas_update_task,
+    claim_task_atomically,
     count_runners,
     create_agent_run,
     create_runner,
@@ -23,6 +25,7 @@ from ..repository import (
     get_agent_by_name,
     get_runner,
     get_runner_lease,
+    get_task,
     is_dispatch_ready,
     list_agent_runs,
     list_runners,
@@ -243,10 +246,14 @@ def api_poll_runner(
         response.status_code = status.HTTP_204_NO_CONTENT
         return None
 
-    task.assignee = agent.name
-    task.status = "doing"
-    task.updated_at = now
-    db.add(task)
+    # Atomically claim the task — prevents double-claim when concurrent
+    # runner passes or a dispatcher/API claim targets the same task.
+    expected_version = task.version
+    if not claim_task_atomically(db, task.id, expected_version, agent.name, "doing"):
+        _commit(db)
+        response.status_code = status.HTTP_204_NO_CONTENT
+        return None
+    task = get_task(db, task.id)
     run = create_agent_run(db, agent_id=agent.id, task_id=task.id, status="running")
     run.started_at = now
     run.last_heartbeat_at = now

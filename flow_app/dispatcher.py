@@ -32,6 +32,8 @@ from .config import get_settings
 from .models import Agent, AgentRun, ApiKeyRole, Runner, RunnerLease, Task, utcnow
 from .repository import (
     add_note,
+    cas_update_task,
+    claim_task_atomically,
     create_agent_api_key,
     create_agent_run,
     find_capable_agents,
@@ -99,10 +101,13 @@ def dispatch_one(
         if not any(command.strip().startswith(prefix) for prefix in allowed):
             raise DispatchError(f"Command not in allowlist for agent {agent.name}: {command.strip()[:80]}")
 
-    task.assignee = agent.name
-    if task.status in {"backlog", "todo"}:
-        task.status = "doing"
-    update_task(session, task, TaskUpdate())
+    # Atomically claim the task — prevents double-claim when concurrent
+    # dispatcher passes or a runner racing an API /claim target the same task.
+    expected_version = task.version
+    target_status = "doing" if task.status in {"backlog", "todo"} else task.status
+    if not claim_task_atomically(session, task.id, expected_version, agent.name, target_status):
+        raise DispatchError(f"Task {task.id} was concurrently claimed by another agent.")
+    task = get_task(session, task.id)
 
     run = create_agent_run(session, agent_id=agent.id, task_id=task.id, status="running")
     now = utcnow()

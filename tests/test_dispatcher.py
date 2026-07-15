@@ -654,6 +654,35 @@ class TestAgentRunLifecycle:
             assert captured["env"]["FLOW_API_KEY"] != caller_key
             assert captured["env"]["FLOW_API_KEY"].startswith("flow_")
 
+    def test_dispatch_one_atomic_claim_prevents_double_claim(self, tmp_path, monkeypatch):
+        """Two concurrent dispatch_one calls on the same task — only one wins."""
+        db = _db(tmp_path)
+
+        def fake_popen(args, **kwargs):
+            return SimpleNamespace(pid=12345)
+
+        monkeypatch.setattr("flow_app.dispatcher.subprocess.Popen", fake_popen)
+        monkeypatch.setattr("flow_app.dispatcher.threading.Thread", _NoopThread)
+        try:
+            agent1 = repo_create_agent(db, AgentCreate(name="agent-a", command=_success_command()))
+            agent2 = repo_create_agent(db, AgentCreate(name="agent-b", command=_success_command()))
+            task = repo_create_task(db, TaskCreate(title="Race task", status="todo"))
+
+            # First dispatch succeeds
+            run1 = dispatch_one(db, agent1, task, base_url="http://flow.test")
+            db.commit()
+            assert run1.agent_id == agent1.id
+
+            # Re-fetch task — it now has an assignee and bumped version
+            task = db.get(Task, task.id)
+            assert task.assignee == "agent-a"
+
+            # Second dispatch on the same task must fail (already claimed)
+            with pytest.raises(DispatchError, match="already claimed"):
+                dispatch_one(db, agent2, task, base_url="http://flow.test")
+        finally:
+            db.close()
+
     def test_dispatch_creates_run(self, tmp_path):
         with _client(tmp_path) as c:
             agent = create_agent(c)

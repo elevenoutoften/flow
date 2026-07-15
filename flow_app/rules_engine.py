@@ -14,6 +14,7 @@ from .models import ApiKeyRole, AutomationRule, Task, WebhookDelivery, utcnow
 from .notifications import RulesNotifyProvider
 from .repository import (
     add_note,
+    cas_update_task,
     get_agent,
     get_agent_by_name,
     get_task,
@@ -338,6 +339,7 @@ def _execute_claim(session: Session, task: Task | None, action: dict, actor: Act
         return ActionResult("claim", False, "Assignee is required for claim action.")
     if task.assignee:
         return ActionResult("claim", False, f"Task is already claimed by {task.assignee}.")
+    target_status = task.status
     if task.status in {"backlog", "todo"}:
         if not is_valid_transition(actor, task.status, "doing"):
             return ActionResult(
@@ -345,9 +347,17 @@ def _execute_claim(session: Session, task: Task | None, action: dict, actor: Act
                 False,
                 f"Role '{actor.role.value}' cannot move task from {task.status} to doing.",
             )
-        task.status = "doing"
-    task.assignee = assignee
-    update_task(session, task, TaskUpdate())
+        target_status = "doing"
+    # Use CAS to prevent double-claim when concurrent rule evaluations or
+    # a racing dispatcher/runner target the same task.
+    if not cas_update_task(
+        session,
+        task.id,
+        task.version,
+        {"assignee": assignee, "claimer_key_id": actor.key_id, "status": target_status},
+    ):
+        return ActionResult("claim", False, "Task was concurrently modified by another agent.")
+    task = get_task(session, task.id)
     return ActionResult("claim", True, f"Task claimed by {assignee}.", {"assignee": assignee, "status": task.status})
 
 
@@ -370,8 +380,10 @@ def _execute_move(session: Session, task: Task | None, action: dict, actor: Acto
         )
 
     old_status = task.status
-    task.status = target_status
-    update_task(session, task, TaskUpdate())
+    # Use CAS to prevent concurrent modification from winning over a stale read.
+    if not cas_update_task(session, task.id, task.version, {"status": target_status}):
+        return ActionResult("move", False, "Task was concurrently modified by another agent.")
+    task = get_task(session, task.id)
     return ActionResult(
         "move",
         True,
@@ -413,9 +425,8 @@ def _execute_spawn(session: Session, task: Task | None, action: dict) -> ActionR
     if not agent.enabled:
         return ActionResult("spawn", False, f"Agent is disabled: {agent.name}.")
     if task.status == "review" and task.assignee and task.assignee != agent.name:
-        task.assignee = None
-        task.claimer_key_id = None
-        update_task(session, task, TaskUpdate())
+        cas_update_task(session, task.id, task.version, {"assignee": None, "claimer_key_id": None})
+        task = get_task(session, task.id)
 
     from .dispatcher import DispatchError, dispatch_one
 

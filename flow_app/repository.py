@@ -1749,7 +1749,49 @@ def cas_update_task(session: Session, task_id: str, expected_version: int, updat
         .values(**changes)
     )
     session.flush()
-    session.expire_all()
+    # Narrow expire from expire_all() to just this task — expire_all invalidates
+    # every cached object in the session, causing unnecessary re-fetches on
+    # unrelated tasks/agents during dispatch and rule execution.
+    task = session.get(Task, task_id)
+    if task is not None:
+        session.expire(task)
+    return (result.rowcount or 0) > 0
+
+
+def claim_task_atomically(
+    session: Session,
+    task_id: str,
+    expected_version: int,
+    assignee: str,
+    target_status: str | None = None,
+) -> bool:
+    """Atomically claim a task via conditional UPDATE.
+
+    Uses UPDATE ... WHERE assignee IS NULL AND version = expected_version
+    so exactly one claimant wins when multiple dispatchers/runner passes
+    race for the same task. Losers get rowcount=0 and must skip gracefully.
+    """
+    updates: dict[str, object] = {
+        "assignee": assignee,
+        "claimer_key_id": None,
+        "updated_at": utcnow(),
+        "version": expected_version + 1,
+    }
+    if target_status is not None:
+        updates["status"] = target_status
+    result = session.execute(
+        sqlalchemy_update(Task)
+        .where(
+            Task.id == task_id,
+            Task.version == expected_version,
+            Task.assignee.is_(None),
+        )
+        .values(**updates)
+    )
+    session.flush()
+    task = session.get(Task, task_id)
+    if task is not None:
+        session.expire(task)
     return (result.rowcount or 0) > 0
 
 

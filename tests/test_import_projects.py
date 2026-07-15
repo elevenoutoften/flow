@@ -9,7 +9,7 @@ def test_project_crud(client):
         json={
             "slug": "flow",
             "name": "Flow",
-            "repo_url": "https://github.com/elevenoutften/flow",
+            "repo_url": "https://github.com/elevenoutoften/flow",
             "repo_path": "/var/lib/flow",
             "default_branch": "main",
         },
@@ -23,13 +23,13 @@ def test_project_crud(client):
         "/api/projects/flow",
         json={
             "description": "Operator UI work",
-            "repo_url": "https://github.com/elevenoutften/flow/tree/main/site",
+            "repo_url": "https://github.com/elevenoutoften/flow/tree/main/site",
             "repo_path": "/var/lib/flow/site",
         },
     )
     assert patched.status_code == 200
     assert patched.json()["description"] == "Operator UI work"
-    assert patched.json()["repo_url"] == "https://github.com/elevenoutften/flow/tree/main/site"
+    assert patched.json()["repo_url"] == "https://github.com/elevenoutoften/flow/tree/main/site"
     assert patched.json()["repo_path"] == "/var/lib/flow/site"
 
     listed = client.get("/api/projects").json()

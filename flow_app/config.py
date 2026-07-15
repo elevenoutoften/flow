@@ -100,6 +100,7 @@ class FlowSettings:
     rate_limit_enabled: bool = True
     rate_limit_key_creation: int = 10
     rate_limit_mutations: int = 120
+    public_board: bool = False
 
     @property
     def session_cookie_enabled(self) -> bool:
@@ -144,6 +145,7 @@ def get_settings() -> FlowSettings:
         rate_limit_enabled=_env_bool("FLOW_RATE_LIMIT_ENABLED", default=True),
         rate_limit_key_creation=_env_int("FLOW_RATE_LIMIT_KEY_CREATION", 10),
         rate_limit_mutations=_env_int("FLOW_RATE_LIMIT_MUTATIONS", 120),
+        public_board=_env_bool("FLOW_PUBLIC_BOARD", default=False),
     )
     return _settings_cache
 

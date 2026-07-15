@@ -75,6 +75,35 @@ def board(
     x_axis_user: str | None = Header(default=None),
     x_axis_agent: str | None = Header(default=None),
 ):
+    actor = _resolve_web_actor(request, db, authorization, x_axis_admin, x_axis_user, x_axis_agent)
+    public_board = request.app.state.settings.public_board
+
+    # Gate board data on a resolved actor unless FLOW_PUBLIC_BOARD=true.
+    # Unauthenticated visitors get the login shell, not task data.
+    if actor is None and not public_board:
+        response = templates.TemplateResponse(
+            request,
+            "board.html",
+            {
+                "columns": STATUSES,
+                "projects": [],
+                "selected_project": "",
+                "tasks_by_status": {status_name: [] for status_name in STATUSES},
+                "dependencies_by_task": {},
+                "dependency_edges": [],
+                "task_count": 0,
+                "human_required_count": 0,
+                "unclaimed_count": 0,
+                "counts_by_project": {},
+                "can_set_human_required": False,
+                "actor": None,
+                "default_project": request.app.state.settings.default_project,
+                "theme": request.app.state.settings.theme,
+                "asset_version": FLOW_VERSION,
+            },
+        )
+        return response
+
     projects = list_projects(db)
     selected_project = project.strip() if project else ""
     tasks = list_tasks(db, project=selected_project or None)
@@ -99,7 +128,6 @@ def board(
             for child in summary.child_tasks
         }
     )
-    actor = _resolve_web_actor(request, db, authorization, x_axis_admin, x_axis_user, x_axis_agent)
     can_set_human_required = actor is not None and has_permission(actor, Permission.TASKS_SET_HUMAN_REQUIRED)
     response = templates.TemplateResponse(
         request,

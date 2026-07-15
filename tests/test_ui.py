@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from fastapi.testclient import TestClient
+
 
 def test_board_renders_columns_and_create_form(client):
     response = client.get("/")
@@ -386,3 +388,45 @@ def test_settings_selects_are_upgraded_to_flow2_dropdowns():
     assert "enhanceSelects(document)" in script
     assert "select.form-input" in script
     assert "flow-select-trigger" in script
+
+
+def test_board_gates_data_on_unauthenticated_visitor(no_auth_client):
+    """Without auth and without FLOW_PUBLIC_BOARD, the board renders the shell
+    but no task data."""
+    response = no_auth_client.get("/")
+    assert response.status_code == 200
+    html = response.text
+    # Board shell renders (columns exist) but no task cards
+    for column in ["backlog", "todo", "doing", "review", "done"]:
+        assert f'data-column="{column}"' in html
+    # No task data — task_count is 0
+    assert "data-task-id" not in html
+    assert 'data-id="flow_' not in html
+
+
+def test_board_shows_data_with_public_board_flag(tmp_path):
+    """With FLOW_PUBLIC_BOARD=true, unauthenticated visitors see task data."""
+    import os
+    from dataclasses import replace
+    from flow_app.config import FlowSettings, get_settings, reset_settings_cache
+    os.environ["FLOW_PUBLIC_BOARD"] = "true"
+    reset_settings_cache()
+    try:
+        db_url = f"sqlite:///{tmp_path / 'flow-public.sqlite'}"
+        base_settings = get_settings()
+        settings = replace(base_settings, public_board=True, trusted_headers=True)
+        from flow_app.main import create_app
+        app = create_app(db_url, settings=settings)
+        with TestClient(app) as c:
+            # Create a task first (needs auth via API — use admin headers)
+            c.headers.update({"X-Axis-Admin": "1", "X-Axis-User": "admin"})
+            r = c.post("/api/tasks", json={"title": "Public task", "status": "todo"})
+            assert r.status_code == 201
+            # Now view board without auth headers
+            c.headers.clear()
+            response = c.get("/")
+            assert response.status_code == 200
+            assert "data-task-id" in response.text or 'data-id="flow_' in response.text
+    finally:
+        del os.environ["FLOW_PUBLIC_BOARD"]
+        reset_settings_cache()

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -14,6 +16,13 @@ ADMIN_HEADERS = {"X-Axis-Admin": "1", "X-Axis-User": "test-admin"}
 
 @pytest.fixture(autouse=True)
 def _reset_settings():
+    # Isolate FLOW_* env vars so the user's environment doesn't leak into tests.
+    # This fixes test_dogfood_e2e.py failures where FLOW_BASE_URL from the
+    # user's shell causes the test to hit a real server instead of the test app.
+    _saved_env: dict[str, str] = {}
+    for key in list(os.environ):
+        if key.startswith("FLOW_"):
+            _saved_env[key] = os.environ.pop(key)
     reset_settings_cache()
     metrics.reset()
     auth_limiter.reset()
@@ -25,6 +34,8 @@ def _reset_settings():
     key_creation_limiter.reset()
     mutation_limiter.reset()
     reset_settings_cache()
+    # Restore env vars after tests
+    os.environ.update(_saved_env)
 
 
 @pytest.fixture()

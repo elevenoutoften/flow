@@ -15,6 +15,7 @@ venv/
 # Testing
 .pytest_cache/
 .pytest-tmp/
+.pytest-tmp-*/
 htmlcov/
 .coverage
 

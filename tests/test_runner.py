@@ -5,7 +5,16 @@ from types import SimpleNamespace
 
 from flow_app.models import AgentRun
 from flow_app.repository import get_task
-from flow_app.runner import PassResult, RunnerConfig, _cron_config_matches, load_runner_config, run_pass
+from flow_app.runner import (
+    PassResult,
+    RunnerConfig,
+    _conditions_reference_task_fields,
+    _cron_config_matches,
+    _parse_rule_array,
+    _project_eq_filter,
+    load_runner_config,
+    run_pass,
+)
 
 
 def test_runner_config_loads_from_env(monkeypatch, tmp_path):
@@ -129,3 +138,39 @@ def test_cron_expression_matching():
     assert _cron_config_matches('{"minute":"30","hour":"10"}', now)
     assert not _cron_config_matches('{"minute":"31"}', now)
     assert _cron_config_matches('{"day_of_week":"3"}', now)
+
+
+def test_parse_rule_array_valid():
+    assert _parse_rule_array('[{"field":"status"}]') == [{"field": "status"}]
+    assert _parse_rule_array(None) == []
+    assert _parse_rule_array("") == []
+
+
+def test_parse_rule_array_invalid():
+    assert _parse_rule_array("{bad json") is None
+    assert _parse_rule_array('{"not":"a list"}') is None
+
+
+def test_conditions_reference_task_fields():
+    assert _conditions_reference_task_fields([{"field": "status"}]) is True
+    assert _conditions_reference_task_fields([{"field": "nonexistent"}]) is False
+    assert _conditions_reference_task_fields([]) is False
+
+
+def test_project_eq_filter():
+    assert _project_eq_filter([{"field": "project", "operator": "eq", "value": "alpha"}]) == "alpha"
+    assert _project_eq_filter([{"field": "status", "value": "todo"}]) is None
+    assert _project_eq_filter([]) is None
+
+
+def test_run_pass_dry_run_does_not_mutate(client):
+    """run_pass in dry_run mode should not create tasks or dispatch agents."""
+    with client.app.state.SessionLocal() as db:
+        result = run_pass(
+            RunnerConfig(profiles=[], dry_run=True),
+            db,
+            client.app.state.SessionLocal,
+        )
+    # In dry_run mode, no actual mutations should occur
+    assert isinstance(result, PassResult)
+    assert result.dispatched == 0

@@ -216,6 +216,19 @@ def heartbeat_run(session: Session, run: AgentRun) -> AgentRun:
     return run
 
 
+def _is_process_alive(pid: int | None) -> bool:
+    """Check if a process with the given PID is still running."""
+    if pid is None or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+    except OSError:
+        return False
+
+
 def stale_recovery(session: Session) -> list[str]:
     recovered: list[str] = []
     now = utcnow()
@@ -227,6 +240,23 @@ def stale_recovery(session: Session) -> list[str]:
             heartbeat = heartbeat.replace(tzinfo=now.tzinfo)
         if heartbeat and now - heartbeat <= timedelta(seconds=timeout):
             continue
+
+        # Before recovering a local run, check process liveness.
+        # If the process is still alive, the run is live-but-silent —
+        # escalate (mark heartbeat-overdue) rather than yanking the worktree
+        # out from under the running subprocess.
+        if _is_process_alive(run.pid):
+            logger.warning(
+                "Run %s has stale heartbeat but process %s is still alive; "
+                "marking heartbeat-overdue instead of recovering.",
+                run.id,
+                run.pid,
+            )
+            run.last_heartbeat_at = now  # give grace period before next check
+            run.updated_at = now
+            session.add(run)
+            continue
+
         task = session.get(Task, run.task_id)
         run.status = "stale"
         run.finished_at = now
@@ -467,11 +497,19 @@ def _resolve_session_factory(session_factory: Callable[[], Session] | None = Non
 
 def _monitor_process(run_id: str, process: subprocess.Popen, session_factory: Callable[[], Session]) -> None:
     """Monitor a spawned process and auto-complete the run when it exits."""
+    exit_code: int | None = None
     try:
         while process.poll() is None:
             time.sleep(5)
         exit_code = process.returncode
-    except Exception:
+    except Exception as exc:
+        # Only override exit_code on real process monitoring errors, not
+        # successful exits. Log the exception instead of silently swallowing it.
+        logger.exception("Error monitoring process for run %s: %s", run_id, exc)
+        exit_code = -1
+
+    if exit_code is None:
+        # Process.poll() returned but no exit code was captured — treat as crash.
         exit_code = -1
 
     session = session_factory()
@@ -480,7 +518,8 @@ def _monitor_process(run_id: str, process: subprocess.Popen, session_factory: Ca
         if run and run.status == "running":
             complete_run(session, run, exit_code)
             session.commit()
-    except Exception:
+    except Exception as exc:
         session.rollback()
+        logger.exception("Failed to complete run %s after process exit: %s", run_id, exc)
     finally:
         session.close()

@@ -629,6 +629,36 @@ class TestAgentRunLifecycle:
         finally:
             db.close()
 
+    def test_stale_recovery_skips_live_process(self, tmp_path, monkeypatch):
+        """Stale recovery must not recover a run whose process is still alive."""
+        import os as _os
+        db = _db(tmp_path)
+
+        def fake_popen(args, **kwargs):
+            return SimpleNamespace(pid=_os.getpid())  # our own PID is alive
+
+        monkeypatch.setattr("flow_app.dispatcher.subprocess.Popen", fake_popen)
+        monkeypatch.setattr("flow_app.dispatcher.threading.Thread", _NoopThread)
+        try:
+            agent = repo_create_agent(
+                db,
+                AgentCreate(name="worker-live", command=_success_command(), stale_claim_timeout_seconds=1),
+            )
+            task = repo_create_task(db, TaskCreate(title="Live process", status="todo"))
+            run = dispatch_one(db, agent, task, base_url="http://flow.test")
+            run.last_heartbeat_at = utcnow() - timedelta(seconds=10)
+            db.flush()
+
+            recovered = stale_recovery(db)
+
+            # Run should NOT be recovered — process is alive
+            assert recovered == []
+            # Run should still be running
+            refreshed = db.get(AgentRun, run.id)
+            assert refreshed.status == "running"
+        finally:
+            db.close()
+
     def test_manual_dispatch_mints_key_instead_of_forwarding_bearer_token(self, tmp_path, monkeypatch):
         captured = {}
 

@@ -104,6 +104,8 @@ def api_update_automation_rule(
             rule = svc.update_rule(rule_id, payload)
         except AutomationRuleNotFoundError as exc:
             raise HTTPException(status_code=404, detail=exc.message) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         audit(db, actor_id_for(actor), "rule.update", "rule", rule.id)
         db.commit()
         return serialize_automation_rule(rule)

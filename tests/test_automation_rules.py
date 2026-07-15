@@ -11,7 +11,7 @@ from flow_app.models import Task, utcnow
 from flow_app.notifications import NotificationProvider, RulesNotifyProvider, register_notification_provider
 from flow_app.notifications import _registry as notification_registry
 from flow_app.repository import add_note, get_task
-from flow_app.runner import _run_cron_rules
+from flow_app.runner import _cron_config_matches, _run_cron_rules
 from flow_app.rules_engine import emit_event
 from flow_app.rules_engine import evaluate_conditions
 from flow_app.rules_engine import set_notify_provider
@@ -265,6 +265,107 @@ def test_event_emission_respects_disabled_rules(client):
     create_task(client, priority=100)
 
     assert client.get(f"/api/automation-rules/{rule['id']}").json()["last_run_at"] is None
+
+
+def test_match_rules_respects_trigger_config_project_filter(client):
+    default_task = create_task(client, priority=100, project="default")
+    other_task = create_task(client, priority=100, project="other")
+    rule = create_rule(
+        client,
+        trigger_config=json.dumps({"project": "other"}),
+        actions=json.dumps([{"type": "add_note", "text": "project matched"}]),
+    )
+
+    with client.app.state.SessionLocal() as db:
+        default_matches = emit_event(db, "task_created", task_id=default_task["id"])
+        other_matches = emit_event(db, "task_created", task_id=other_task["id"])
+        db.commit()
+
+    assert default_matches == []
+    assert [match["rule_id"] for match in other_matches] == [rule["id"]]
+
+
+def test_match_rules_respects_trigger_config_from_status_filter(client):
+    todo_task = create_task(client, priority=100, status="todo")
+    doing_task = create_task(client, priority=100, status="doing")
+    rule = create_rule(
+        client,
+        trigger="task_moved",
+        trigger_config=json.dumps({"from_status": "doing"}),
+        actions=json.dumps([{"type": "add_note", "text": "from status matched"}]),
+    )
+
+    with client.app.state.SessionLocal() as db:
+        todo_matches = emit_event(db, "task_moved", task_id=todo_task["id"], data={"to_status": "review"})
+        doing_matches = emit_event(db, "task_moved", task_id=doing_task["id"], data={"to_status": "review"})
+        db.commit()
+
+    assert todo_matches == []
+    assert [match["rule_id"] for match in doing_matches] == [rule["id"]]
+
+
+def test_cron_config_matches_standard_cron_string():
+    assert _cron_config_matches(
+        json.dumps({"cron": "0 9 * * *"}),
+        datetime(2026, 5, 25, 9, 0, tzinfo=timezone.utc),
+    )
+    assert not _cron_config_matches(
+        json.dumps({"cron": "0 9 * * *"}),
+        datetime(2026, 5, 25, 9, 1, tzinfo=timezone.utc),
+    )
+
+
+def test_cron_config_matches_every_five_minutes_cron_string():
+    assert _cron_config_matches(
+        json.dumps({"cron": "*/5 * * * *"}),
+        datetime(2026, 5, 25, 9, 10, tzinfo=timezone.utc),
+    )
+    assert not _cron_config_matches(
+        json.dumps({"cron": "*/5 * * * *"}),
+        datetime(2026, 5, 25, 9, 11, tzinfo=timezone.utc),
+    )
+
+
+def test_cron_config_invalid_cron_string_does_not_block():
+    assert _cron_config_matches(
+        json.dumps({"cron": "0 9 *"}),
+        datetime(2026, 5, 25, 9, 11, tzinfo=timezone.utc),
+    )
+
+
+def test_create_cron_rule_rejects_invalid_cron_expression(client):
+    response = client.post(
+        "/api/automation-rules",
+        json={
+            "name": "Bad cron",
+            "trigger": "cron",
+            "trigger_config": json.dumps({"cron": "0 9 *"}),
+            "conditions": "[]",
+            "actions": "[]",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "5 fields" in response.text
+
+
+def test_update_cron_rule_rejects_invalid_cron_expression(client):
+    rule = create_rule(
+        client,
+        name="Cron rule",
+        trigger="cron",
+        trigger_config=json.dumps({"cron": "0 9 * * *"}),
+        conditions="[]",
+        actions="[]",
+    )
+
+    response = client.patch(
+        f"/api/automation-rules/{rule['id']}",
+        json={"trigger_config": json.dumps({"cron": "0 9 *"})},
+    )
+
+    assert response.status_code == 422
+    assert "5 fields" in response.text
 
 
 def test_cron_rule_does_not_fire_twice_in_same_minute(client, monkeypatch):

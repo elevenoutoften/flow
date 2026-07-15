@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
+from flow_app.cron import validate_cron_trigger_config
 from flow_app.models import AutomationRule
 from flow_app.repository import (
     create_automation_rule,
@@ -52,7 +53,11 @@ class AutomationService:
         return rule
 
     def update_rule(self, rule_id: str, payload: AutomationRuleUpdate) -> AutomationRule:
-        rule = update_automation_rule(self.db, self._require_rule(rule_id), payload)
+        current = self._require_rule(rule_id)
+        trigger = payload.trigger if payload.trigger is not None else current.trigger
+        trigger_config = payload.trigger_config if payload.trigger_config is not None else current.trigger_config
+        validate_cron_trigger_config(trigger, trigger_config)
+        rule = update_automation_rule(self.db, current, payload)
         self._commit()
         return rule
 

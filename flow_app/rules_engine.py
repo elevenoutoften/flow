@@ -228,6 +228,23 @@ def match_rules(
             task_data.update(data or {})
 
     for rule in rules:
+        trigger_config = {}
+        if rule.trigger_config:
+            try:
+                parsed_trigger_config = json.loads(rule.trigger_config)
+            except (json.JSONDecodeError, TypeError):
+                parsed_trigger_config = {}
+            if isinstance(parsed_trigger_config, dict):
+                trigger_config = parsed_trigger_config
+
+        if trigger != "cron" and trigger_config:
+            if trigger_config.get("project") and task_data.get("project") != trigger_config["project"]:
+                continue
+            if trigger_config.get("from_status") and task_data.get("status") != trigger_config["from_status"]:
+                continue
+            if trigger_config.get("to_status") and (data or {}).get("to_status") != trigger_config["to_status"]:
+                continue
+
         try:
             conditions = json.loads(rule.conditions) if rule.conditions else []
         except (json.JSONDecodeError, TypeError):

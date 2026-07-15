@@ -13,6 +13,7 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .cron import cron_field_matches, cron_string_matches
 from .database import build_engine, build_session_factory, default_database_url
 from .dispatcher import DispatchError, _next_capable_task, complete_run, dispatch_one, stale_recovery
 from .main import ensure_compatible_schema
@@ -399,6 +400,9 @@ def _cron_config_matches(trigger_config: str | None, now: datetime | None = None
         return True
     if not isinstance(config, dict):
         return True
+    cron_expr = config.get("cron")
+    if cron_expr:
+        return _cron_string_matches(str(cron_expr), now)
     return (
         _cron_field_matches(config.get("minute", "*"), now.minute)
         and _cron_field_matches(config.get("hour", "*"), now.hour)
@@ -406,20 +410,12 @@ def _cron_config_matches(trigger_config: str | None, now: datetime | None = None
     )
 
 
+def _cron_string_matches(expr: str, now: datetime) -> bool:
+    return cron_string_matches(expr, now)
+
+
 def _cron_field_matches(expression: object, value: int) -> bool:
-    text = str(expression).strip()
-    if not text or text == "*":
-        return True
-    if text.startswith("*/"):
-        try:
-            divisor = int(text[2:])
-        except ValueError:
-            return False
-        return divisor > 0 and value % divisor == 0
-    try:
-        return value == int(text)
-    except ValueError:
-        return False
+    return cron_field_matches(expression, value)
 
 
 def _log_pass_summary(result: PassResult) -> None:

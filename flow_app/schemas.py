@@ -9,6 +9,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .config import default_project
+from .cron import validate_cron_trigger_config
 from .models import ApiKeyRole
 from .ssrf import validate_webhook_url
 
@@ -1382,6 +1383,11 @@ class AutomationRuleCreate(BaseModel):
     def validate_json_arrays(cls, value: str | None, info) -> str:
         return _validate_json_array(value, info.field_name)
 
+    @model_validator(mode="after")
+    def validate_cron_config(self):
+        validate_cron_trigger_config(self.trigger, self.trigger_config)
+        return self
+
 
 class AutomationRuleUpdate(BaseModel):
     name: str | None = None
@@ -1426,6 +1432,11 @@ class AutomationRuleUpdate(BaseModel):
         if value is None:
             return None
         return _validate_json_array(value, info.field_name)
+
+    @model_validator(mode="after")
+    def validate_cron_config(self):
+        validate_cron_trigger_config(self.trigger, self.trigger_config)
+        return self
 
 
 class AutomationRuleResponse(BaseModel):

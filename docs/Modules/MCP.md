@@ -141,6 +141,51 @@ Errors return:
 }
 ```
 
+## Rate Limiting
+
+Mutating MCP tool calls are rate-limited using the same token-bucket limiter as the REST API.
+
+**How it works:**
+
+- Each `tools/call` request is classified as **read-only** or **mutating** based on the tool name.
+- Read-only tools (listed below) bypass the limiter and can be called freely.
+- Mutating tools are throttled at **120 requests per 60 seconds** per client (configurable via `FLOW_RATE_LIMIT_MUTATIONS`).
+- The limiter is keyed **per API key**. If no API key is present (e.g. session cookie auth), it falls back to the **client IP address**.
+- Rate limiting can be disabled entirely with `FLOW_RATE_LIMIT_ENABLED=false`.
+
+**Read-only tools (bypass the mutation limiter):**
+
+`flow_list_tasks`, `flow_get_task`, `flow_get_dependencies`, `flow_list_task_links`, `flow_get_task_handoffs`, `flow_board_summary`, `flow_list_audit_logs`, `flow_list_ideas`, `flow_list_recurring_task_templates`, `flow_get_recurring_task_template`, `flow_list_agents`, `flow_list_adapter_templates`, `flow_get_adapter_template`, `flow_preview_adapter_template`, `flow_get_agent`, `flow_list_runners`, `flow_get_runner`, `flow_list_webhooks`, `flow_get_webhook`, `flow_list_webhook_deliveries`, `flow_get_webhook_delivery`, `flow_list_workspace_configs`, `flow_get_workspace_config`.
+
+**Mutating tools (subject to the limiter):**
+
+All tools not listed above — includes `flow_create_task`, `flow_update_task`, `flow_move_task`, `flow_create_agent`, `flow_dispatch_agent`, `flow_create_automation_rule`, `flow_link_task`, `flow_create_webhook`, `flow_pack_import`, etc.
+
+**429 response shape:**
+
+When the mutation limit is exceeded, the server returns HTTP 429 with a JSON-RPC error body:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "error": {
+    "code": -32600,
+    "message": "Rate limit exceeded. Try again later."
+  }
+}
+```
+
+The HTTP status code is `429 Too Many Requests`. MCP clients should parse the JSON-RPC error and back off before retrying.
+
+**Configuration:**
+
+| Env var | Default | Description |
+|---------|---------|-------------|
+| `FLOW_RATE_LIMIT_ENABLED` | `true` | Enable/disable all rate limiting |
+| `FLOW_RATE_LIMIT_MUTATIONS` | `120` | Max mutating calls per 60s window per key/IP |
+| `FLOW_RATE_LIMIT_KEY_CREATION` | `10` | Max API key creation calls per 60s window |
+
 ## See Also
 
 - [REST API](REST-API.md) — HTTP endpoint reference

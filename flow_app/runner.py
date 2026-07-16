@@ -55,9 +55,10 @@ class CronMatchResult:
     matched: bool
     actions: list[dict]
     skip_reason: str = ""
+    action_results: list[dict] | None = None
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "rule_id": self.rule_id,
             "rule_name": self.rule_name,
             "task_id": self.task_id,
@@ -65,6 +66,18 @@ class CronMatchResult:
             "actions": self.actions,
             "skip_reason": self.skip_reason,
         }
+        if self.action_results is not None:
+            d["action_results"] = self.action_results
+        return d
+
+    @property
+    def all_actions_succeeded(self) -> bool:
+        """True when there are no skip reasons and every action result succeeded."""
+        if self.skip_reason:
+            return False
+        if self.action_results is None:
+            return True
+        return all(r.get("success") for r in self.action_results)
 
 
 def load_runner_config(*, require_profiles: bool = True) -> RunnerConfig:
@@ -294,7 +307,7 @@ def dry_run_automation_rules(
         rule_matches = _evaluate_scheduled_rule(session, rule, trigger=trigger, dry_run=dry_run)
         matches.extend(rule_matches)
         if not dry_run:
-            all_succeeded = all(m.skip_reason == "" for m in rule_matches)
+            all_succeeded = all(m.all_actions_succeeded for m in rule_matches) if rule_matches else True
             if trigger == "cron":
                 # Cron already stamped last_run_at atomically above.
                 # If actions failed, clear it so the rule retries next pass.
@@ -344,6 +357,7 @@ def _evaluate_scheduled_rule(
                 result.get("task_id"),
                 True,
                 result.get("actions", []),
+                action_results=result.get("action_results"),
             )
             for result in results
         ]
@@ -353,15 +367,18 @@ def _evaluate_scheduled_rule(
         task_data = serialize_task(task).model_dump(mode="json")
         if not evaluate_conditions(conditions, task_data):
             continue
-        rule_matches.append(CronMatchResult(rule.id, rule.name, task.id, True, actions))
-        if dry_run:
-            continue
-        execute_actions(
-            session,
-            MatchResult(rule_id=rule.id, rule_name=rule.name, actions=actions, task_id=task.id),
-            trigger=trigger,
-            data={"rule_id": rule.id, "rule_name": rule.name},
-        )
+        action_results = None
+        if not dry_run:
+            action_results = execute_actions(
+                session,
+                MatchResult(rule_id=rule.id, rule_name=rule.name, actions=actions, task_id=task.id),
+                trigger=trigger,
+                data={"rule_id": rule.id, "rule_name": rule.name},
+            )
+        rule_matches.append(CronMatchResult(
+            rule.id, rule.name, task.id, True, actions,
+            action_results=action_results,
+        ))
     return rule_matches
 
 

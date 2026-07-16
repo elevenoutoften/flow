@@ -1090,3 +1090,144 @@ def test_rule_webhook_action_creates_delivery(client):
     retry_result = retry.json()["matches"][0]["action_results"][0]
     assert retry_result["details"]["idempotent"] is True
     assert len(client.get(f"/api/webhooks/{webhook['id']}/deliveries").json()["items"]) == 1
+
+
+# ---------- REL-01: last_run_at and retry tests ----------
+
+
+def test_failed_action_does_not_stamp_last_run(client):
+    """When an action fails, last_run_at must NOT be stamped so the rule can retry."""
+    task = create_task(client, status="todo")
+    # A 'move' action with an invalid target status will fail.
+    rule = create_rule(
+        client,
+        name="Failing move rule",
+        trigger="task_created",
+        conditions="[]",
+        actions=json.dumps([{"type": "move", "status": "invalid_status"}]),
+    )
+
+    # Emit event — the action should fail, last_run_at should stay None
+    with client.app.state.SessionLocal() as db:
+        results = emit_event(db, "task_created", task_id=task["id"])
+        db.commit()
+
+    assert results[0]["action_results"][0]["success"] is False
+    rule_data = client.get(f"/api/automation-rules/{rule['id']}").json()
+    assert rule_data["last_run_at"] is None
+
+
+def test_successful_action_stamps_last_run(client):
+    """When all actions succeed, last_run_at IS stamped."""
+    task = create_task(client, status="todo")
+    rule = create_rule(
+        client,
+        name="Success rule",
+        trigger="task_created",
+        conditions="[]",
+        actions=json.dumps([{"type": "add_note", "text": "hello"}]),
+    )
+
+    with client.app.state.SessionLocal() as db:
+        results = emit_event(db, "task_created", task_id=task["id"])
+        db.commit()
+
+    assert results[0]["action_results"][0]["success"] is True
+    rule_data = client.get(f"/api/automation-rules/{rule['id']}").json()
+    assert rule_data["last_run_at"] is not None
+
+
+def test_failed_action_retries_on_next_pass(client):
+    """A failed action doesn't stamp last_run_at, so the next emit_event still fires it."""
+    task = create_task(client, status="todo")
+    # 'move' to 'doing' will succeed the first time (todo→doing),
+    # then a second emit will try doing→doing which is a no-op success.
+    # Use a rule that will fail: move to invalid status.
+    rule = create_rule(
+        client,
+        name="Retry rule",
+        trigger="task_created",
+        conditions="[]",
+        actions=json.dumps([{"type": "move", "status": "nonexistent"}]),
+    )
+
+    # First pass: action fails, last_run_at not stamped
+    with client.app.state.SessionLocal() as db:
+        results1 = emit_event(db, "task_created", task_id=task["id"])
+        db.commit()
+    assert results1[0]["action_results"][0]["success"] is False
+    assert client.get(f"/api/automation-rules/{rule['id']}").json()["last_run_at"] is None
+
+    # Second pass: rule still fires because last_run_at is None
+    with client.app.state.SessionLocal() as db:
+        results2 = emit_event(db, "task_created", task_id=task["id"])
+        db.commit()
+    assert len(results2) > 0  # Rule matched again (not deduped)
+
+
+def test_concurrent_cron_exactly_once(client, monkeypatch):
+    """Two _run_cron_rules calls — the atomic dedupe ensures exactly one fires.
+
+    Simulates two runner passes racing: the first commits its atomic UPDATE
+    (setting last_run_at), the second sees the updated row and skips.
+    """
+    from flow_app.runner import _run_cron_rules
+
+    now = datetime(2026, 5, 25, 14, 30, 15)  # naive UTC for SQLite compatibility
+    monkeypatch.setattr("flow_app.runner.utcnow", lambda: now)
+    create_rule(
+        client,
+        name="Concurrent cron",
+        trigger="cron",
+        trigger_config=json.dumps({"cron": "* * * * *"}),
+        conditions="[]",
+        actions=json.dumps([]),
+    )
+
+    # First pass — fires and stamps last_run_at atomically
+    with client.app.state.SessionLocal() as db:
+        count1 = _run_cron_rules(db, dry_run=False)
+        db.commit()
+
+    # Second pass — sees last_run_at in the current minute, skips
+    with client.app.state.SessionLocal() as db:
+        count2 = _run_cron_rules(db, dry_run=False)
+        db.commit()
+
+    assert count1 == 1, f"First pass should fire, got {count1}"
+    assert count2 == 0, f"Second pass should skip, got {count2}"
+
+
+def test_markdown_import_fires_webhook_delivery(client):
+    """Markdown import routes through TaskService, so webhook delivery fires."""
+    # Create a webhook that listens for task_created
+    webhook = client.post(
+        "/api/webhooks",
+        json={"name": "Import hook", "url": "https://example.com/hook", "events": ["task_created"], "project": "*"},
+    )
+    assert webhook.status_code == 201
+
+    # Import a markdown task
+    response = client.post(
+        "/api/import/markdown/commit",
+        json={
+            "items": [
+                {
+                    "preview_id": "test-1",
+                    "title": "Imported task for webhook",
+                    "status": "todo",
+                    "priority": 50,
+                    "project": "default",
+                }
+            ]
+        },
+    )
+    assert response.status_code == 200, response.text
+    batch_id = response.json()["import_batch_id"]
+    created = response.json()["created"]
+    assert len(created) == 1
+
+    # Verify webhook delivery was created (not just rule events)
+    deliveries = client.get(f"/api/webhooks/{webhook.json()['id']}/deliveries").json()["items"]
+    assert len(deliveries) >= 1
+    assert deliveries[0]["event"] == "task_created"

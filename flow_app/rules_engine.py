@@ -552,18 +552,25 @@ def emit_event(
     rule_id: str | None = None,
     dry_run: bool = False,
 ) -> list[dict]:
-    """Emit an event, execute matched rule actions, and return serializable results."""
+    """Emit an event, execute matched rule actions, and return serializable results.
+
+    ``last_run_at`` is stamped **only when every action succeeds**.  If any
+    action fails the stamp is skipped so the rule is eligible for retry on
+    the next pass.
+    """
     matches = match_rules(session, trigger, task_id, data, rule_id=rule_id)
     results = []
     for match in matches:
         if dry_run:
             results.append(match.to_dict())
             continue
-        rule = session.get(AutomationRule, match.rule_id)
-        if rule:
-            rule.last_run_at = utcnow()
-            session.add(rule)
         action_results = execute_actions(session, match, trigger=trigger, actor=actor, data=data)
+        all_succeeded = all(r.get("success") for r in action_results) if action_results else True
+        if all_succeeded:
+            rule = session.get(AutomationRule, match.rule_id)
+            if rule:
+                rule.last_run_at = utcnow()
+                session.add(rule)
         results.append(
             {
                 "rule_id": match.rule_id,

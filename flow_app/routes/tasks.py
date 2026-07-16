@@ -105,12 +105,13 @@ def api_preview_markdown_import(
 def api_commit_markdown_import(
         payload: MarkdownImportCommitRequest,
         db: Session = Depends(get_db),
-        _actor: Actor = Depends(require_permission(Permission.TASKS_CREATE)),
+        actor: Actor = Depends(require_permission(Permission.TASKS_CREATE)),
     ):
         batch_id = f"import_{uuid4().hex[:12]}"
         created = []
         created_tasks = []
         skipped = []
+        svc = _make_task_service(db)
         for item in payload.items:
             duplicate = find_import_duplicate(
                 db,
@@ -125,8 +126,9 @@ def api_commit_markdown_import(
                 skipped.append(item)
                 continue
 
-            task = create_task(
-                db,
+            # Route through TaskService so that webhook/Telegram/Discord
+            # delivery fires for imported tasks, same as API-created tasks.
+            task = svc.create_task(
                 TaskCreate(
                     title=item.title,
                     status=item.status,
@@ -140,15 +142,13 @@ def api_commit_markdown_import(
                     import_batch_id=batch_id,
                     source_title=item.source_title,
                 ),
+                actor=actor,
             )
             created_tasks.append(task)
             created.append(serialize_task(task))
 
-        _commit(db)
+        # svc.create_task already commits and emits events per task.
         for task in created_tasks:
-            # Emit task_created events so automation rules/webhooks fire
-            # for imported tasks, same as tasks created via the API.
-            emit_event(db, "task_created", task_id=task.id, data={"task_id": task.id, "project": task.project})
             publish_board_event("task_created", task, import_batch_id=batch_id)
         _commit(db)
         return MarkdownImportCommitResponse(import_batch_id=batch_id, created=created, skipped=skipped)

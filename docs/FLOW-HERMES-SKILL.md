@@ -186,10 +186,42 @@ curl -s -X POST -H "Authorization: Bearer $FLOW_API_KEY" \
   "$FLOW_BASE_URL/api/ideas"
 
 # Promote to tasks (body is required — list of task specs with title)
-curl -s -X POST -H "Authorization: Bearer ***" \
+curl -s -X POST -H "Authorization: Bearer $FLOW_API_KEY" \
   -H "Content-Type: application/json" \
   -d '[{"title":"Implement feature X","project":"default","status":"todo"}]' \
   "$FLOW_BASE_URL/api/ideas/{idea_id}/promote"
+```
+
+### Promote semantics
+
+`POST /api/ideas/{idea_id}/promote` takes a JSON array of `PromoteTaskSpec` objects:
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `title` | string | **yes** | — | Task title (non-empty) |
+| `status` | string | no | `"backlog"` | Initial task status |
+| `priority` | int | no | `50` | Task priority (0-1000) |
+| `description` | string | no | `""` | Task description |
+| `acceptance_criteria` | string | no | `""` | Acceptance criteria |
+
+**Auto-archive:** The idea is automatically archived after promotion. The response is the updated `IdeaResponse` with `archived_at` set and `promoted_task_ids` populated with the new task IDs.
+
+**Import batch ID:** Each promoted task gets `import_batch_id` set to the idea's ID, linking the tasks back to their source idea.
+
+**Response:** Returns the archived idea as `IdeaResponse`:
+
+```json
+{
+  "id": "idea_000001",
+  "title": "New feature idea",
+  "description": "Could improve UX",
+  "project": "default",
+  "author": "nyx",
+  "archived_at": "2026-07-16T12:00:00Z",
+  "promoted_task_ids": ["flow_000001", "flow_000002"],
+  "created_at": "2026-07-16T11:00:00Z",
+  "updated_at": "2026-07-16T12:00:00Z"
+}
 ```
 
 ## MCP Interface

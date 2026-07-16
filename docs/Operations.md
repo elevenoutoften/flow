@@ -121,7 +121,7 @@ flow-serve --bootstrap   # seeds first-run data, auto-configures the session sec
 uvicorn flow_app.main:app --host 0.0.0.0 --port 8100
 ```
 
-> **SSE constraint:** The `/events/board` endpoint uses an in-memory ring buffer
+> **SSE constraint:** The `/api/events/board` endpoint uses an in-memory ring buffer
 > (`BoardEventHub` singleton). It only works with a single uvicorn worker
 > (`--workers 1`, the default). Multi-worker deployments need a shared pub/sub
 > backend (e.g. Redis) for SSE to work across processes.

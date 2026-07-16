@@ -205,7 +205,7 @@ Compatibility route: `POST /api/tasks/{task_id}/handoff`
 | Method | Path | Permission | Description |
 |--------|------|-----------|-------------|
 | `GET` | `/` | `board:view` | HTML Kanban board |
-| `GET` | `/events/board` | `tasks:read` | SSE board event stream |
+| `GET` | `/api/events/board` | `tasks:read` | SSE board event stream |
 | `GET` | `/healthz` | None (public) | Health check |
 | `GET` | `/healthz/config` | None (public) | Config status |
 

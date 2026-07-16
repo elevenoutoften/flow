@@ -137,7 +137,9 @@ def test_cron_expression_matching():
     assert not _cron_config_matches('{"minute":"*/7"}', now)
     assert _cron_config_matches('{"minute":"30","hour":"10"}', now)
     assert not _cron_config_matches('{"minute":"31"}', now)
-    assert _cron_config_matches('{"day_of_week":"3"}', now)
+    # Standard cron: 0=Sunday.  May 21 2026 is a Thursday (cron day 4).
+    assert _cron_config_matches('{"day_of_week":"4"}', now)
+    assert not _cron_config_matches('{"day_of_week":"3"}', now)
 
 
 def test_parse_rule_array_valid():

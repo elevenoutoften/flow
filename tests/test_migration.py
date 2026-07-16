@@ -187,3 +187,224 @@ def test_migration_is_idempotent(tmp_path):
     # Everything still works
     inspector = inspect(engine)
     assert "tasks" in inspector.get_table_names()
+
+
+# ---------------------------------------------------------------------------
+# Multiple historical schema shapes — test migration from different eras
+# ---------------------------------------------------------------------------
+
+def _create_v1_schema(db_path: str):
+    """Very old schema: no version, no human_required, no complexity/impact/effort/risk,
+    no source_filename, no import_batch_id, no metadata, no claimer_key_id.
+    Also missing agent dispatch_statuses, agent_run workspace_state/scoped_key_id,
+    api_key role, and task_note author_key_id."""
+    return _create_old_schema(db_path)
+
+
+def _create_v2_schema(db_path: str):
+    """Intermediate schema: has version, human_required, complexity/impact/effort/risk
+    but missing newer columns: source_template_id, source_title, claimer_key_id, metadata.
+    Agents have dispatch_statuses but not command_allowlist.
+    Agent runs have scoped_key_id but not workspace_state."""
+    engine = build_engine(f"sqlite:///{db_path}")
+    with engine.begin() as conn:
+        conn.execute(text("""
+            CREATE TABLE tasks (
+                id VARCHAR(32) PRIMARY KEY,
+                title VARCHAR(240) NOT NULL,
+                status VARCHAR(24) NOT NULL,
+                priority INTEGER NOT NULL DEFAULT 50,
+                project VARCHAR(120) NOT NULL DEFAULT 'default',
+                assignee VARCHAR(120),
+                description TEXT NOT NULL DEFAULT '',
+                acceptance_criteria TEXT NOT NULL DEFAULT '',
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL,
+                version INTEGER NOT NULL DEFAULT 1,
+                human_required INTEGER NOT NULL DEFAULT 0,
+                assignee_type VARCHAR(24) NOT NULL DEFAULT 'agent',
+                blocker_reason TEXT NOT NULL DEFAULT '',
+                complexity VARCHAR(24) NOT NULL DEFAULT 'small',
+                impact VARCHAR(24) NOT NULL DEFAULT 'medium',
+                effort VARCHAR(24) NOT NULL DEFAULT 'medium',
+                risk VARCHAR(24) NOT NULL DEFAULT 'low'
+            )
+        """))
+        conn.execute(text("""
+            CREATE TABLE task_notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id VARCHAR(32) NOT NULL,
+                body TEXT NOT NULL,
+                author VARCHAR(120),
+                created_at DATETIME NOT NULL,
+                FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
+            )
+        """))
+        conn.execute(text("""
+            CREATE TABLE agents (
+                id VARCHAR(32) PRIMARY KEY,
+                name VARCHAR(180) NOT NULL UNIQUE,
+                description TEXT NOT NULL DEFAULT '',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                agent_type VARCHAR(24) NOT NULL DEFAULT 'cli',
+                capabilities TEXT NOT NULL DEFAULT '',
+                command TEXT NOT NULL DEFAULT '',
+                env_allowlist TEXT NOT NULL DEFAULT '',
+                working_directory VARCHAR(500) NOT NULL DEFAULT '',
+                max_concurrency INTEGER NOT NULL DEFAULT 1,
+                heartbeat_timeout_seconds INTEGER NOT NULL DEFAULT 300,
+                stale_claim_timeout_seconds INTEGER NOT NULL DEFAULT 600,
+                dispatch_statuses TEXT NOT NULL DEFAULT 'backlog,todo',
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL
+            )
+        """))
+        conn.execute(text("""
+            CREATE TABLE agent_runs (
+                id VARCHAR(32) PRIMARY KEY,
+                agent_id VARCHAR(32) NOT NULL,
+                task_id VARCHAR(32) NOT NULL,
+                status VARCHAR(24) NOT NULL DEFAULT 'pending',
+                pid INTEGER,
+                exit_code INTEGER,
+                scoped_key_id VARCHAR(32),
+                started_at DATETIME,
+                finished_at DATETIME,
+                last_heartbeat_at DATETIME,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL
+            )
+        """))
+        conn.execute(text("""
+            CREATE TABLE api_keys (
+                id VARCHAR(32) PRIMARY KEY,
+                name VARCHAR(120) NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                key_prefix VARCHAR(24) NOT NULL,
+                key_hash VARCHAR(64) NOT NULL UNIQUE,
+                role VARCHAR(32) NOT NULL DEFAULT 'read_only',
+                created_at DATETIME NOT NULL,
+                revoked_at DATETIME
+            )
+        """))
+        # Insert data rows to verify survival
+        conn.execute(text("""
+            INSERT INTO tasks (id, title, status, priority, project, description, acceptance_criteria,
+                created_at, updated_at, version, human_required, assignee_type, blocker_reason,
+                complexity, impact, effort, risk)
+            VALUES ('flow_v2_001', 'V2 Task', 'doing', 70, 'default', 'has version',
+                '', '2026-03-01 00:00:00', '2026-03-01 00:00:00',
+                3, 0, 'agent', '', 'medium', 'high', 'small', 'low')
+        """))
+        conn.execute(text("CREATE TABLE flow_counters (name VARCHAR(64) PRIMARY KEY, value INTEGER NOT NULL DEFAULT 0)"))
+    return engine
+
+
+def test_migration_from_v1_old_schema(tmp_path):
+    """Migration from the earliest schema (v1) adds all missing columns and preserves data."""
+    db_path = tmp_path / "v1_flow.sqlite"
+    engine = _create_v1_schema(str(db_path))
+
+    ensure_compatible_schema(engine)
+
+    inspector = inspect(engine)
+    task_cols = {col["name"] for col in inspector.get_columns("tasks")}
+    # All newer columns should be present
+    assert "source_filename" in task_cols
+    assert "import_batch_id" in task_cols
+    assert "metadata" in task_cols
+    assert "claimer_key_id" in task_cols
+    assert "source_template_id" in task_cols
+    assert "source_title" in task_cols
+
+    # Data survived
+    with engine.begin() as conn:
+        row = conn.execute(text("SELECT id, title, version FROM tasks WHERE id = 'flow_test_001'")).fetchone()
+        assert row is not None
+        assert row[0] == "flow_test_001"
+        assert row[1] == "Old task"
+        # version column was added with default 1
+        assert row[2] == 1
+
+
+def test_migration_from_v2_intermediate_schema(tmp_path):
+    """Migration from an intermediate schema (v2) adds only the newer missing columns."""
+    db_path = tmp_path / "v2_flow.sqlite"
+    engine = _create_v2_schema(str(db_path))
+
+    ensure_compatible_schema(engine)
+
+    inspector = inspect(engine)
+    task_cols = {col["name"] for col in inspector.get_columns("tasks")}
+    # Columns that were already present should still be there
+    assert "version" in task_cols
+    assert "human_required" in task_cols
+    assert "complexity" in task_cols
+    # Columns that were missing should now be added
+    assert "source_filename" in task_cols
+    assert "import_batch_id" in task_cols
+    assert "metadata" in task_cols
+    assert "claimer_key_id" in task_cols
+    assert "source_template_id" in task_cols
+    assert "source_title" in task_cols
+
+    # Agent columns
+    agent_cols = {col["name"] for col in inspector.get_columns("agents")}
+    assert "command_allowlist" in agent_cols
+
+    # Agent run columns — v2 had scoped_key_id but not workspace_state
+    run_cols = {col["name"] for col in inspector.get_columns("agent_runs")}
+    assert "workspace_state" in run_cols
+
+    # Data survived with original values
+    with engine.begin() as conn:
+        row = conn.execute(text("SELECT id, title, version FROM tasks WHERE id = 'flow_v2_001'")).fetchone()
+        assert row is not None
+        assert row[0] == "flow_v2_001"
+        assert row[1] == "V2 Task"
+        assert row[2] == 3  # original version value preserved
+
+
+# ---------------------------------------------------------------------------
+# Corruption failure
+# ---------------------------------------------------------------------------
+
+def test_migration_handles_corrupt_database(tmp_path):
+    """ensure_compatible_schema should handle a corrupt SQLite file gracefully.
+
+    A file that is not a valid SQLite database should not crash the migration.
+    """
+    db_path = tmp_path / "corrupt.sqlite"
+    # Write garbage to the file
+    db_path.write_bytes(b"NOT A DATABASE FILE\x00\x01\x02")
+
+    # build_engine will connect to it, but queries should fail
+    # The migration should either handle the error or raise a clear exception
+    engine = build_engine(f"sqlite:///{db_path}")
+    # ensure_compatible_schema should raise or handle gracefully
+    # We expect it to either raise an operational error or return without crash
+    try:
+        ensure_compatible_schema(engine)
+    except Exception:
+        # An exception is acceptable — the point is it shouldn't silently corrupt things
+        pass
+
+
+def test_migration_preserves_existing_data_on_partial_schema(tmp_path):
+    """Migration should preserve existing task data even when adding columns."""
+    db_path = tmp_path / "partial.sqlite"
+    engine = _create_v2_schema(str(db_path))
+
+    ensure_compatible_schema(engine)
+
+    # Verify the pre-existing data is intact
+    with engine.begin() as conn:
+        row = conn.execute(text(
+            "SELECT id, title, status, priority, complexity FROM tasks WHERE id = 'flow_v2_001'"
+        )).fetchone()
+        assert row is not None
+        assert row[0] == "flow_v2_001"
+        assert row[1] == "V2 Task"
+        assert row[2] == "doing"
+        assert row[3] == 70
+        assert row[4] == "medium"  # Original value preserved

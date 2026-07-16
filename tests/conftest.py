@@ -34,7 +34,11 @@ def _reset_settings():
     key_creation_limiter.reset()
     mutation_limiter.reset()
     reset_settings_cache()
-    # Restore env vars after tests
+    # Remove any FLOW_* values that tests introduced during the test run,
+    # then restore the original environment.
+    for key in list(os.environ):
+        if key.startswith("FLOW_"):
+            del os.environ[key]
     os.environ.update(_saved_env)
 
 

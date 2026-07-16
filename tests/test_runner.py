@@ -165,8 +165,13 @@ def test_project_eq_filter():
     assert _project_eq_filter([]) is None
 
 
-def test_run_pass_dry_run_does_not_mutate(client):
-    """run_pass in dry_run mode should not create tasks or dispatch agents."""
+def test_run_pass_dry_run_does_not_mutate(client, monkeypatch):
+    """run_pass in dry_run mode should not create tasks or dispatch agents.
+
+    Monkeypatches run_deliveries so it does not open a connection to the
+    default DB (which would bypass the test fixture's isolated database).
+    """
+    monkeypatch.setattr("flow_app.runner.run_deliveries", lambda dry_run=False: 0)
     with client.app.state.SessionLocal() as db:
         result = run_pass(
             RunnerConfig(profiles=[], dry_run=True),
@@ -176,3 +181,221 @@ def test_run_pass_dry_run_does_not_mutate(client):
     # In dry_run mode, no actual mutations should occur
     assert isinstance(result, PassResult)
     assert result.dispatched == 0
+
+
+# ---------------------------------------------------------------------------
+# run_loop — one iteration with deterministic termination
+# ---------------------------------------------------------------------------
+
+class _FakeSession:
+    """Minimal context-manager session for run_loop tests."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def commit(self):
+        pass
+
+    def close(self):
+        pass
+
+
+def test_run_loop_executes_one_pass_then_stops(monkeypatch, tmp_path):
+    """run_loop should execute at least one pass and terminate when asked.
+
+    We patch run_pass to count calls and raise KeyboardInterrupt after the
+    first invocation, plus time.sleep to be a no-op so the test is fast.
+    """
+    import flow_app.runner as runner_mod
+
+    call_count = {"n": 0}
+
+    class FakeEngine:
+        def dispose(self):
+            pass
+
+    def fake_run_pass(config, session, session_factory, **kw):
+        call_count["n"] += 1
+        raise KeyboardInterrupt  # Terminate after first pass
+
+    monkeypatch.setattr(runner_mod, "run_pass", fake_run_pass)
+    monkeypatch.setattr("time.sleep", lambda *_: None)
+    monkeypatch.setattr(runner_mod, "build_engine", lambda url: FakeEngine())
+    monkeypatch.setattr(runner_mod, "ensure_compatible_schema", lambda engine: None)
+    monkeypatch.setattr(
+        runner_mod,
+        "build_session_factory",
+        lambda engine: lambda: _FakeSession(),
+    )
+
+    config = RunnerConfig(profiles=["test"], database_url=f"sqlite:///{tmp_path / 'loop.sqlite'}")
+    # Should not raise — KeyboardInterrupt is caught internally
+    runner_mod.run_loop(config)
+    assert call_count["n"] >= 1
+
+
+# ---------------------------------------------------------------------------
+# main() argument parsing
+# ---------------------------------------------------------------------------
+
+def test_main_once_requires_no_profiles(monkeypatch, tmp_path):
+    """--once should work without FLOW_RUNNER_PROFILES (require_profiles=False)."""
+    import flow_app.runner as runner_mod
+    from flow_app.database import Base
+
+    db_path = tmp_path / "main_once.sqlite"
+    db_url = f"sqlite:///{db_path}"
+    monkeypatch.setenv("FLOW_DATABASE_URL", db_url)
+    monkeypatch.delenv("FLOW_RUNNER_PROFILES", raising=False)
+
+    # Create the schema before main() runs migration
+    from flow_app.database import build_engine
+    engine = build_engine(db_url)
+    Base.metadata.create_all(bind=engine)
+
+    exit_code = runner_mod.main(["--once"])
+    assert exit_code == 0
+
+
+def test_main_stale_recovery_only_requires_no_profiles(monkeypatch, tmp_path):
+    """--stale-recovery-only should work without FLOW_RUNNER_PROFILES."""
+    import flow_app.runner as runner_mod
+    from flow_app.database import Base, build_engine
+
+    db_path = tmp_path / "main_stale.sqlite"
+    db_url = f"sqlite:///{db_path}"
+    monkeypatch.setenv("FLOW_DATABASE_URL", db_url)
+    monkeypatch.delenv("FLOW_RUNNER_PROFILES", raising=False)
+
+    engine = build_engine(db_url)
+    Base.metadata.create_all(bind=engine)
+
+    exit_code = runner_mod.main(["--stale-recovery-only"])
+    assert exit_code == 0
+
+
+def test_main_dry_run_flag(monkeypatch, tmp_path):
+    """--dry-run should set config.dry_run to True."""
+    import flow_app.runner as runner_mod
+    from flow_app.database import Base, build_engine
+
+    db_path = tmp_path / "main_dry.sqlite"
+    db_url = f"sqlite:///{db_path}"
+    monkeypatch.setenv("FLOW_DATABASE_URL", db_url)
+    monkeypatch.delenv("FLOW_RUNNER_PROFILES", raising=False)
+
+    engine = build_engine(db_url)
+    Base.metadata.create_all(bind=engine)
+
+    exit_code = runner_mod.main(["--once", "--dry-run"])
+    assert exit_code == 0
+
+
+def test_main_profiles_flag_overrides_env(monkeypatch, tmp_path):
+    """--profiles should override FLOW_RUNNER_PROFILES."""
+    import flow_app.runner as runner_mod
+    from flow_app.database import Base, build_engine
+
+    db_path = tmp_path / "main_profiles.sqlite"
+    db_url = f"sqlite:///{db_path}"
+    monkeypatch.setenv("FLOW_DATABASE_URL", db_url)
+    monkeypatch.setenv("FLOW_RUNNER_PROFILES", "env-profile")
+
+    engine = build_engine(db_url)
+    Base.metadata.create_all(bind=engine)
+
+    exit_code = runner_mod.main(["--once", "--profiles", "cli-profile"])
+    assert exit_code == 0
+
+
+# ---------------------------------------------------------------------------
+# dry_run_automation_rules
+# ---------------------------------------------------------------------------
+
+def test_dry_run_automation_rules_no_rules(client):
+    """dry_run_automation_rules with no rules should return empty matches."""
+    from flow_app.runner import dry_run_automation_rules
+
+    with client.app.state.SessionLocal() as db:
+        result = dry_run_automation_rules(db, trigger="cron", dry_run=True)
+    assert result["evaluated_rules"] == 0
+    assert result["matches"] == []
+    assert result["invalid_conditions"] == []
+
+
+def test_dry_run_automation_rules_matches_cron(client):
+    """A cron rule with matching conditions should produce a match in dry_run."""
+    from flow_app.models import AutomationRule
+    from flow_app.runner import dry_run_automation_rules
+
+    # Create a cron rule with wildcard trigger (always matches)
+    with client.app.state.SessionLocal() as db:
+        rule = AutomationRule(
+            id="rule_dry_001",
+            name="dry-run-test",
+            trigger="cron",
+            trigger_config="",
+            conditions='[{"field": "status", "operator": "eq", "value": "todo"}]',
+            actions='[{"type": "move", "target_status": "doing"}]',
+            priority=50,
+            enabled=1,
+        )
+        db.add(rule)
+        db.commit()
+        # Create a task that matches the condition
+        client.post("/api/tasks", json={"title": "Dry run target", "status": "todo"})
+
+    with client.app.state.SessionLocal() as db:
+        result = dry_run_automation_rules(db, trigger="cron", dry_run=True)
+    assert result["evaluated_rules"] >= 1
+    assert len(result["matches"]) >= 1
+    # In dry_run mode, no actions should be executed
+    match = result["matches"][0]
+    assert match["matched_conditions"] is True
+
+
+# ---------------------------------------------------------------------------
+# _run_recurring_templates
+# ---------------------------------------------------------------------------
+
+def test_run_recurring_templates_dry_run(client):
+    """_run_recurring_templates in dry_run should report skipped, not materialized."""
+    from flow_app.runner import _run_recurring_templates
+
+    with client.app.state.SessionLocal() as db:
+        result = _run_recurring_templates(db, dry_run=True)
+    assert result.materialized == 0
+    assert result.dry_run is True
+
+
+# ---------------------------------------------------------------------------
+# Rule task-filtering helpers (additional coverage)
+# ---------------------------------------------------------------------------
+
+def test_tasks_for_rule_filters_by_project(client):
+    """_tasks_for_rule should filter tasks by the project eq condition."""
+    from flow_app.runner import _tasks_for_rule
+
+    client.post("/api/tasks", json={"title": "Project A", "project": "alpha"})
+    client.post("/api/tasks", json={"title": "Project B", "project": "beta"})
+
+    with client.app.state.SessionLocal() as db:
+        tasks = _tasks_for_rule(db, [{"field": "project", "operator": "eq", "value": "alpha"}])
+    projects = {t.project for t in tasks}
+    assert "alpha" in projects
+    assert "beta" not in projects
+
+
+def test_tasks_for_rule_no_project_filter_returns_all(client):
+    """_tasks_for_rule without a project filter should return tasks from all projects."""
+    from flow_app.runner import _tasks_for_rule
+
+    client.post("/api/tasks", json={"title": "Any A", "project": "alpha"})
+    client.post("/api/tasks", json={"title": "Any B", "project": "beta"})
+
+    with client.app.state.SessionLocal() as db:
+        tasks = _tasks_for_rule(db, [{"field": "status", "operator": "eq", "value": "todo"}])
+    assert len(tasks) >= 2

@@ -15,6 +15,7 @@ from flow_app.dispatcher import DispatchError, _next_capable_task, complete_run,
 from flow_app.main import create_app
 from flow_app.models import AgentApiKey, AgentRun, ApiKeyRole, Task, utcnow
 from flow_app.repository import create_agent as repo_create_agent
+from flow_app.repository import create_agent_run
 from flow_app.repository import create_task as repo_create_task
 from flow_app.repository import create_task_link as repo_create_task_link
 from flow_app.repository import create_workspace_config as repo_create_workspace_config
@@ -658,6 +659,117 @@ class TestAgentRunLifecycle:
             assert refreshed.status == "running"
         finally:
             db.close()
+
+    def test_is_process_alive_permission_error_treated_as_alive(self):
+        """PermissionError means the process exists but is owned by another user.
+        Must be treated as alive (conservative) to avoid recovering a live run."""
+        from flow_app.dispatcher import _is_process_alive
+
+        # Patch os.kill to raise PermissionError
+        import unittest.mock as _mock
+        with _mock.patch("os.kill", side_effect=PermissionError("not owner")):
+            assert _is_process_alive(99999) is True
+
+    def test_is_process_alive_process_lookup_error_treated_as_dead(self):
+        """ProcessLookupError means no such process — treat as dead."""
+        from flow_app.dispatcher import _is_process_alive
+
+        import unittest.mock as _mock
+        with _mock.patch("os.kill", side_effect=ProcessLookupError("no such process")):
+            assert _is_process_alive(99999) is False
+
+    def test_is_process_alive_os_error_treated_as_alive(self):
+        """Unknown OSError — be conservative and treat as alive."""
+        from flow_app.dispatcher import _is_process_alive
+
+        import unittest.mock as _mock
+        with _mock.patch("os.kill", side_effect=OSError("unknown")):
+            assert _is_process_alive(99999) is True
+
+    def test_stale_recovery_live_then_exited_releases_after_exit(self, tmp_path, monkeypatch):
+        """Full live-then-exit recovery: first pass sees live process (no recovery),
+        second pass after process exits recovers the run and cleans up."""
+        import os as _os
+        import unittest.mock as _mock
+        db = _db(tmp_path)
+
+        def fake_popen(args, **kwargs):
+            return SimpleNamespace(pid=_os.getpid())
+
+        monkeypatch.setattr("flow_app.dispatcher.subprocess.Popen", fake_popen)
+        monkeypatch.setattr("flow_app.dispatcher.threading.Thread", _NoopThread)
+        try:
+            agent = repo_create_agent(
+                db,
+                AgentCreate(name="worker-exit", command=_success_command(), stale_claim_timeout_seconds=1),
+            )
+            task = repo_create_task(db, TaskCreate(title="Live then exit", status="todo"))
+            run = dispatch_one(db, agent, task, base_url="http://flow.test")
+            run.last_heartbeat_at = utcnow() - timedelta(seconds=10)
+            db.flush()
+
+            # First pass: process is alive (our PID) — no recovery
+            recovered_pass1 = stale_recovery(db)
+            assert recovered_pass1 == []
+            run1 = db.get(AgentRun, run.id)
+            assert run1.status == "running"
+
+            # Now simulate process death — patch _is_process_alive to return False
+            monkeypatch.setattr("flow_app.dispatcher._is_process_alive", lambda pid: False)
+
+            # Make heartbeat stale again (first pass reset it to now)
+            run1.last_heartbeat_at = utcnow() - timedelta(seconds=10)
+            db.flush()
+
+            # Second pass: process is gone — recover
+            recovered_pass2 = stale_recovery(db)
+            assert len(recovered_pass2) == 1
+            run2 = db.get(AgentRun, run.id)
+            assert run2.status in ("crashed", "stale")
+        finally:
+            db.close()
+
+    def test_monitor_process_preserves_zero_exit_on_exception(self, tmp_path, monkeypatch):
+        """If the process exits with code 0 but a monitoring exception occurs,
+        the exit code must remain 0, not be overridden to -1."""
+        import unittest.mock as _mock
+        from flow_app.dispatcher import _monitor_process
+        from flow_app.database import Base, build_engine, build_session_factory
+
+        # Create a mock process that has already exited with code 0
+        process = SimpleNamespace(
+            pid=12345,
+            poll=lambda: 0,  # Always returns 0 (exited successfully)
+            returncode=0,
+        )
+
+        # Make time.sleep raise an exception to simulate a monitoring error
+        def boom(*a, **kw):
+            raise RuntimeError("monitoring interrupted")
+        monkeypatch.setattr("flow_app.dispatcher.time.sleep", boom)
+
+        engine = build_engine(f"sqlite:///{tmp_path / 'monitor.sqlite'}")
+        Base.metadata.create_all(bind=engine)
+        session_factory = build_session_factory(engine)
+
+        # Create a run to monitor
+        with session_factory() as db:
+            agent = repo_create_agent(db, AgentCreate(name="monitor-agent", command=_success_command()))
+            task = repo_create_task(db, TaskCreate(title="Monitor test", status="todo"))
+            run = create_agent_run(db, agent_id=agent.id, task_id=task.id, status="running")
+            run.pid = 12345
+            run.started_at = utcnow()
+            run.last_heartbeat_at = utcnow()
+            db.commit()
+            run_id = run.id
+
+        # Run the monitor — the exception in time.sleep should not override exit_code=0
+        _monitor_process(run_id, process, session_factory)
+
+        with session_factory() as db:
+            completed_run = db.get(AgentRun, run_id)
+            assert completed_run.status == "done"
+            assert completed_run.exit_code == 0
 
     def test_manual_dispatch_mints_key_instead_of_forwarding_bearer_token(self, tmp_path, monkeypatch):
         captured = {}

@@ -233,16 +233,26 @@ def heartbeat_run(session: Session, run: AgentRun) -> AgentRun:
 
 
 def _is_process_alive(pid: int | None) -> bool:
-    """Check if a process with the given PID is still running."""
+    """Check if a process with the given PID is still running.
+
+    Conservative: PermissionError means the process exists but is owned
+    by another user — treat as alive to avoid yanking worktrees from live runs.
+    Only ProcessLookupError (ESRCH: no such process) is treated as dead.
+    """
     if pid is None or pid <= 0:
         return False
     try:
         os.kill(pid, 0)
         return True
-    except (ProcessLookupError, PermissionError):
+    except ProcessLookupError:
         return False
+    except PermissionError:
+        # Process exists but we don't have permission to signal it.
+        # Be conservative — treat as alive to avoid recovering a live run.
+        return True
     except OSError:
-        return False
+        # Unknown OS error — be conservative and treat as alive.
+        return True
 
 
 def stale_recovery(session: Session) -> list[str]:
@@ -512,17 +522,33 @@ def _resolve_session_factory(session_factory: Callable[[], Session] | None = Non
 
 
 def _monitor_process(run_id: str, process: subprocess.Popen, session_factory: Callable[[], Session]) -> None:
-    """Monitor a spawned process and auto-complete the run when it exits."""
+    """Monitor a spawned process and auto-complete the run when it exits.
+
+    If a monitoring exception occurs after the process has already exited
+    with a known return code, the known code is preserved — a successful
+    exit must not be retroactively marked as a crash.
+    """
     exit_code: int | None = None
     try:
         while process.poll() is None:
             time.sleep(5)
         exit_code = process.returncode
     except Exception as exc:
-        # Only override exit_code on real process monitoring errors, not
-        # successful exits. Log the exception instead of silently swallowing it.
+        # Log the exception. If we already captured a return code (process
+        # exited successfully before the exception), preserve it. Only
+        # override to -1 when we genuinely don't know the exit status.
         logger.exception("Error monitoring process for run %s: %s", run_id, exc)
-        exit_code = -1
+        if exit_code is None:
+            # Check if the process actually exited while we were handling
+            # the exception — if so, use its real return code.
+            try:
+                rc = process.poll()
+                if rc is not None:
+                    exit_code = rc
+                else:
+                    exit_code = -1
+            except Exception:
+                exit_code = -1
 
     if exit_code is None:
         # Process.poll() returned but no exit code was captured — treat as crash.

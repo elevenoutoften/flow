@@ -68,6 +68,28 @@ Each accent is defined once per surface — `[data-theme="…"]` in `flow.css`
 (board) and `body[data-theme="…"]` in `flow-settings.css` (settings). `love` is
 the shared `:root` default, so it needs no override block.
 
+## Authentication and Access Control
+
+### Default: private board
+
+The board (`GET /`) is **private by default**. Unauthenticated visitors receive an empty login shell — no task titles, descriptions, assignees, or dependency data is rendered. To see the board, a visitor must authenticate via one of:
+
+- **Session cookie** — Sign in via the board UI with an API key. The server issues a signed session cookie (requires `FLOW_SESSION_SECRET` to be set). This is the primary auth path for browser users.
+- **Bearer token** — Pass `Authorization: Bearer <api_key>` as a header. Useful for programmatic access.
+- **Trusted headers** — `X-Axis-Admin`, `X-Axis-User`, `X-Axis-Agent` (if `trusted_headers` is enabled). Used behind reverse proxies that handle auth externally.
+
+The resolved actor must have `BOARD_VIEW` permission (all roles except unauthenticated have this). See [Security](Security.md) for the full permission matrix.
+
+### Public opt-in: `FLOW_PUBLIC_BOARD`
+
+Setting `FLOW_PUBLIC_BOARD=true` (environment variable, defaults to `false`) makes the board readable by anyone who can reach the HTTP port — no authentication required. This is an explicit opt-in for dashboards or wall displays.
+
+**Exposure implications:** When public, all task data is visible to unauthenticated visitors: titles, descriptions, assignees, dependencies, priorities, and human-required flags. Notes and handoffs are not shown on the board surface itself but are accessible via the REST API without auth if the board is public and no API key is enforced on the API routes (API routes still require auth independently). Use this only on trusted networks.
+
+### Ideas and Settings surfaces
+
+The **Ideas** (`GET /ideas.html`) and **Settings** (`GET /settings.html`) surfaces always require a resolved actor — they are not affected by `FLOW_PUBLIC_BOARD`. Embedded iframes rely on the signed session cookie for auth, since header-based auth (`X-Axis-Admin`) is not forwarded into iframes. Set `FLOW_SESSION_SECRET` so the board can issue session cookies.
+
 ## Capability gaps: engine vs. UI
 
 The backend supports more than the current flow2 design surfaces. These are

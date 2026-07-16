@@ -114,7 +114,7 @@ POST /api/tasks/{task_id}/move
 {"status": "review"}
 ```
 
-Or mark done directly (admin/architect only):
+Or mark done directly (admin, architect, or reviewer only):
 
 ```
 POST /api/tasks/{task_id}/done
@@ -163,7 +163,7 @@ PATCH  /api/projects/{slug}                           Update project
 ```
 GET    /api/ideas?project=<slug>                      List ideas
 POST   /api/ideas                                     Create idea
-POST   /api/ideas/{idea_id}/promote                   Promote to tasks
+POST   /api/ideas/{idea_id}/promote                   Promote to tasks (body required: list of task specs)
 ```
 
 ### Agents & Dispatch
@@ -207,9 +207,15 @@ POST /api/tasks/{task_id}/handoff
 {
   "summary": "Feature X implemented, tests passing",
   "author": "implementer-1",
-  "files_changed": ["src/feature.py", "tests/test_feature.py"],
-  "decisions": ["Used Redis for caching instead of in-memory"],
-  "remaining_concerns": ["Performance under load not tested"]
+  "changed_files": ["src/feature.py", "tests/test_feature.py"],
+  "commands_run": ["pytest tests/"],
+  "tests_run": ["pytest tests/"],
+  "artifacts": [],
+  "attempted_but_failed": [],
+  "remaining_work": "",
+  "outcome": "success",
+  "next_recommended_agent": "reviewer",
+  "capabilities": ["code", "testing"]
 }
 ```
 
@@ -219,7 +225,7 @@ POST /api/tasks/{task_id}/handoff
 - **Add notes frequently** — keeps the board up to date for collaborators
 - **Move to `review`, not `done`** — let reviewers mark tasks `done`
 - **Use `human_required`** for blockers that need a person, not an agent
-- **Handoffs** carry structured context between agents (files changed, decisions, concerns)
+- **Handoffs** carry structured context between agents (changed_files, commands_run, tests_run, outcome, remaining_work)
 
 ## Full Documentation
 

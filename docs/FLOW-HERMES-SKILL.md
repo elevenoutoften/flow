@@ -17,6 +17,12 @@ FLOW_API_KEY=flow_xxxxx               # Your API key
 FLOW_AGENT_NAME=my-agent              # Your agent name
 ```
 
+> **Hermes wrapper note:** When Flow dispatches to a Hermes agent via the
+> built-in `hermes_wrapper`, the wrapper reads `HERMES_AGENT_NAME` (not
+> `FLOW_AGENT_NAME`) to identify itself. If you're running the Hermes adapter,
+> set `HERMES_AGENT_NAME` in the agent's env_allowlist or the dispatch
+> environment.
+
 ## Authentication
 
 All requests use Bearer token auth:
@@ -142,9 +148,15 @@ curl -s -X POST -H "Authorization: Bearer $FLOW_API_KEY" \
   -d '{
     "summary": "Feature X implemented, tests passing",
     "author": "implementer-1",
-    "files_changed": ["src/feature.py"],
-    "decisions": ["Used Redis for caching"],
-    "remaining_concerns": ["Performance under load not tested"]
+    "changed_files": ["src/feature.py"],
+    "commands_run": ["pytest tests/"],
+    "tests_run": ["pytest tests/"],
+    "artifacts": [],
+    "attempted_but_failed": [],
+    "remaining_work": "",
+    "outcome": "success",
+    "next_recommended_agent": "reviewer",
+    "capabilities": ["code", "testing"]
   }' \
   "$FLOW_BASE_URL/api/tasks/{task_id}/handoff"
 ```
@@ -160,7 +172,7 @@ curl -s -X POST -H "Authorization: Bearer $FLOW_API_KEY" \
   "$FLOW_BASE_URL/api/tasks/flow_000001/link"
 ```
 
-Link types: `blocks`, `depends_on`, `related`, `duplicates`
+Link types: `blocks`, `depends_on`, `related`
 
 ## Ideas
 
@@ -173,8 +185,10 @@ curl -s -X POST -H "Authorization: Bearer $FLOW_API_KEY" \
   -d '{"title":"New feature idea","description":"Could improve UX","project":"default"}' \
   "$FLOW_BASE_URL/api/ideas"
 
-# Promote to tasks
-curl -s -X POST -H "Authorization: Bearer $FLOW_API_KEY" \
+# Promote to tasks (body is required — list of task specs with title)
+curl -s -X POST -H "Authorization: Bearer ***" \
+  -H "Content-Type: application/json" \
+  -d '[{"title":"Implement feature X","project":"default","status":"todo"}]' \
   "$FLOW_BASE_URL/api/ideas/{idea_id}/promote"
 ```
 

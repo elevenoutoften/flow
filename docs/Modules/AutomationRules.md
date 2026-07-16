@@ -61,6 +61,9 @@ Actions are a JSON array returned when all conditions match. Flow validates JSON
 | `dispatch` | Dispatch an agent to the task |
 | `notify` | Send notification via registered provider |
 | `move` | Move task to a new status |
+| `claim` | Claim the task on behalf of an agent |
+| `add_note` | Add a note to the task |
+| `webhook` | Trigger a registered webhook |
 
 ### Example Actions
 
@@ -169,7 +172,7 @@ Cron rules with task conditions scan tasks and execute actions once per matching
 3. Rules matching the trigger are loaded, ordered by priority (descending).
 4. For each enabled rule, conditions are evaluated against task data.
 5. Matching rules produce action arrays.
-6. Built-in actions (`dispatch`, `notify`, `move`) are executed by the engine.
+6. Built-in actions (`dispatch`, `notify`, `move`, `claim`, `add_note`, `webhook`) are executed by the engine.
 7. `last_run_at` is updated on matching rules.
 
 ## See Also

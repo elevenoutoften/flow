@@ -48,6 +48,10 @@ Slug validation: lowercase alphanumeric with hyphens, 2–120 chars.
 | `status` | string | Filter by status |
 | `assignee` | string | Filter by assignee |
 | `unclaimed` | bool | Only unclaimed tasks |
+| `limit` | int | Page size (default 50, max 200) |
+| `offset` | int | Skip N results (default 0) |
+
+Response: `{items, total, limit, offset}`
 
 ### Task Fields
 
@@ -145,6 +149,7 @@ The `api_key` field is returned only on creation.
 | `POST` | `/api/automation-rules` | `rules:manage` | Create rule |
 | `PATCH` | `/api/automation-rules/{id}` | `rules:manage` | Update rule |
 | `POST` | `/api/automation-rules/evaluate` | `rules:evaluate` | Evaluate rules |
+| `POST` | `/api/automation-rules/dry-run` | `rules:evaluate` | Dry-run rules |
 
 ## Task Links
 
@@ -200,6 +205,7 @@ Compatibility route: `POST /api/tasks/{task_id}/handoff`
 | Method | Path | Permission | Description |
 |--------|------|-----------|-------------|
 | `GET` | `/` | `board:view` | HTML Kanban board |
+| `GET` | `/events/board` | `tasks:read` | SSE board event stream |
 | `GET` | `/healthz` | None (public) | Health check |
 | `GET` | `/healthz/config` | None (public) | Config status |
 

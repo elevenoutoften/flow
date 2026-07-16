@@ -286,22 +286,85 @@ def test_match_rules_respects_trigger_config_project_filter(client):
 
 
 def test_match_rules_respects_trigger_config_from_status_filter(client):
-    todo_task = create_task(client, priority=100, status="todo")
-    doing_task = create_task(client, priority=100, status="doing")
+    """from_status is checked against the event's previous status (data),
+    not the task's current status (which has already changed)."""
+    task = create_task(client, priority=100, status="todo")
     rule = create_rule(
         client,
         trigger="task_moved",
-        trigger_config=json.dumps({"from_status": "doing"}),
+        trigger_config=json.dumps({"from_status": "todo"}),
         actions=json.dumps([{"type": "add_note", "text": "from status matched"}]),
     )
 
     with client.app.state.SessionLocal() as db:
-        todo_matches = emit_event(db, "task_moved", task_id=todo_task["id"], data={"to_status": "review"})
-        doing_matches = emit_event(db, "task_moved", task_id=doing_task["id"], data={"to_status": "review"})
+        # Simulate a move from todo → review: event data carries from_status=todo.
+        matches = emit_event(
+            db,
+            "task_moved",
+            task_id=task["id"],
+            data={"from_status": "todo", "to_status": "review"},
+        )
         db.commit()
 
-    assert todo_matches == []
-    assert [match["rule_id"] for match in doing_matches] == [rule["id"]]
+    assert [match["rule_id"] for match in matches] == [rule["id"]]
+
+
+def test_match_rules_from_status_non_matching(client):
+    """A rule with from_status=doing must not fire for a todo→review transition."""
+    task = create_task(client, priority=100, status="todo")
+    create_rule(
+        client,
+        trigger="task_moved",
+        trigger_config=json.dumps({"from_status": "doing"}),
+        actions=json.dumps([{"type": "add_note", "text": "should not match"}]),
+    )
+
+    with client.app.state.SessionLocal() as db:
+        matches = emit_event(
+            db,
+            "task_moved",
+            task_id=task["id"],
+            data={"from_status": "todo", "to_status": "review"},
+        )
+        db.commit()
+
+    assert matches == []
+
+
+def test_api_move_triggers_from_status_rule(client):
+    """End-to-end: moving a task via the API triggers a from_status rule.
+
+    Creates a rule that only fires on todo→review transitions, moves a task
+    from todo to review via PATCH, and verifies the rule action (add_note)
+    is executed against the task.
+    """
+    task = create_task(client, priority=100, status="todo")
+    rule = create_rule(
+        client,
+        name="Todo to review alert",
+        trigger="task_moved",
+        trigger_config=json.dumps({"from_status": "todo", "to_status": "review"}),
+        conditions="[]",
+        actions=json.dumps([{"type": "add_note", "text": "Moved from todo to review"}]),
+    )
+
+    # Move via the API POST /move (uses TaskService.move_task which emits
+    # from_status/to_status in event data).
+    response = client.post(
+        f"/api/tasks/{task['id']}/move",
+        json={"status": "review"},
+    )
+    assert response.status_code == 200, response.text
+
+    # Verify the rule fired and the note was added.
+    notes = client.get(f"/api/tasks/{task['id']}").json()["notes"]
+    assert any("Moved from todo to review" in n["body"] for n in notes)
+
+    # Moving a different task from doing→review must NOT trigger the rule.
+    other = create_task(client, priority=100, status="doing")
+    client.post(f"/api/tasks/{other['id']}/move", json={"status": "review"})
+    other_notes = client.get(f"/api/tasks/{other['id']}").json()["notes"]
+    assert not any("Moved from todo to review" in n["body"] for n in other_notes)
 
 
 def test_cron_config_matches_standard_cron_string():
@@ -331,6 +394,61 @@ def test_cron_config_invalid_cron_string_does_not_block():
         json.dumps({"cron": "0 9 *"}),
         datetime(2026, 5, 25, 9, 11, tzinfo=timezone.utc),
     )
+
+
+def test_cron_weekday_sunday_zero():
+    """Standard cron: 0 = Sunday. 2026-05-31 is a Sunday."""
+    sunday = datetime(2026, 5, 31, 9, 0, tzinfo=timezone.utc)
+    assert _cron_config_matches(json.dumps({"cron": "0 9 * * 0"}), sunday)
+    assert not _cron_config_matches(json.dumps({"cron": "0 9 * * 1"}), sunday)
+
+
+def test_cron_weekday_sunday_seven():
+    """Standard cron: 7 is also Sunday."""
+    sunday = datetime(2026, 5, 31, 9, 0, tzinfo=timezone.utc)
+    assert _cron_config_matches(json.dumps({"cron": "0 9 * * 7"}), sunday)
+
+
+def test_cron_weekday_monday_one():
+    """Standard cron: 1 = Monday. 2026-05-25 is a Monday."""
+    monday = datetime(2026, 5, 25, 9, 0, tzinfo=timezone.utc)
+    assert _cron_config_matches(json.dumps({"cron": "0 9 * * 1"}), monday)
+    assert not _cron_config_matches(json.dumps({"cron": "0 9 * * 0"}), monday)
+
+
+def test_cron_weekday_saturday_six():
+    """Standard cron: 6 = Saturday. 2026-05-30 is a Saturday."""
+    saturday = datetime(2026, 5, 30, 9, 0, tzinfo=timezone.utc)
+    assert _cron_config_matches(json.dumps({"cron": "0 9 * * 6"}), saturday)
+    assert not _cron_config_matches(json.dumps({"cron": "0 9 * * 0"}), saturday)
+
+
+def test_cron_weekday_legacy_format_sunday():
+    """Legacy {day_of_week} format also uses standard cron numbering (0=Sunday)."""
+    sunday = datetime(2026, 5, 31, 9, 0, tzinfo=timezone.utc)
+    assert _cron_config_matches(
+        json.dumps({"minute": "0", "hour": "9", "day_of_week": "0"}),
+        sunday,
+    )
+    assert not _cron_config_matches(
+        json.dumps({"minute": "0", "hour": "9", "day_of_week": "1"}),
+        sunday,
+    )
+
+
+def test_cron_validate_rejects_day_of_week_8():
+    """Day-of-week 8 is invalid (valid range 0-7)."""
+    from flow_app.cron import validate_cron_string
+    error = validate_cron_string("0 9 * * 8")
+    assert error is not None
+    assert "day_of_week" in error.lower()
+
+
+def test_cron_validate_accepts_day_of_week_7():
+    """Day-of-week 7 is valid (equivalent to 0=Sunday)."""
+    from flow_app.cron import validate_cron_string
+    error = validate_cron_string("0 9 * * 7")
+    assert error is None
 
 
 def test_create_cron_rule_rejects_invalid_cron_expression(client):

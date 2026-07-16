@@ -74,20 +74,52 @@ Actions are a JSON array returned when all conditions match. Flow validates JSON
 ]
 ```
 
-## Cron Trigger Config
+## Trigger Config
+
+`trigger_config` is a JSON string that scopes when a rule fires. The canonical format is a single JSON object:
 
 ```json
 {
-  "interval_seconds": 3600,
+  "project": "my-project",
+  "from_status": "todo",
+  "to_status": "review",
+  "cron": "0 9 * * 1-5"
+}
+```
+
+### Event triggers (`task_moved`, `task_created`, etc.)
+
+| Field | Description |
+|-------|-------------|
+| `project` | Only fire for tasks in this project slug |
+| `from_status` | Only fire when the task's **previous** status was this value (checked against event data, not current task status) |
+| `to_status` | Only fire when the task's **new** status is this value |
+
+For `task_moved`, `from_status` and `to_status` are read from the event's transition data (`{"from_status": "todo", "to_status": "review"}`), not the task's current status (which has already changed by the time the rule engine runs).
+
+### Cron trigger
+
+| Field | Description |
+|-------|-------------|
+| `cron` | Standard 5-field cron expression: `minute hour day_of_month month day_of_week` |
+
+**Cron day-of-week semantics:** Standard cron numbering — 0=Sunday, 1=Monday, …, 6=Saturday. 7 is also accepted as Sunday. This differs from Python's `datetime.weekday()` (Monday=0); the engine converts internally.
+
+Invalid cron expressions are rejected at save time with a 422 response. Legacy `trigger_config` with `minute`/`hour`/`day_of_week` keys is still supported at runtime but `cron` is the canonical format.
+
+### Legacy cron format (deprecated)
+
+The old `{minute, hour, day_of_week}` JSON format is still parsed for backward compatibility:
+
+```json
+{
   "minute": "*/5",
   "hour": "*",
   "day_of_week": "*"
 }
 ```
 
-The runner evaluates cron rules each pass. `_cron_config_matches()` checks minute, hour, and day_of_week fields. Supports exact values and `*/N` divisors.
-
-Cron rules with task conditions scan tasks and execute actions once per matching task. Age condition values are seconds since the task timestamp.
+New rules should use the `cron` string format instead.
 
 ## Stale Task Policy Examples
 
@@ -97,7 +129,7 @@ Cron rules with task conditions scan tasks and execute actions once per matching
 {
   "name": "Stale task notification",
   "trigger": "cron",
-  "trigger_config": "{\"minute\": \"0\", \"hour\": \"9\", \"day_of_week\": \"*\"}",
+  "trigger_config": "{\"cron\": \"0 9 * * *\"}",
   "conditions": [
     {"field": "status", "operator": "in", "value": ["todo", "doing"]},
     {"field": "age_since_updated", "operator": "gt", "value": 604800}
@@ -114,7 +146,7 @@ Cron rules with task conditions scan tasks and execute actions once per matching
 {
   "name": "Review stagnation alert",
   "trigger": "cron",
-  "trigger_config": "{\"minute\": \"0\", \"hour\": \"9\", \"day_of_week\": \"*\"}",
+  "trigger_config": "{\"cron\": \"0 9 * * *\"}",
   "conditions": [
     {"field": "status", "operator": "eq", "value": "review"},
     {"field": "age_since_updated", "operator": "gt", "value": 259200}
@@ -125,13 +157,13 @@ Cron rules with task conditions scan tasks and execute actions once per matching
 }
 ```
 
-### Escalate unclaimed tasks after 2 days
+### Escalate unclaimed tasks after 2 days (weekdays only)
 
 ```json
 {
   "name": "Unclaimed task escalation",
   "trigger": "cron",
-  "trigger_config": "{\"minute\": \"*/30\", \"hour\": \"*\", \"day_of_week\": \"1-5\"}",
+  "trigger_config": "{\"cron\": \"*/30 * * * 1-5\"}",
   "conditions": [
     {"field": "status", "operator": "eq", "value": "todo"},
     {"field": "assignee", "operator": "exists"},

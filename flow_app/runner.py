@@ -435,10 +435,14 @@ def _cron_config_matches(trigger_config: str | None, now: datetime | None = None
     cron_expr = config.get("cron")
     if cron_expr:
         return _cron_string_matches(str(cron_expr), now)
+    # Legacy format: {minute, hour, day_of_week} keys.
+    # Convert Python weekday (Mon=0..Sun=6) to cron weekday (Sun=0..Sat=6)
+    # for day_of_week to match standard cron semantics.
+    cron_dow = (now.weekday() + 1) % 7
     return (
         _cron_field_matches(config.get("minute", "*"), now.minute)
         and _cron_field_matches(config.get("hour", "*"), now.hour)
-        and _cron_field_matches(config.get("day_of_week", "*"), now.weekday())
+        and _cron_field_matches_dow(config.get("day_of_week", "*"), cron_dow)
     )
 
 
@@ -448,6 +452,11 @@ def _cron_string_matches(expr: str, now: datetime) -> bool:
 
 def _cron_field_matches(expression: object, value: int) -> bool:
     return cron_field_matches(expression, value)
+
+
+def _cron_field_matches_dow(expression: object, value: int) -> bool:
+    from .cron import cron_field_matches_dow
+    return cron_field_matches_dow(expression, value)
 
 
 def _log_pass_summary(result: PassResult) -> None:

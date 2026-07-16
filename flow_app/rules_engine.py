@@ -243,7 +243,10 @@ def match_rules(
         if trigger != "cron" and trigger_config:
             if trigger_config.get("project") and task_data.get("project") != trigger_config["project"]:
                 continue
-            if trigger_config.get("from_status") and task_data.get("status") != trigger_config["from_status"]:
+            # from_status: check the event's previous status, not the current
+            # task status (which has already changed by the time match_rules runs).
+            event_from = (data or {}).get("from_status")
+            if trigger_config.get("from_status") and event_from != trigger_config["from_status"]:
                 continue
             if trigger_config.get("to_status") and (data or {}).get("to_status") != trigger_config["to_status"]:
                 continue

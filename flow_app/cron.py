@@ -5,17 +5,24 @@ import json
 
 
 def cron_string_matches(expr: str, now: datetime) -> bool:
-    """Match the supported subset of a standard 5-field cron expression."""
+    """Match the supported subset of a standard 5-field cron expression.
+
+    Day-of-week uses standard cron semantics: 0=Sunday, 1=Monday, …, 6=Saturday.
+    7 is also accepted as Sunday.  ``datetime.weekday()`` returns Monday=0,
+    so we convert to cron numbering (0=Sunday).
+    """
     parts = expr.strip().split()
     if len(parts) != 5:
         return True
     minute, hour, day_of_month, month, day_of_week = parts
+    # Convert Python weekday (Mon=0..Sun=6) to cron weekday (Sun=0..Sat=6).
+    cron_dow = (now.weekday() + 1) % 7
     return (
         cron_field_matches(minute, now.minute)
         and cron_field_matches(hour, now.hour)
         and cron_field_matches(day_of_month, now.day)
         and cron_field_matches(month, now.month)
-        and cron_field_matches(day_of_week, now.weekday())
+        and cron_field_matches_dow(day_of_week, cron_dow)
     )
 
 
@@ -35,6 +42,27 @@ def cron_field_matches(expression: object, value: int) -> bool:
         return False
 
 
+def cron_field_matches_dow(expression: object, value: int) -> bool:
+    """Match day-of-week with standard cron semantics (0=Sunday, 7 also = Sunday)."""
+    text = str(expression).strip()
+    if not text or text == "*":
+        return True
+    if text.startswith("*/"):
+        try:
+            divisor = int(text[2:])
+        except ValueError:
+            return False
+        return divisor > 0 and value % divisor == 0
+    try:
+        cron_val = int(text)
+    except ValueError:
+        return False
+    # In standard cron, 7 is equivalent to 0 (Sunday).
+    if cron_val == 7:
+        cron_val = 0
+    return value == cron_val
+
+
 def validate_cron_string(expr: str) -> str | None:
     parts = expr.strip().split()
     if len(parts) != 5:
@@ -44,7 +72,7 @@ def validate_cron_string(expr: str) -> str | None:
         ("hour", 0, 23),
         ("day_of_month", 1, 31),
         ("month", 1, 12),
-        ("day_of_week", 0, 6),
+        ("day_of_week", 0, 7),  # 0-6 (Sun-Sat), 7 also = Sunday
     )
     for part, (name, minimum, maximum) in zip(parts, ranges, strict=True):
         error = _validate_cron_field(part, name, minimum, maximum)

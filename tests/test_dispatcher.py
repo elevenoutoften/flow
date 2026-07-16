@@ -1024,3 +1024,197 @@ class TestAgentPermissions:
             headers=headers,
         )
         assert r.status_code == 403
+
+
+# ---------- AUTO-04: Atomic claim race tests ----------
+
+
+class TestAtomicClaimRace:
+    """Genuine two-session race tests proving exactly one claim wins."""
+
+    def test_preassigned_agent_can_still_dispatch(self, tmp_path, monkeypatch):
+        """A task already assigned to agent-A can be re-dispatched by agent-A.
+        The atomic claim must allow assignee == agent_name, not just NULL."""
+        db = _db(tmp_path)
+
+        def fake_popen(args, **kwargs):
+            return SimpleNamespace(pid=12345)
+
+        monkeypatch.setattr("flow_app.dispatcher.subprocess.Popen", fake_popen)
+        monkeypatch.setattr("flow_app.dispatcher.threading.Thread", _NoopThread)
+        try:
+            agent = repo_create_agent(db, AgentCreate(name="agent-a", command=_success_command()))
+            task = repo_create_task(db, TaskCreate(title="Preassigned", status="todo", assignee="agent-a"))
+            db.commit()
+
+            run = dispatch_one(db, agent, task, base_url="http://flow.test")
+            db.commit()
+            assert run.agent_id == agent.id
+            assert run.task_id == task.id
+        finally:
+            db.close()
+
+    def test_two_thread_race_one_claim_wins(self, tmp_path, monkeypatch):
+        """Two threads with separate sessions race to claim the same task.
+        Exactly one must win, the other must skip gracefully (no exception)."""
+        import threading as _threading
+
+        db = _db(tmp_path)
+        engine = db.get_bind()
+        session_factory = build_session_factory(engine)
+
+        def fake_popen(args, **kwargs):
+            return SimpleNamespace(pid=12345)
+
+        monkeypatch.setattr("flow_app.dispatcher.subprocess.Popen", fake_popen)
+        # Don't replace threading.Thread — we need real threads for the race.
+        # Instead, mock the monitor thread's target to prevent subprocess monitoring.
+        monkeypatch.setattr("flow_app.dispatcher._monitor_process", lambda *a, **kw: None)
+
+        agent_a = repo_create_agent(db, AgentCreate(name="racer-a", command=_success_command()))
+        agent_b = repo_create_agent(db, AgentCreate(name="racer-b", command=_success_command()))
+        task = repo_create_task(db, TaskCreate(title="Race target", status="todo"))
+        db.commit()
+        task_id = task.id
+        db.close()
+
+        results = {"a": None, "b": None}
+        errors = {"a": None, "b": None}
+        barrier = _threading.Barrier(2)
+
+        def try_dispatch(label, agent_name):
+            session = session_factory()
+            try:
+                from flow_app.models import Agent as AgentModel
+                agent = session.query(AgentModel).filter_by(name=agent_name).one()
+                task_obj = session.get(Task, task_id)
+                barrier.wait()
+                run = dispatch_one(session, agent, task_obj, base_url="http://flow.test")
+                session.commit()
+                results[label] = run.id
+            except DispatchError as exc:
+                session.rollback()
+                errors[label] = str(exc)
+            except Exception as exc:
+                session.rollback()
+                errors[label] = f"{type(exc).__name__}: {exc}"
+            finally:
+                session.close()
+
+        t1 = _threading.Thread(target=try_dispatch, args=("a", "racer-a"))
+        t2 = _threading.Thread(target=try_dispatch, args=("b", "racer-b"))
+        t1.start()
+        t2.start()
+        t1.join(timeout=10)
+        t2.join(timeout=10)
+
+        winners = [k for k, v in results.items() if v is not None]
+        assert len(winners) == 1, f"Expected 1 winner, got {winners}. Results: {results}, Errors: {errors}"
+        loser = [k for k in results if results[k] is None][0]
+        assert errors[loser] is not None
+        assert "concurrently" in errors[loser].lower() or "already claimed" in errors[loser].lower(), \
+            f"Loser should get a graceful message, got: {errors[loser]}"
+
+    def test_claim_version_increments(self, tmp_path, monkeypatch):
+        """claim_task_atomically must increment the task version on success."""
+        from flow_app.repository import claim_task_atomically, get_task
+
+        db = _db(tmp_path)
+        try:
+            task = repo_create_task(db, TaskCreate(title="Version check", status="todo"))
+            db.commit()
+            original_version = task.version
+
+            assert claim_task_atomically(db, task.id, original_version, "version-agent", "doing")
+            db.commit()
+
+            refreshed = get_task(db, task.id)
+            assert refreshed.version == original_version + 1
+            assert refreshed.assignee == "version-agent"
+            assert refreshed.status == "doing"
+        finally:
+            db.close()
+
+    def test_rule_claim_version_increments(self, tmp_path, monkeypatch):
+        """Rule _execute_claim uses CAS and must increment version."""
+        import json as _json
+        from flow_app.models import AutomationRule
+        from flow_app.rules_engine import execute_actions, MatchResult
+        from flow_app.security import Actor, ApiKeyRole
+
+        db = _db(tmp_path)
+        try:
+            task = repo_create_task(db, TaskCreate(title="Rule claim target", status="todo"))
+            now = utcnow()
+            rule = AutomationRule(
+                id="rule_test_claim",
+                name="Claim rule",
+                description="",
+                enabled=1,
+                priority=50,
+                trigger="task_created",
+                trigger_config="",
+                conditions="[]",
+                actions=_json.dumps([{"type": "claim", "assignee": "rule-agent"}]),
+                last_run_at=None,
+                created_at=now,
+                updated_at=now,
+            )
+            db.add(rule)
+            db.commit()
+            original_version = task.version
+
+            actor = Actor(key_id=None, name="automation", role=ApiKeyRole.admin, source="system")
+            match = MatchResult(rule_id=rule.id, rule_name=rule.name, actions=_json.loads(rule.actions), task_id=task.id)
+            results = execute_actions(db, match, trigger="task_created", actor=actor)
+            db.commit()
+
+            assert results[0]["success"] is True
+            from flow_app.repository import get_task
+            refreshed = get_task(db, task.id)
+            assert refreshed.version == original_version + 1
+            assert refreshed.assignee == "rule-agent"
+        finally:
+            db.close()
+
+    def test_rule_move_version_increments(self, tmp_path, monkeypatch):
+        """Rule _execute_move uses CAS and must increment version."""
+        import json as _json
+        from flow_app.models import AutomationRule
+        from flow_app.repository import get_task
+        from flow_app.rules_engine import execute_actions, MatchResult
+        from flow_app.security import Actor, ApiKeyRole
+
+        db = _db(tmp_path)
+        try:
+            task = repo_create_task(db, TaskCreate(title="Rule move target", status="todo"))
+            now = utcnow()
+            rule = AutomationRule(
+                id="rule_test_move",
+                name="Move rule",
+                description="",
+                enabled=1,
+                priority=50,
+                trigger="task_created",
+                trigger_config="",
+                conditions="[]",
+                actions=_json.dumps([{"type": "move", "status": "doing"}]),
+                last_run_at=None,
+                created_at=now,
+                updated_at=now,
+            )
+            db.add(rule)
+            db.commit()
+            original_version = task.version
+
+            actor = Actor(key_id=None, name="automation", role=ApiKeyRole.admin, source="system")
+            match = MatchResult(rule_id=rule.id, rule_name=rule.name, actions=_json.loads(rule.actions), task_id=task.id)
+            results = execute_actions(db, match, trigger="task_created", actor=actor)
+            db.commit()
+
+            assert results[0]["success"] is True
+            refreshed = get_task(db, task.id)
+            assert refreshed.version == original_version + 1
+            assert refreshed.status == "doing"
+        finally:
+            db.close()

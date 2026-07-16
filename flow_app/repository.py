@@ -6,7 +6,7 @@ import json
 import logging
 import secrets
 
-from sqlalchemy import Select, case, delete, func, select, update as sqlalchemy_update
+from sqlalchemy import Select, case, delete, func, or_, select, update as sqlalchemy_update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session, object_session, selectinload
 
@@ -1780,9 +1780,14 @@ def claim_task_atomically(
 ) -> bool:
     """Atomically claim a task via conditional UPDATE.
 
-    Uses UPDATE ... WHERE assignee IS NULL AND version = expected_version
-    so exactly one claimant wins when multiple dispatchers/runner passes
-    race for the same task. Losers get rowcount=0 and must skip gracefully.
+    Uses UPDATE ... WHERE (assignee IS NULL OR assignee = :assignee)
+    AND version = expected_version so exactly one claimant wins when
+    multiple dispatchers/runner passes race for the same task. Losers
+    get rowcount=0 and must skip gracefully.
+
+    The OR assignee = :assignee clause preserves the preassigned-agent
+    dispatch path: a task already assigned to *this* agent can still be
+    claimed (e.g. re-dispatch, runner poll for a preassigned task).
     """
     updates: dict[str, object] = {
         "assignee": assignee,
@@ -1797,7 +1802,7 @@ def claim_task_atomically(
         .where(
             Task.id == task_id,
             Task.version == expected_version,
-            Task.assignee.is_(None),
+            or_(Task.assignee.is_(None), Task.assignee == assignee),
         )
         .values(**updates)
     )

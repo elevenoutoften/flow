@@ -43,12 +43,14 @@ from .repository import (
     get_task,
     is_dispatch_ready,
     list_agent_runs,
+    list_task_links,
     list_tasks,
     list_workspace_configs,
     mark_run_workspace_cleaned,
     revoke_agent_api_key,
     save_run_workspace_state,
 )
+from .repository import BLOCKING_TASK_LINK_TYPES
 from .schemas import AgentApiKeyCreate, TaskUpdate
 from .repository import update_task
 from .storage_helpers import get_agent_dispatch_statuses, get_comma_list
@@ -84,10 +86,24 @@ def dispatch_one(
         raise DispatchError(f"Task requires a human: {task.id}")
     if task.assignee and task.assignee != agent.name:
         raise DispatchError(f"Task is already claimed by {task.assignee}.")
-    if not is_dispatch_ready(session, task):
-        if task.assignee:
-            raise DispatchError(f"Task is already claimed by {task.assignee}.")
-        raise DispatchError("Task has unresolved blocking dependencies.")
+    # When the task is preassigned to this agent, skip the dispatch-readiness
+    # check (which rejects any task with a non-null assignee).  We still need
+    # to check blocking dependencies though.
+    if task.assignee != agent.name:
+        if not is_dispatch_ready(session, task):
+            if task.assignee:
+                raise DispatchError(f"Task is already claimed by {task.assignee}.")
+            raise DispatchError("Task has unresolved blocking dependencies.")
+    else:
+        # Preassigned to this agent — still check dependencies.
+        blocking_parents = [
+            link for link in list_task_links(session, child_id=task.id)
+            if link.link_type in BLOCKING_TASK_LINK_TYPES
+        ]
+        for link in blocking_parents:
+            parent = get_task(session, link.parent_id)
+            if parent is None or parent.status != "done":
+                raise DispatchError("Task has unresolved blocking dependencies.")
 
     running = list_agent_runs(session, agent_id=agent.id, status="running")
     if len(running) >= agent.max_concurrency:

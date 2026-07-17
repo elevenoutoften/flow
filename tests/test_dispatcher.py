@@ -611,6 +611,8 @@ class TestAgentRunLifecycle:
 
         monkeypatch.setattr("flow_app.dispatcher.subprocess.Popen", fake_popen)
         monkeypatch.setattr("flow_app.dispatcher.threading.Thread", _NoopThread)
+        # PID-independent: force _is_process_alive to report the fake PID as dead
+        monkeypatch.setattr("flow_app.dispatcher._is_process_alive", lambda pid: False)
         try:
             agent = repo_create_agent(
                 db,
@@ -919,7 +921,9 @@ class TestAgentRunLifecycle:
             assert r2.status_code == 200
             assert len(r2.json()["items"]) >= 1
 
-    def test_stale_recovery(self, tmp_path):
+    def test_stale_recovery(self, tmp_path, monkeypatch):
+        # PID-independent: force _is_process_alive to report fake PIDs as dead
+        monkeypatch.setattr("flow_app.dispatcher._is_process_alive", lambda pid: False)
         with _client(tmp_path) as c:
             r = c.post("/api/agent-runs/stale-recovery")
             assert r.status_code == 200

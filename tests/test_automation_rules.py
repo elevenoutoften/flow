@@ -1263,6 +1263,112 @@ def test_markdown_import_no_duplicate_board_events(client):
     )
 
 
+def test_markdown_import_atomic_rollback_on_failure(client, monkeypatch):
+    """Import two tasks where the second task's creation raises.  After
+    rollback, neither task must exist in the database.  The import must stage
+    the batch and commit exactly once — not commit per item."""
+    from flow_app.realtime import board_events
+    from flow_app.services import task as task_service_mod
+
+    board_events.clear()
+
+    # Force the second create_task call to raise.  We patch repository.create_task
+    # so it succeeds once then raises on the second call — this proves the batch
+    # is staged together and rolled back together.
+    original_create = task_service_mod.create_task
+    call_count = {"n": 0}
+
+    def flaky_create(session, payload):
+        call_count["n"] += 1
+        if call_count["n"] == 2:
+            raise RuntimeError("Simulated failure on second task")
+        return original_create(session, payload)
+
+    monkeypatch.setattr(task_service_mod, "create_task", flaky_create)
+
+    response = client.post(
+        "/api/import/markdown/commit",
+        json={
+            "items": [
+                {
+                    "preview_id": "test-1",
+                    "title": "Atomic rollback A",
+                    "status": "todo",
+                    "priority": 50,
+                    "project": "default",
+                },
+                {
+                    "preview_id": "test-2",
+                    "title": "Atomic rollback B",
+                    "status": "todo",
+                    "priority": 50,
+                    "project": "default",
+                },
+            ]
+        },
+    )
+    # The route re-raises → TestClient surfaces 500.
+    assert response.status_code == 500, response.text
+
+    # Neither task must exist in the DB after rollback.
+    with client.app.state.SessionLocal() as db:
+        from flow_app.models import Task
+        titles = [t.title for t in db.query(Task).all()]
+    assert "Atomic rollback A" not in titles, (
+        f"First task leaked after rollback: {titles}"
+    )
+    assert "Atomic rollback B" not in titles, (
+        f"Second task leaked after rollback: {titles}"
+    )
+
+    # No board events must have been published for the rolled-back batch.
+    task_created_events = [e for e in board_events.since(0) if e.event == "task_created"]
+    assert len(task_created_events) == 0, (
+        f"Rolled-back batch published board events: {len(task_created_events)}"
+    )
+
+
+def test_markdown_import_emits_two_events_with_import_batch_id(client):
+    """A successful two-task import must produce exactly two task_created board
+    events, one per task, and each event.data['import_batch_id'] must equal the
+    response import_batch_id.  Events are published only after the commit."""
+    from flow_app.realtime import board_events
+
+    board_events.clear()
+    response = client.post(
+        "/api/import/markdown/commit",
+        json={
+            "items": [
+                {
+                    "preview_id": "test-1",
+                    "title": "Batch event A",
+                    "status": "todo",
+                    "priority": 50,
+                    "project": "default",
+                },
+                {
+                    "preview_id": "test-2",
+                    "title": "Batch event B",
+                    "status": "todo",
+                    "priority": 50,
+                    "project": "default",
+                },
+            ]
+        },
+    )
+    assert response.status_code == 200, response.text
+    batch_id = response.json()["import_batch_id"]
+
+    task_created_events = [e for e in board_events.since(0) if e.event == "task_created"]
+    assert len(task_created_events) == 2, (
+        f"Expected exactly 2 task_created events, got {len(task_created_events)}"
+    )
+    for event in task_created_events:
+        assert event.data.get("import_batch_id") == batch_id, (
+            f"Event import_batch_id mismatch: {event.data.get('import_batch_id')} != {batch_id}"
+        )
+
+
 def test_true_concurrent_cron_exactly_once(client, monkeypatch):
     """Two threads call _run_cron_rules simultaneously — atomic dedupe ensures
     exactly one fires.  This is a real threaded race, not a sequential simulation."""
@@ -1305,6 +1411,13 @@ def test_true_concurrent_cron_exactly_once(client, monkeypatch):
     t1.join(timeout=10)
     t2.join(timeout=10)
 
+    # Both threads must have terminated cleanly (not hung/blocked).
+    assert not t1.is_alive(), "Thread a did not terminate within timeout"
+    assert not t2.is_alive(), "Thread b did not terminate within timeout"
+    # No unhandled exceptions in either thread.
+    assert errors == {"a": None, "b": None}, (
+        f"Expected no errors in either thread, got errors={errors}"
+    )
     total_fired = sum(v or 0 for v in results.values())
     assert total_fired == 1, (
         f"Expected exactly 1 cron fire across both threads, got {total_fired}. "

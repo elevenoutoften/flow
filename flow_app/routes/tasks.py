@@ -109,10 +109,16 @@ def api_commit_markdown_import(
     ):
         batch_id = f"import_{uuid4().hex[:12]}"
         created = []
-        created_tasks = []
         skipped = []
         svc = _make_task_service(db)
-        for item in payload.items:
+
+        # Partition items into duplicates (skipped) and new tasks (to stage).
+        # The new tasks are staged atomically: every item is flushed into the
+        # session before the single committing commit.  If any item raises
+        # during staging the whole batch is rolled back — no partial import.
+        stage_payloads: list[TaskCreate] = []
+        stage_indices: list[int] = []
+        for index, item in enumerate(payload.items):
             duplicate = find_import_duplicate(
                 db,
                 project=item.project,
@@ -126,9 +132,7 @@ def api_commit_markdown_import(
                 skipped.append(item)
                 continue
 
-            # Route through TaskService so that webhook/Telegram/Discord
-            # delivery fires for imported tasks, same as API-created tasks.
-            task = svc.create_task(
+            stage_payloads.append(
                 TaskCreate(
                     title=item.title,
                     status=item.status,
@@ -141,15 +145,32 @@ def api_commit_markdown_import(
                     source_line=item.source_line,
                     import_batch_id=batch_id,
                     source_title=item.source_title,
-                ),
-                actor=actor,
+                )
             )
-            created_tasks.append(task)
+            stage_indices.append(index)
+
+        # Stage every new task in one transaction.  create_tasks_batch flushes
+        # webhook/telegram/discord/rule delivery rows alongside the task rows
+        # but does NOT commit — the commit below is the single atomic boundary.
+        try:
+            created_tasks = svc.create_tasks_batch(stage_payloads, actor=actor)
+        except Exception as exc:
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Import failed and was rolled back: {exc}",
+            ) from exc
+        # Single commit for the entire batch.  If this fails, every staged row
+        # (tasks + delivery outbox) is rolled back together.
+        _commit(db)
+
+        # Board events are in-memory (BoardEventHub, not the DB).  Publish them
+        # only AFTER the commit succeeds so a rolled-back batch publishes nothing.
+        # Carry import_batch_id in the event payload so consumers can correlate.
+        for task in created_tasks:
+            publish_board_event("task_created", task, import_batch_id=batch_id)
             created.append(serialize_task(task))
 
-        # svc.create_task already commits and emits board events per task.
-        # No extra publish_board_event needed — it would duplicate the event.
-        _commit(db)
         return MarkdownImportCommitResponse(import_batch_id=batch_id, created=created, skipped=skipped)
 
 @router.get("/tasks/next", response_model=TaskResponse)

@@ -121,6 +121,34 @@ class TaskService:
         publish_board_event("task_created", task)
         return task
 
+    def create_tasks_batch(
+        self,
+        payloads: list[TaskCreate],
+        actor: Actor | None = None,
+    ) -> list[Task]:
+        """Stage a batch of tasks atomically.
+
+        All tasks are added to the session and their webhook/telegram/discord/rule
+        delivery rows are queued without committing.  The caller is responsible
+        for committing the session once every item has been staged successfully
+        and for publishing board events only after the commit succeeds.  If any
+        item raises, the caller must roll back the session; no partial batch is
+        persisted.
+        """
+        tasks: list[Task] = []
+        for payload in payloads:
+            task = create_task(self.db, payload)
+            self._emit_rule(self.db, "task_created", task_id=task.id, actor=actor)
+            self._webhook.send(self.db, "task_created", task)
+            self._telegram.send(self.db, "task_created", task)
+            if self._discord is not None:
+                self._discord.send(self.db, "task_created", task)
+            tasks.append(task)
+        # Flush so all staged rows are visible inside the session, but do NOT
+        # commit — the caller decides commit vs. rollback.
+        self.db.flush()
+        return tasks
+
     def list_tasks(
         self,
         project: str | None = None,

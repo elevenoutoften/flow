@@ -505,6 +505,47 @@ def test_cron_config_matches_empty_cron_string_is_false():
     assert _cron_config_matches(json.dumps({"cron": "0 9 *"}), now) is False
 
 
+def test_cron_weekday_range_5_to_7_matches_fri_sat_sun():
+    """AC #1-2: validate_cron_string('0 9 * * 5-7') returns no error;
+    cron_string_matches for 5-7 is true on Friday, Saturday, and Sunday and
+    false on Thursday."""
+    from flow_app.cron import cron_string_matches, validate_cron_string
+
+    assert validate_cron_string("0 9 * * 5-7") is None
+    friday = datetime(2026, 5, 29, 9, 0)    # Friday
+    saturday = datetime(2026, 5, 30, 9, 0)  # Saturday
+    sunday = datetime(2026, 5, 31, 9, 0)    # Sunday
+    thursday = datetime(2026, 5, 28, 9, 0) # Thursday
+    assert cron_string_matches("0 9 * * 5-7", friday) is True
+    assert cron_string_matches("0 9 * * 5-7", saturday) is True
+    assert cron_string_matches("0 9 * * 5-7", sunday) is True
+    assert cron_string_matches("0 9 * * 5-7", thursday) is False
+
+
+def test_cron_weekday_range_0_to_7_matches_every_day():
+    """AC #3: cron_string_matches for 0-7 is true on every weekday."""
+    from flow_app.cron import cron_string_matches
+
+    for day in range(7):
+        # 2026-05-25 is Monday (weekday=0), so day N = May 25 + N
+        dt = datetime(2026, 5, 25 + day, 9, 0)
+        assert cron_string_matches("0 9 * * 0-7", dt) is True, (
+            f"0-7 should match every day; failed for day offset {day}"
+        )
+
+
+def test_cron_weekday_range_6_to_7_matches_sat_and_sun():
+    """AC #4: cron_string_matches for 6-7 is true on Saturday and Sunday."""
+    from flow_app.cron import cron_string_matches
+
+    saturday = datetime(2026, 5, 30, 9, 0)  # Saturday
+    sunday = datetime(2026, 5, 31, 9, 0)    # Sunday
+    friday = datetime(2026, 5, 29, 9, 0)    # Friday
+    assert cron_string_matches("0 9 * * 6-7", saturday) is True
+    assert cron_string_matches("0 9 * * 6-7", sunday) is True
+    assert cron_string_matches("0 9 * * 6-7", friday) is False
+
+
 def test_create_cron_rule_rejects_invalid_cron_expression(client):
     response = client.post(
         "/api/automation-rules",

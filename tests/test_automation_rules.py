@@ -389,8 +389,10 @@ def test_cron_config_matches_every_five_minutes_cron_string():
     )
 
 
-def test_cron_config_invalid_cron_string_does_not_block():
-    assert _cron_config_matches(
+def test_cron_config_invalid_cron_string_fails_closed():
+    """An invalid cron string (wrong number of fields) must fail closed —
+    the rule does not match (is skipped), not block other rules."""
+    assert not _cron_config_matches(
         json.dumps({"cron": "0 9 *"}),
         datetime(2026, 5, 25, 9, 11, tzinfo=timezone.utc),
     )

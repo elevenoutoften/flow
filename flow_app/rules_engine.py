@@ -455,6 +455,8 @@ def _execute_spawn(session: Session, task: Task | None, action: dict) -> ActionR
         )
     except (DispatchError, SecretResolutionError) as exc:
         return ActionResult("spawn", False, str(exc), {"agent_id": agent.id})
+    if run is None:
+        return ActionResult("spawn", False, "Task was concurrently claimed by another agent.", {"agent_id": agent.id})
     return ActionResult("spawn", True, f"Dispatched agent {agent.name}.", {"agent_id": agent.id, "run_id": run.id})
 
 

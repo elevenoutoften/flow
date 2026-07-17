@@ -185,10 +185,11 @@ curl -s -X POST -H "Authorization: Bearer $FLOW_API_KEY" \
   -d '{"title":"New feature idea","description":"Could improve UX","project":"default"}' \
   "$FLOW_BASE_URL/api/ideas"
 
-# Promote to tasks (body is required — list of task specs with title)
+# Promote to tasks (body is required — list of PromoteTaskSpec with title)
+# Note: project is NOT in PromoteTaskSpec — promoted tasks inherit the idea's project.
 curl -s -X POST -H "Authorization: Bearer $FLOW_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '[{"title":"Implement feature X","project":"default","status":"todo"}]' \
+  -d '[{"title":"Implement feature X","status":"todo"}]' \
   "$FLOW_BASE_URL/api/ideas/{idea_id}/promote"
 ```
 

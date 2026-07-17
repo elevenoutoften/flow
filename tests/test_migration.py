@@ -1,6 +1,7 @@
 """Tests for schema migration upgrades from old database schemas."""
 from __future__ import annotations
 
+import pytest
 from sqlalchemy import inspect, text
 
 from flow_app.database import build_engine
@@ -372,22 +373,20 @@ def test_migration_from_v2_intermediate_schema(tmp_path):
 def test_migration_handles_corrupt_database(tmp_path):
     """ensure_compatible_schema should handle a corrupt SQLite file gracefully.
 
-    A file that is not a valid SQLite database should not crash the migration.
+    A file that is not a valid SQLite database should raise a clear database
+    error, not crash silently or corrupt things.
     """
+    from sqlalchemy.exc import DatabaseError, OperationalError
+
     db_path = tmp_path / "corrupt.sqlite"
-    # Write garbage to the file
+    # Write garbage to the file — not a valid SQLite header
     db_path.write_bytes(b"NOT A DATABASE FILE\x00\x01\x02")
 
-    # build_engine will connect to it, but queries should fail
-    # The migration should either handle the error or raise a clear exception
     engine = build_engine(f"sqlite:///{db_path}")
-    # ensure_compatible_schema should raise or handle gracefully
-    # We expect it to either raise an operational error or return without crash
-    try:
+    # ensure_compatible_schema should raise a database error (OperationalError
+    # or DatabaseError), not a segfault or silent corruption.
+    with pytest.raises((OperationalError, DatabaseError)):
         ensure_compatible_schema(engine)
-    except Exception:
-        # An exception is acceptable — the point is it shouldn't silently corrupt things
-        pass
 
 
 def test_migration_preserves_existing_data_on_partial_schema(tmp_path):

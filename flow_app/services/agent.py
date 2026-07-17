@@ -99,6 +99,8 @@ class AgentService:
                 raise AgentError(f"Task not found: {task_id}", "not_found")
             raise AgentError("No eligible task found for agent dispatch_statuses.", "not_found")
         run = dispatch_one(self.db, agent, task, api_key=api_key_value, base_url=base_url)
+        if run is None:
+            raise AgentError(f"Task {task_id} was concurrently claimed by another agent.", "conflict")
         self._commit()
         refreshed = get_task(self.db, run.task_id)
         if refreshed is not None:

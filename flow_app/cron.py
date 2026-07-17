@@ -13,7 +13,7 @@ def cron_string_matches(expr: str, now: datetime) -> bool:
     """
     parts = expr.strip().split()
     if len(parts) != 5:
-        return True
+        return False  # fail closed on malformed expressions
     minute, hour, day_of_month, month, day_of_week = parts
     # Convert Python weekday (Mon=0..Sun=6) to cron weekday (Sun=0..Sat=6).
     cron_dow = (now.weekday() + 1) % 7
@@ -36,6 +36,25 @@ def cron_field_matches(expression: object, value: int) -> bool:
         except ValueError:
             return False
         return divisor > 0 and value % divisor == 0
+    # Range support: e.g. "1-5" matches values in [1, 5].
+    if "-" in text and not text.startswith("-"):
+        parts = text.split("-")
+        if len(parts) == 2:
+            try:
+                low, high = int(parts[0]), int(parts[1])
+            except ValueError:
+                return False
+            return low <= value <= high
+        return False
+    # Comma-separated list: e.g. "1,3,5"
+    if "," in text:
+        for sub in text.split(","):
+            sub = sub.strip()
+            if not sub:
+                continue
+            if cron_field_matches(sub, value):
+                return True
+        return False
     try:
         return value == int(text)
     except ValueError:
@@ -105,6 +124,32 @@ def _validate_cron_field(field: str, name: str, minimum: int, maximum: int) -> s
             return f"Invalid cron {name} field: {field!r}."
         if divisor <= 0:
             return f"Invalid cron {name} field: step must be greater than 0."
+        return None
+    # Range: e.g. "1-5"
+    if "-" in field and not field.startswith("-"):
+        parts = field.split("-")
+        if len(parts) == 2:
+            try:
+                low, high = int(parts[0]), int(parts[1])
+            except ValueError:
+                return f"Invalid cron {name} field: {field!r}."
+            if not (minimum <= low <= maximum):
+                return f"Invalid cron {name} field: range start {low} must be between {minimum} and {maximum}."
+            if not (minimum <= high <= maximum):
+                return f"Invalid cron {name} field: range end {high} must be between {minimum} and {maximum}."
+            if low > high:
+                return f"Invalid cron {name} field: range start {low} is greater than end {high}."
+            return None
+        return f"Invalid cron {name} field: {field!r}."
+    # Comma-separated list: e.g. "1,3,5"
+    if "," in field:
+        for sub in field.split(","):
+            sub = sub.strip()
+            if not sub:
+                return f"Invalid cron {name} field: empty value in list."
+            error = _validate_cron_field(sub, name, minimum, maximum)
+            if error:
+                return error
         return None
     try:
         value = int(field)

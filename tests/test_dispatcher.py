@@ -821,7 +821,8 @@ class TestAgentRunLifecycle:
             task = db.get(Task, task.id)
             assert task.assignee == "agent-a"
 
-            # Second dispatch on the same task must fail (already claimed)
+            # Second dispatch on the same task must fail — task is already
+            # claimed by a different agent (hard business rule, not a race).
             with pytest.raises(DispatchError, match="already claimed"):
                 dispatch_one(db, agent2, task, base_url="http://flow.test")
         finally:
@@ -1172,7 +1173,8 @@ class TestAtomicClaimRace:
 
     def test_two_thread_race_one_claim_wins(self, tmp_path, monkeypatch):
         """Two threads with separate sessions race to claim the same task.
-        Exactly one must win, the other must skip gracefully (no exception)."""
+        Exactly one must win, the other must skip gracefully (no exception,
+        no run created — dispatch_one returns None)."""
         import threading as _threading
 
         db = _db(tmp_path)
@@ -1207,10 +1209,7 @@ class TestAtomicClaimRace:
                 barrier.wait()
                 run = dispatch_one(session, agent, task_obj, base_url="http://flow.test")
                 session.commit()
-                results[label] = run.id
-            except DispatchError as exc:
-                session.rollback()
-                errors[label] = str(exc)
+                results[label] = run.id if run is not None else None
             except Exception as exc:
                 session.rollback()
                 errors[label] = f"{type(exc).__name__}: {exc}"
@@ -1224,12 +1223,14 @@ class TestAtomicClaimRace:
         t1.join(timeout=10)
         t2.join(timeout=10)
 
+        # Exactly one winner
         winners = [k for k, v in results.items() if v is not None]
         assert len(winners) == 1, f"Expected 1 winner, got {winners}. Results: {results}, Errors: {errors}"
+
+        # Loser gets no exception and no run (graceful no-op)
         loser = [k for k in results if results[k] is None][0]
-        assert errors[loser] is not None
-        assert "concurrently" in errors[loser].lower() or "already claimed" in errors[loser].lower(), \
-            f"Loser should get a graceful message, got: {errors[loser]}"
+        assert errors[loser] is None, f"Loser should get no exception, got: {errors[loser]}"
+        assert results[loser] is None, f"Loser should get no run, got: {results[loser]}"
 
     def test_claim_version_increments(self, tmp_path, monkeypatch):
         """claim_task_atomically must increment the task version on success."""

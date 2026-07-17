@@ -131,7 +131,7 @@ def test_cron_expression_matching():
     now = datetime(2026, 5, 21, 10, 30, tzinfo=timezone.utc)
 
     assert _cron_config_matches("", now)
-    assert _cron_config_matches("{bad json", now)
+    assert not _cron_config_matches("{bad json", now)  # malformed → fail closed
     assert _cron_config_matches('{"minute":"*","hour":"*","day_of_week":"*"}', now)
     assert _cron_config_matches('{"minute":"*/5"}', now)
     assert not _cron_config_matches('{"minute":"*/7"}', now)
@@ -163,6 +163,80 @@ def test_project_eq_filter():
     assert _project_eq_filter([{"field": "project", "operator": "eq", "value": "alpha"}]) == "alpha"
     assert _project_eq_filter([{"field": "status", "value": "todo"}]) is None
     assert _project_eq_filter([]) is None
+
+
+def test_cron_config_malformed_json_fails_closed():
+    """Malformed JSON in trigger_config must fail closed (return False), not match."""
+    now = datetime(2026, 5, 21, 10, 30, tzinfo=timezone.utc)
+    assert not _cron_config_matches("{bad json", now)
+    assert not _cron_config_matches("not json at all", now)
+
+
+def test_cron_config_non_dict_fails_closed():
+    """Non-dict JSON (e.g. a list or string) must fail closed."""
+    now = datetime(2026, 5, 21, 10, 30, tzinfo=timezone.utc)
+    assert not _cron_config_matches('["list","not","dict"]', now)
+    assert not _cron_config_matches('"just a string"', now)
+
+
+def test_cron_string_non_5_field_fails_closed():
+    """A cron string without exactly 5 fields must not match (fail closed)."""
+    from flow_app.cron import cron_string_matches
+    now = datetime(2026, 5, 21, 10, 30, tzinfo=timezone.utc)
+    assert not cron_string_matches("* * *", now)  # 3 fields
+    assert not cron_string_matches("* * * * * *", now)  # 6 fields
+    assert not cron_string_matches("", now)  # empty
+    assert not cron_string_matches("garbage", now)  # 1 field
+
+
+def test_cron_range_expression_matches():
+    """Range expressions like '1-5' in cron fields must match correctly."""
+    from flow_app.cron import cron_field_matches
+    # Monday-Friday (1-5 in day_of_week)
+    assert cron_field_matches("1-5", 1)  # Monday
+    assert cron_field_matches("1-5", 3)  # Wednesday
+    assert cron_field_matches("1-5", 5)  # Friday
+    assert not cron_field_matches("1-5", 6)  # Saturday — outside range
+    assert not cron_field_matches("1-5", 0)  # Sunday — outside range
+
+
+def test_cron_comma_list_matches():
+    """Comma-separated values in cron fields must match correctly."""
+    from flow_app.cron import cron_field_matches
+    assert cron_field_matches("1,3,5", 1)
+    assert cron_field_matches("1,3,5", 3)
+    assert cron_field_matches("1,3,5", 5)
+    assert not cron_field_matches("1,3,5", 2)
+    assert not cron_field_matches("1,3,5", 4)
+
+
+def test_cron_validate_range_accepted():
+    """validate_cron_string must accept range expressions."""
+    from flow_app.cron import validate_cron_string
+    assert validate_cron_string("0 9 * * 1-5") is None  # Mon-Fri at 9am
+    assert validate_cron_string("*/5 8-17 * * *") is None  # every 5 min during 8am-5pm
+
+
+def test_cron_validate_range_rejected_out_of_bounds():
+    """validate_cron_string must reject out-of-bounds ranges."""
+    from flow_app.cron import validate_cron_string
+    assert validate_cron_string("0 9 * * 1-8") is not None  # 8 > max dow (7)
+    assert validate_cron_string("0 25 * * *") is not None  # 25 > max hour (23)
+    assert validate_cron_string("0 9 * * 5-1") is not None  # start > end
+
+
+def test_cron_validate_comma_list_accepted():
+    """validate_cron_string must accept comma-separated lists."""
+    from flow_app.cron import validate_cron_string
+    assert validate_cron_string("0 9 * * 1,3,5") is None  # Mon, Wed, Fri
+    assert validate_cron_string("0,30 9 * * *") is None  # 0 and 30 minutes
+
+
+def test_cron_validate_comma_list_rejected_bad_value():
+    """validate_cron_string must reject bad values in comma lists."""
+    from flow_app.cron import validate_cron_string
+    assert validate_cron_string("0 9 * * 1,8,5") is not None  # 8 > max dow (7)
+    assert validate_cron_string("0 9 * * 1,,5") is not None  # empty element
 
 
 def test_run_pass_dry_run_does_not_mutate(client, monkeypatch):

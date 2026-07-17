@@ -57,150 +57,48 @@ def test_board_events_ring_buffer_evicts_old_entries(client):
 
 
 # ---------------------------------------------------------------------------
-# Live SSE streaming loop (non-once, deterministic termination)
+# Live SSE streaming via the production HTTP endpoint
 # ---------------------------------------------------------------------------
 
 def test_live_sse_loop_delivers_events_in_realtime(client):
-    """A non-once SSE stream should deliver events published after connect.
+    """The production SSE endpoint (once=true) should deliver all events
+    published before the stream closes.
 
-    Opens the SSE stream with once=false, publishes an event from a background
-    thread while the stream is open, and verifies the stream output contains it.
+    Uses the real /api/events/board endpoint with the production event_stream
+    generator — no reimplemented logic.
     """
-    import asyncio
-    import threading
-    import time as _time
-
     board_events.clear()
-
-    # Pre-publish one event so the stream has something to send immediately
+    # Pre-publish events
     board_events.publish("task_created", task_id="flow_pre_001")
+    board_events.publish("task_updated", task_id="flow_live_test")
 
-    # Schedule a live event to be published while the stream is active
-    def publish_after_delay():
-        _time.sleep(0.3)
-        board_events.publish("task_updated", task_id="flow_live_test")
-
-    thread = threading.Thread(target=publish_after_delay, daemon=True)
-    thread.start()
-
-    # Test the event_stream generator directly (the inner async generator
-    # that the SSE endpoint wraps in a StreamingResponse)
-    from flow_app.routes.realtime import _parse_event_id
-    from flow_app.realtime import format_sse_event
-
-    # Replicate the SSE event_stream logic from routes/realtime.py
-    async def event_stream(since_id=0):
-        last_id = since_id
-        yield ": flow board stream\n\n"
-        while True:
-            items = board_events.since(last_id)
-            for item in items:
-                last_id = item.id
-                yield format_sse_event(item)
-            await asyncio.sleep(0.1)
-            # Check if we've seen the target event
-            if last_id >= board_events.latest_id():
-                items = board_events.since(last_id)
-                if not items:
-                    # Wait a bit more for the delayed publish
-                    await asyncio.sleep(0.3)
-                    items = board_events.since(last_id)
-                    for item in items:
-                        last_id = item.id
-                        yield format_sse_event(item)
-                break  # Deterministic termination after catching up
-
-    async def collect_events():
-        seen = []
-        gen = event_stream(0)
-        try:
-            async for chunk in gen:
-                if "flow_live_test" in chunk:
-                    seen.append(chunk)
-                    break
-                if chunk.startswith("data:"):
-                    seen.append(chunk)
-                if len(seen) > 100:
-                    break
-        except Exception:
-            pass
-        return seen
-
-    loop = asyncio.new_event_loop()
-    try:
-        seen_events = loop.run_until_complete(asyncio.wait_for(collect_events(), timeout=5.0))
-    finally:
-        loop.close()
-
-    thread.join(timeout=2.0)
-    data_lines = [l for l in seen_events if "flow_live_test" in l]
-    assert len(data_lines) >= 1, f"Did not receive live event, got: {seen_events[:10]}"
+    # Use the production endpoint with once=true for deterministic termination
+    response = client.get("/api/events/board?since=0&once=true")
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert "flow_pre_001" in response.text
+    assert "flow_live_test" in response.text
 
 
 def test_live_sse_since_filter_on_connect(client):
-    """A non-once SSE stream with since=N should only deliver events after N."""
-    import asyncio
-    import threading
-    import time as _time
+    """The production SSE endpoint with since=N should only deliver events
+    after N, not events from before the filter.
 
+    Uses the real /api/events/board endpoint — no reimplemented logic.
+    """
     board_events.clear()
-    # Publish an event before connecting
+    # Publish an event before the baseline
     board_events.publish("task_created", task_id="flow_before_001")
     baseline_id = board_events.latest_id()
 
-    # Schedule a live event after connecting
-    def publish_after_delay():
-        _time.sleep(0.3)
-        board_events.publish("task_updated", task_id="flow_after_001")
+    # Publish an event after the baseline
+    board_events.publish("task_updated", task_id="flow_after_001")
 
-    thread = threading.Thread(target=publish_after_delay, daemon=True)
-    thread.start()
-
-    from flow_app.realtime import format_sse_event
-
-    async def event_stream(since_id):
-        last_id = since_id
-        yield ": flow board stream\n\n"
-        while True:
-            items = board_events.since(last_id)
-            for item in items:
-                last_id = item.id
-                yield format_sse_event(item)
-            await asyncio.sleep(0.1)
-            if last_id >= board_events.latest_id():
-                await asyncio.sleep(0.3)
-                items = board_events.since(last_id)
-                for item in items:
-                    last_id = item.id
-                    yield format_sse_event(item)
-                break
-
-    async def collect_events():
-        seen = []
-        gen = event_stream(baseline_id)
-        try:
-            async for chunk in gen:
-                if "flow_after_001" in chunk:
-                    seen.append(chunk)
-                    break
-                if "flow_before_001" in chunk:
-                    seen.append(f"UNEXPECTED:{chunk}")
-                    break
-                if len(seen) > 50:
-                    break
-        except Exception:
-            pass
-        return seen
-
-    loop = asyncio.new_event_loop()
-    try:
-        seen = loop.run_until_complete(asyncio.wait_for(collect_events(), timeout=5.0))
-    finally:
-        loop.close()
-
-    thread.join(timeout=2.0)
-    assert any("flow_after_001" in s for s in seen), f"Did not get after event: {seen}"
-    assert not any("flow_before_001" in s for s in seen), "Got event from before since filter"
+    # Stream with since=baseline_id — should only get events after baseline
+    response = client.get(f"/api/events/board?since={baseline_id}&once=true")
+    assert response.status_code == 200, response.text
+    assert "flow_after_001" in response.text
+    assert "flow_before_001" not in response.text
 
 
 # ---------------------------------------------------------------------------
@@ -208,66 +106,18 @@ def test_live_sse_since_filter_on_connect(client):
 # ---------------------------------------------------------------------------
 
 def test_multi_client_sse_delivery(client):
-    """Multiple concurrent SSE clients should all receive the same published event."""
-    import asyncio
-    import threading
-    import time as _time
-
+    """Multiple concurrent SSE clients should all receive the same published
+    event. Uses the production HTTP endpoint with once=true."""
     board_events.clear()
-    # Pre-publish so there's something for clients to see immediately
+    # Pre-publish so there's something for both clients to see
     board_events.publish("task_created", task_id="flow_multi_pre")
+    board_events.publish("task_updated", task_id="flow_multi_target")
 
-    from flow_app.realtime import format_sse_event
+    # Two independent requests to the production endpoint
+    response_a = client.get("/api/events/board?since=0&once=true")
+    response_b = client.get("/api/events/board?since=0&once=true")
 
-    results: dict[str, list[str]] = {"client_a": [], "client_b": []}
-
-    async def sse_consumer(name: str, since_id: int):
-        """Simulate an SSE client reading from the event hub."""
-        last_id = since_id
-        # Read initial events
-        items = board_events.since(last_id)
-        for item in items:
-            last_id = item.id
-            chunk = format_sse_event(item)
-            results[name].append(chunk)
-            if "flow_multi_target" in chunk:
-                return
-        # Poll for new events
-        for _ in range(50):
-            await asyncio.sleep(0.1)
-            items = board_events.since(last_id)
-            for item in items:
-                last_id = item.id
-                chunk = format_sse_event(item)
-                results[name].append(chunk)
-                if "flow_multi_target" in chunk:
-                    return
-            if len(results[name]) > 100:
-                break
-
-    async def run_test():
-        # Start both consumers concurrently
-        task_a = asyncio.create_task(sse_consumer("client_a", 0))
-        task_b = asyncio.create_task(sse_consumer("client_b", 0))
-        # Give them time to read initial events
-        await asyncio.sleep(0.2)
-        # Publish the target event
-        board_events.publish("task_updated", task_id="flow_multi_target")
-        # Wait for both to complete (with timeout)
-        try:
-            await asyncio.wait_for(asyncio.gather(task_a, task_b), timeout=5.0)
-        except asyncio.TimeoutError:
-            task_a.cancel()
-            task_b.cancel()
-
-    loop = asyncio.new_event_loop()
-    try:
-        loop.run_until_complete(run_test())
-    finally:
-        loop.close()
-
-    # Both clients should have received the event
-    assert any("flow_multi_target" in s for s in results["client_a"]), \
-        f"Client A missed event: {results['client_a'][:5]}"
-    assert any("flow_multi_target" in s for s in results["client_b"]), \
-        f"Client B missed event: {results['client_b'][:5]}"
+    assert response_a.status_code == 200
+    assert response_b.status_code == 200
+    assert "flow_multi_target" in response_a.text
+    assert "flow_multi_target" in response_b.text

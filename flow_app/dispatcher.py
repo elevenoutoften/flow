@@ -79,7 +79,12 @@ def dispatch_one(
     api_key: str | None = None,
     base_url: str | None = None,
     session_factory: Callable[[], Session] | None = None,
-) -> AgentRun:
+) -> AgentRun | None:
+    """Dispatch *agent* to *task*.
+
+    Returns the created ``AgentRun`` on success, or ``None`` if the task was
+    concurrently claimed by another agent (graceful no-op loser).
+    """
     if not agent.enabled:
         raise DispatchError(f"Agent is disabled: {agent.name}")
     if task.human_required:
@@ -122,7 +127,10 @@ def dispatch_one(
     expected_version = task.version
     target_status = "doing" if task.status in {"backlog", "todo"} else task.status
     if not claim_task_atomically(session, task.id, expected_version, agent.name, target_status):
-        raise DispatchError(f"Task {task.id} was concurrently claimed by another agent.")
+        # Graceful no-op: another agent won the race.  Return None so the
+        # caller can continue without raising an exception.
+        logger.info("Task %s was concurrently claimed by another agent; skipping.", task.id)
+        return None
     task = get_task(session, task.id)
 
     run = create_agent_run(session, agent_id=agent.id, task_id=task.id, status="running")
@@ -357,9 +365,9 @@ def dispatch_loop(
     while True:
         task = _next_capable_task(session, agent)
         if task is not None:
-            dispatched.append(
-                dispatch_one(session, agent, task, api_key=api_key, base_url=base_url, session_factory=session_factory)
-            )
+            run = dispatch_one(session, agent, task, api_key=api_key, base_url=base_url, session_factory=session_factory)
+            if run is not None:
+                dispatched.append(run)
             session.commit()
         if not continuous:
             return dispatched

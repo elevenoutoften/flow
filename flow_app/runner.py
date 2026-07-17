@@ -223,6 +223,9 @@ def _run_dispatch(config: RunnerConfig, session: Session, session_factory: Calla
         except DispatchError as exc:
             logger.info("Skipping dispatch for agent %s: %s", agent.name, exc)
             continue
+        if run is None:
+            logger.info("Task %s was concurrently claimed; skipping dispatch for agent %s.", task.id, agent.name)
+            continue
         dispatched.append(task)
         logger.info("Dispatched task %s to agent %s as run %s", task.id, agent.name, run.id)
     return dispatched
@@ -446,9 +449,9 @@ def _cron_config_matches(trigger_config: str | None, now: datetime | None = None
     try:
         config = json.loads(trigger_config)
     except (json.JSONDecodeError, TypeError):
-        return True
+        return False  # fail closed on malformed JSON
     if not isinstance(config, dict):
-        return True
+        return False  # fail closed on non-dict config
     cron_expr = config.get("cron")
     if cron_expr:
         return _cron_string_matches(str(cron_expr), now)

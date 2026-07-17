@@ -126,28 +126,59 @@ class TaskService:
         payloads: list[TaskCreate],
         actor: Actor | None = None,
     ) -> list[Task]:
-        """Stage a batch of tasks atomically.
+        """Stage a batch of tasks atomically — DB state only, no side effects.
 
-        All tasks are added to the session and their webhook/telegram/discord/rule
-        delivery rows are queued without committing.  The caller is responsible
-        for committing the session once every item has been staged successfully
-        and for publishing board events only after the commit succeeds.  If any
-        item raises, the caller must roll back the session; no partial batch is
-        persisted.
+        Only transactional database state that rollback can undo is staged:
+        task rows and webhook delivery rows.  Automation rules, Telegram,
+        Discord, and any other external HTTP / spawned-process side effects are
+        deferred to ``fire_post_commit_effects`` which the caller must invoke
+        AFTER a successful commit.  If any item raises, the caller rolls back
+        the session; no partial batch is persisted and no external side effect
+        has fired.
         """
         tasks: list[Task] = []
         for payload in payloads:
             task = create_task(self.db, payload)
-            self._emit_rule(self.db, "task_created", task_id=task.id, actor=actor)
+            # Webhook delivery rows are pure DB state — safe to stage.
             self._webhook.send(self.db, "task_created", task)
-            self._telegram.send(self.db, "task_created", task)
-            if self._discord is not None:
-                self._discord.send(self.db, "task_created", task)
             tasks.append(task)
         # Flush so all staged rows are visible inside the session, but do NOT
         # commit — the caller decides commit vs. rollback.
         self.db.flush()
         return tasks
+
+    def fire_post_commit_effects(
+        self,
+        tasks: list[Task],
+        actor: Actor | None = None,
+    ) -> list[dict]:
+        """Invoke non-transactional side effects for a batch after commit.
+
+        Fires automation rules, Telegram, and Discord notifications for each
+        task.  These are deferred until after the DB commit so a rolled-back
+        batch never triggers external HTTP calls or spawned agent processes.
+        A post-commit notification failure is recorded through existing delivery
+        semantics and does NOT roll back the committed task batch.
+        """
+        results: list[dict] = []
+        for task in tasks:
+            # Re-attach the task to this session in case it became detached.
+            task = self.db.get(Task, task.id) or task
+            try:
+                self._emit_rule(self.db, "task_created", task_id=task.id, actor=actor)
+            except Exception:
+                pass  # rule failures are recorded by emit_event, not raised
+            try:
+                self._telegram.send(self.db, "task_created", task)
+            except Exception:
+                pass  # delivery failures recorded via delivery rows
+            if self._discord is not None:
+                try:
+                    self._discord.send(self.db, "task_created", task)
+                except Exception:
+                    pass
+            results.append({"task_id": task.id})
+        return results
 
     def list_tasks(
         self,

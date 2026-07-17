@@ -149,9 +149,10 @@ def api_commit_markdown_import(
             )
             stage_indices.append(index)
 
-        # Stage every new task in one transaction.  create_tasks_batch flushes
-        # webhook/telegram/discord/rule delivery rows alongside the task rows
-        # but does NOT commit — the commit below is the single atomic boundary.
+        # Stage every new task in one transaction.  create_tasks_batch stages
+        # only DB state (task rows + webhook delivery rows) — no external HTTP,
+        # no automation actions, no spawned agents.  Side effects are deferred
+        # to fire_post_commit_effects after the commit succeeds.
         try:
             created_tasks = svc.create_tasks_batch(stage_payloads, actor=actor)
         except Exception as exc:
@@ -161,8 +162,14 @@ def api_commit_markdown_import(
                 detail=f"Import failed and was rolled back: {exc}",
             ) from exc
         # Single commit for the entire batch.  If this fails, every staged row
-        # (tasks + delivery outbox) is rolled back together.
+        # (tasks + webhook delivery outbox) is rolled back together.
         _commit(db)
+
+        # Fire non-transactional side effects AFTER the commit succeeds so a
+        # rolled-back batch never triggers external HTTP or spawned processes.
+        # A post-commit notification failure is recorded through delivery
+        # semantics and does NOT roll back the committed task batch.
+        svc.fire_post_commit_effects(created_tasks, actor=actor)
 
         # Board events are in-memory (BoardEventHub, not the DB).  Publish them
         # only AFTER the commit succeeds so a rolled-back batch publishes nothing.

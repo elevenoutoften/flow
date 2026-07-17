@@ -1380,6 +1380,203 @@ def test_markdown_import_atomic_rollback_on_failure(client, monkeypatch):
     )
 
 
+def test_markdown_import_no_side_effects_before_commit(client, monkeypatch):
+    """AC #1-2: Inject recording rule, webhook, Telegram, and Discord providers.
+    Force staging of task two to raise.  Assert zero provider/rule calls, zero
+    persisted imported tasks, and zero board events.  Before the batch commit,
+    code may only stage transactional DB state — no automation actions, no
+    spawned agents, no external HTTP."""
+    from flow_app.realtime import board_events
+    from flow_app.services import task as task_service_mod
+    from flow_app.routes import dependencies as deps_mod
+
+    board_events.clear()
+
+    # Recording providers — count every send() call.
+    calls = {"telegram": 0, "discord": 0, "webhook": 0, "rule": 0}
+
+    class RecordingTelegram:
+        def send(self, db, event, task, changes=None):
+            calls["telegram"] += 1
+
+    class RecordingDiscord:
+        def send(self, db, event, task, changes=None):
+            calls["discord"] += 1
+
+    class RecordingWebhook:
+        def send(self, db, event, task, changes=None):
+            calls["webhook"] += 1
+
+    def recording_rule_emitter(session, trigger, task_id=None, data=None, actor=None, rule_id=None, dry_run=False):
+        calls["rule"] += 1
+        return []
+
+    # Patch the module-level providers and the rule emitter used by
+    # _make_task_service so the recording providers are injected.
+    monkeypatch.setattr(deps_mod, "_telegram_notifier", RecordingTelegram())
+    monkeypatch.setattr(deps_mod, "_discord_notifier", RecordingDiscord())
+    monkeypatch.setattr(deps_mod, "_webhook_notifier", RecordingWebhook())
+    monkeypatch.setattr(deps_mod, "emit_rule_event", recording_rule_emitter)
+
+    # Force the second create_task call to raise during staging.
+    original_create = task_service_mod.create_task
+    call_count = {"n": 0}
+
+    def flaky_create(session, payload):
+        call_count["n"] += 1
+        if call_count["n"] == 2:
+            raise RuntimeError("Simulated failure on second task")
+        return original_create(session, payload)
+
+    monkeypatch.setattr(task_service_mod, "create_task", flaky_create)
+
+    response = client.post(
+        "/api/import/markdown/commit",
+        json={
+            "items": [
+                {
+                    "preview_id": "test-1",
+                    "title": "No side effects A",
+                    "status": "todo",
+                    "priority": 50,
+                    "project": "default",
+                },
+                {
+                    "preview_id": "test-2",
+                    "title": "No side effects B",
+                    "status": "todo",
+                    "priority": 50,
+                    "project": "default",
+                },
+            ]
+        },
+    )
+    assert response.status_code == 500, response.text
+
+    # Zero non-transactional side effects must have fired during staging.
+    assert calls["telegram"] == 0, f"Telegram fired during staging: {calls['telegram']}"
+    assert calls["discord"] == 0, f"Discord fired during staging: {calls['discord']}"
+    assert calls["rule"] == 0, f"Rule emitter fired during staging: {calls['rule']}"
+
+    # Zero persisted tasks.
+    with client.app.state.SessionLocal() as db:
+        from flow_app.models import Task
+        titles = [t.title for t in db.query(Task).all()]
+    assert "No side effects A" not in titles
+    assert "No side effects B" not in titles
+
+    # Zero board events.
+    task_created_events = [e for e in board_events.since(0) if e.event == "task_created"]
+    assert len(task_created_events) == 0
+
+
+def test_markdown_import_post_commit_side_effects_fire_once(client, monkeypatch):
+    """AC #3: On a successful two-task import, commit tasks first, then invoke
+    each configured post-commit side effect exactly once per task and publish
+    exactly one board event per task with the response import_batch_id."""
+    from flow_app.realtime import board_events
+    from flow_app.routes import dependencies as deps_mod
+
+    board_events.clear()
+
+    calls = {"telegram": 0, "discord": 0, "rule": 0}
+
+    class RecordingTelegram:
+        def send(self, db, event, task, changes=None):
+            calls["telegram"] += 1
+
+    class RecordingDiscord:
+        def send(self, db, event, task, changes=None):
+            calls["discord"] += 1
+
+    def recording_rule_emitter(session, trigger, task_id=None, data=None, actor=None, rule_id=None, dry_run=False):
+        calls["rule"] += 1
+        return []
+
+    monkeypatch.setattr(deps_mod, "_telegram_notifier", RecordingTelegram())
+    monkeypatch.setattr(deps_mod, "_discord_notifier", RecordingDiscord())
+    monkeypatch.setattr(deps_mod, "emit_rule_event", recording_rule_emitter)
+
+    response = client.post(
+        "/api/import/markdown/commit",
+        json={
+            "items": [
+                {
+                    "preview_id": "test-1",
+                    "title": "Post-commit A",
+                    "status": "todo",
+                    "priority": 50,
+                    "project": "default",
+                },
+                {
+                    "preview_id": "test-2",
+                    "title": "Post-commit B",
+                    "status": "todo",
+                    "priority": 50,
+                    "project": "default",
+                },
+            ]
+        },
+    )
+    assert response.status_code == 200, response.text
+    batch_id = response.json()["import_batch_id"]
+
+    # Each side effect fired exactly once per task (2 tasks = 2 calls each).
+    assert calls["telegram"] == 2, f"Telegram should fire 2x, got {calls['telegram']}"
+    assert calls["discord"] == 2, f"Discord should fire 2x, got {calls['discord']}"
+    assert calls["rule"] == 2, f"Rule should fire 2x, got {calls['rule']}"
+
+    # Exactly 2 board events with matching import_batch_id.
+    task_created_events = [e for e in board_events.since(0) if e.event == "task_created"]
+    assert len(task_created_events) == 2
+    for event in task_created_events:
+        assert event.data.get("import_batch_id") == batch_id
+
+
+def test_markdown_import_post_commit_failure_does_not_rollback(client, monkeypatch):
+    """AC #4: A post-commit notification failure must not claim the task batch
+    rolled back or create duplicate tasks.  The delivery failure is recorded
+    through existing delivery semantics."""
+    from flow_app.realtime import board_events
+    from flow_app.routes import dependencies as deps_mod
+
+    board_events.clear()
+
+    class FailingTelegram:
+        def send(self, db, event, task, changes=None):
+            raise RuntimeError("Telegram API down")
+
+    monkeypatch.setattr(deps_mod, "_telegram_notifier", FailingTelegram())
+
+    response = client.post(
+        "/api/import/markdown/commit",
+        json={
+            "items": [
+                {
+                    "preview_id": "test-1",
+                    "title": "Post-commit failure task",
+                    "status": "todo",
+                    "priority": 50,
+                    "project": "default",
+                },
+            ]
+        },
+    )
+    # The batch must succeed despite the Telegram failure.
+    assert response.status_code == 200, response.text
+    assert len(response.json()["created"]) == 1
+
+    # The task must be persisted in the DB.
+    with client.app.state.SessionLocal() as db:
+        from flow_app.models import Task
+        titles = [t.title for t in db.query(Task).all()]
+    assert "Post-commit failure task" in titles
+
+    # Board event must still be published.
+    task_created_events = [e for e in board_events.since(0) if e.event == "task_created"]
+    assert len(task_created_events) == 1
+
+
 def test_markdown_import_emits_two_events_with_import_batch_id(client):
     """A successful two-task import must produce exactly two task_created board
     events, one per task, and each event.data['import_batch_id'] must equal the

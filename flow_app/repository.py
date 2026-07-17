@@ -822,13 +822,20 @@ def serialize_automation_rule(rule: AutomationRule) -> AutomationRuleResponse:
 
 
 def _is_rule_broken(rule: AutomationRule) -> bool:
-    """Check if a rule has malformed conditions or actions JSON."""
+    """Check if a rule has malformed conditions or actions JSON.
+
+    A rule is broken if:
+    - conditions/actions JSON fails to parse
+    - conditions/actions JSON is valid but not a list (wrong shape)
+    """
     for field in (rule.conditions, rule.actions):
         if not field:
             continue
         try:
-            json.loads(field)
+            parsed = json.loads(field)
         except (json.JSONDecodeError, TypeError):
+            return True
+        if not isinstance(parsed, list):
             return True
     return False
 

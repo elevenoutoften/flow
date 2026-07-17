@@ -256,11 +256,17 @@ def match_rules(
         except (json.JSONDecodeError, TypeError):
             _logger.warning("Rule %s (%s) has malformed conditions JSON, skipping.", rule.id, rule.name)
             continue
+        if not isinstance(conditions, list):
+            _logger.warning("Rule %s (%s) has wrong-shape conditions (not a list), skipping.", rule.id, rule.name)
+            continue
         if evaluate_conditions(conditions, task_data):
             try:
                 actions = json.loads(rule.actions) if rule.actions else []
             except (json.JSONDecodeError, TypeError):
                 _logger.warning("Rule %s (%s) has malformed actions JSON, skipping.", rule.id, rule.name)
+                continue
+            if not isinstance(actions, list):
+                _logger.warning("Rule %s (%s) has wrong-shape actions (not a list), skipping.", rule.id, rule.name)
                 continue
             results.append(
                 MatchResult(

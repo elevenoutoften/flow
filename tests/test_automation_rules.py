@@ -1231,3 +1231,180 @@ def test_markdown_import_fires_webhook_delivery(client):
     deliveries = client.get(f"/api/webhooks/{webhook.json()['id']}/deliveries").json()["items"]
     assert len(deliveries) >= 1
     assert deliveries[0]["event"] == "task_created"
+
+
+def test_markdown_import_no_duplicate_board_events(client):
+    """Markdown import must emit exactly one task_created board event per task,
+    not two (svc.create_task already emits, the route must not emit again)."""
+    from flow_app.realtime import board_events
+
+    board_events.clear()
+    response = client.post(
+        "/api/import/markdown/commit",
+        json={
+            "items": [
+                {
+                    "preview_id": "test-1",
+                    "title": "No dup events",
+                    "status": "todo",
+                    "priority": 50,
+                    "project": "default",
+                }
+            ]
+        },
+    )
+    assert response.status_code == 200, response.text
+
+    task_created_events = [e for e in board_events.since(0) if e.event == "task_created"]
+    assert len(task_created_events) == 1, (
+        f"Expected exactly 1 task_created event, got {len(task_created_events)}"
+    )
+
+
+def test_true_concurrent_cron_exactly_once(client, monkeypatch):
+    """Two threads call _run_cron_rules simultaneously — atomic dedupe ensures
+    exactly one fires.  This is a real threaded race, not a sequential simulation."""
+    import threading
+
+    from flow_app.runner import _run_cron_rules
+
+    now = datetime(2026, 5, 25, 14, 30, 15)
+    monkeypatch.setattr("flow_app.runner.utcnow", lambda: now)
+    create_rule(
+        client,
+        name="Threaded concurrent cron",
+        trigger="cron",
+        trigger_config=json.dumps({"cron": "* * * * *"}),
+        conditions="[]",
+        actions=json.dumps([]),
+    )
+
+    results = {"a": None, "b": None}
+    barrier = threading.Barrier(2)
+    errors = {"a": None, "b": None}
+
+    def run_cron(label):
+        session = client.app.state.SessionLocal()
+        try:
+            barrier.wait(timeout=5)
+            count = _run_cron_rules(session, dry_run=False)
+            session.commit()
+            results[label] = count
+        except Exception as exc:
+            session.rollback()
+            errors[label] = str(exc)
+        finally:
+            session.close()
+
+    t1 = threading.Thread(target=run_cron, args=("a",))
+    t2 = threading.Thread(target=run_cron, args=("b",))
+    t1.start()
+    t2.start()
+    t1.join(timeout=10)
+    t2.join(timeout=10)
+
+    total_fired = sum(v or 0 for v in results.values())
+    assert total_fired == 1, (
+        f"Expected exactly 1 cron fire across both threads, got {total_fired}. "
+        f"Results: {results}, Errors: {errors}"
+    )
+
+
+def test_wrong_shape_conditions_flagged_broken(client):
+    """A rule with valid JSON but wrong-shape conditions (dict instead of list)
+    must be flagged as broken, not silently matched or crash."""
+    from flow_app.models import AutomationRule
+
+    now = utcnow()
+    with client.app.state.SessionLocal() as db:
+        rule = AutomationRule(
+            id="rule_wrong_shape_cond",
+            name="Wrong-shape conditions",
+            description="",
+            enabled=1,
+            priority=50,
+            trigger="task_created",
+            trigger_config="",
+            conditions=json.dumps({"field": "priority", "operator": "gte", "value": 70}),  # dict, not list
+            actions=json.dumps([{"type": "notify", "channel": "ops"}]),
+            last_run_at=None,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(rule)
+        db.commit()
+        rule_id = rule.id
+
+    # The rule serializer should report broken=True
+    fetched = client.get(f"/api/automation-rules/{rule_id}").json()
+    assert fetched["broken"] is True, (
+        f"Wrong-shape conditions should be broken, got broken={fetched['broken']}"
+    )
+
+
+def test_wrong_shape_actions_flagged_broken(client):
+    """A rule with valid JSON but wrong-shape actions (string instead of list)
+    must be flagged as broken."""
+    from flow_app.models import AutomationRule
+
+    now = utcnow()
+    with client.app.state.SessionLocal() as db:
+        rule = AutomationRule(
+            id="rule_wrong_shape_actions",
+            name="Wrong-shape actions",
+            description="",
+            enabled=1,
+            priority=50,
+            trigger="task_created",
+            trigger_config="",
+            conditions=json.dumps([]),
+            actions=json.dumps("notify"),  # string, not list
+            last_run_at=None,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(rule)
+        db.commit()
+        rule_id = rule.id
+
+    fetched = client.get(f"/api/automation-rules/{rule_id}").json()
+    assert fetched["broken"] is True, (
+        f"Wrong-shape actions should be broken, got broken={fetched['broken']}"
+    )
+
+
+def test_wrong_shape_rule_skipped_in_match(client):
+    """A wrong-shape rule (valid JSON, not a list) must be skipped during
+    match_rules, not crash or silently match."""
+    from flow_app.models import AutomationRule
+    from flow_app.rules_engine import match_rules
+
+    now = utcnow()
+    with client.app.state.SessionLocal() as db:
+        rule = AutomationRule(
+            id="rule_wrong_shape_match",
+            name="Wrong-shape match skip",
+            description="",
+            enabled=1,
+            priority=50,
+            trigger="task_created",
+            trigger_config="",
+            conditions=json.dumps({"field": "priority"}),  # dict, not list
+            actions=json.dumps([{"type": "notify", "channel": "ops"}]),
+            last_run_at=None,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(rule)
+        db.commit()
+
+    # match_rules should return empty — the wrong-shape rule is skipped
+    results = match_rules(
+        client.app.state.SessionLocal(),
+        trigger="task_created",
+        task_id=None,
+        data={"priority": 80, "project": "default"},
+    )
+    assert results == [], (
+        f"Wrong-shape rule should be skipped, got matches: {results}"
+    )

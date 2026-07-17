@@ -147,9 +147,8 @@ def api_commit_markdown_import(
             created_tasks.append(task)
             created.append(serialize_task(task))
 
-        # svc.create_task already commits and emits events per task.
-        for task in created_tasks:
-            publish_board_event("task_created", task, import_batch_id=batch_id)
+        # svc.create_task already commits and emits board events per task.
+        # No extra publish_board_event needed — it would duplicate the event.
         _commit(db)
         return MarkdownImportCommitResponse(import_batch_id=batch_id, created=created, skipped=skipped)
 

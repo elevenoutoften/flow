@@ -121,3 +121,169 @@ def test_multi_client_sse_delivery(client):
     assert response_b.status_code == 200
     assert "flow_multi_target" in response_a.text
     assert "flow_multi_target" in response_b.text
+
+
+# ---------------------------------------------------------------------------
+# Real concurrent non-once SSE lifecycle (QA-01 final)
+# ---------------------------------------------------------------------------
+
+def test_concurrent_non_once_sse_lifecycle(tmp_path):
+    """Exercise the production /api/events/board route with once=false (default).
+
+    Two genuinely concurrent stream consumers are started and synchronized
+    before a new board event is published.  Both must receive that
+    post-connection event in order.  One client is then resumed using
+    Last-Event-ID/since and must receive later events once with no duplicate
+    earlier event.  Both consumers are then disconnected deterministically and
+    must terminate within a timeout.
+
+    Uses a real uvicorn server on a random port — ASGITransport buffers the
+    entire response body so it cannot exercise the non-once infinite stream.
+    """
+    import asyncio
+    import httpx
+    import socket
+    import threading
+    import uvicorn
+    from flow_app.main import create_app
+    from flow_app.realtime import board_events
+
+    # Pick a free port.
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+
+    db_url = f"sqlite:///{tmp_path / 'flow_sse.sqlite'}"
+    app = create_app(
+        db_url,
+        trusted_headers=True,
+        session_secret="test-secret-for-sse",
+    )
+
+    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
+    server = uvicorn.Server(config)
+
+    server_thread = threading.Thread(target=server.run, daemon=True)
+    server_thread.start()
+
+    # Wait for the server to be ready.
+    import time
+    for _ in range(50):
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+                break
+        except (ConnectionRefusedError, OSError):
+            time.sleep(0.1)
+
+    try:
+        asyncio.run(_sse_lifecycle_async(port))
+    finally:
+        server.should_exit = True
+        server_thread.join(timeout=5)
+
+
+async def _sse_lifecycle_async(port: int):
+    """Async body: two concurrent non-once SSE consumers, post-connect event,
+    resume with since, deterministic disconnect."""
+    import asyncio
+    import httpx
+    from flow_app.realtime import board_events
+
+    board_events.clear()
+    base = f"http://127.0.0.1:{port}"
+    headers = {"X-Axis-Admin": "1", "X-Axis-User": "test-sse"}
+
+    async with httpx.AsyncClient(base_url=base) as ac:
+        consumer_states: dict[str, dict] = {
+            "a": {"chunks": [], "connected": asyncio.Event(), "event_ids": []},
+            "b": {"chunks": [], "connected": asyncio.Event(), "event_ids": []},
+        }
+        stop_flags: dict[str, asyncio.Event] = {
+            "a": asyncio.Event(),
+            "b": asyncio.Event(),
+        }
+
+        async def consume(label: str):
+            state = consumer_states[label]
+            async with ac.stream("GET", "/api/events/board", headers=headers, timeout=None) as resp:
+                assert resp.status_code == 200, f"consumer {label} status {resp.status_code}"
+                buf = ""
+                async for raw in resp.aiter_text():
+                    if stop_flags[label].is_set():
+                        break
+                    buf += raw
+                    while "\n\n" in buf:
+                        record, buf = buf.split("\n\n", 1)
+                        state["chunks"].append(record)
+                        if record.startswith(":"):
+                            state["connected"].set()
+                        elif record.startswith("id: "):
+                            for line in record.split("\n"):
+                                if line.startswith("id: "):
+                                    eid = int(line[4:].strip())
+                                    state["event_ids"].append(eid)
+                                    break
+
+        task_a = asyncio.create_task(consume("a"))
+        task_b = asyncio.create_task(consume("b"))
+
+        # Wait until both consumers are connected (received the initial comment).
+        await asyncio.wait_for(
+            asyncio.gather(
+                consumer_states["a"]["connected"].wait(),
+                consumer_states["b"]["connected"].wait(),
+            ),
+            timeout=10,
+        )
+
+        # Publish a new event AFTER both are connected.
+        board_events.publish("task_created", task_id="flow_concurrent_post_connect")
+        await asyncio.sleep(1.5)  # allow the 1s poll loop to deliver.
+
+        # Both must have received the post-connection event.
+        for label in ("a", "b"):
+            chunks_joined = "\n\n".join(consumer_states[label]["chunks"])
+            assert "flow_concurrent_post_connect" in chunks_joined, (
+                f"Consumer {label} did not receive the post-connection event. "
+                f"Chunks: {consumer_states[label]['chunks']}"
+            )
+
+        assert consumer_states["a"]["event_ids"], "Consumer a has no event ids"
+        assert consumer_states["b"]["event_ids"], "Consumer b has no event ids"
+        assert consumer_states["a"]["event_ids"][-1] == consumer_states["b"]["event_ids"][-1]
+
+        # Resume consumer a using since=last_event_id.
+        resume_since = consumer_states["a"]["event_ids"][-1]
+        board_events.publish("task_updated", task_id="flow_resume_after")
+        await asyncio.sleep(0.1)
+
+        stop_flags["a"].set()
+        await asyncio.sleep(1.5)
+
+        resumed = await ac.get(
+            f"/api/events/board?since={resume_since}&once=true",
+            headers=headers,
+        )
+        assert resumed.status_code == 200, resumed.text
+        assert "flow_resume_after" in resumed.text, (
+            f"Resumed stream missing later event. Body: {resumed.text}"
+        )
+        assert "flow_concurrent_post_connect" not in resumed.text, (
+            f"Resumed stream received duplicate earlier event. Body: {resumed.text}"
+        )
+
+        # Disconnect both consumers deterministically.
+        stop_flags["a"].set()
+        stop_flags["b"].set()
+        task_a.cancel()
+        task_b.cancel()
+
+        for task, label in [(task_a, "a"), (task_b, "b")]:
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=5)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
+            assert task.done() or task.cancelled(), (
+                f"Consumer {label} task did not terminate within timeout"
+            )

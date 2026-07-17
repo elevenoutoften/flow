@@ -453,7 +453,10 @@ def _cron_config_matches(trigger_config: str | None, now: datetime | None = None
     if not isinstance(config, dict):
         return False  # fail closed on non-dict config
     cron_expr = config.get("cron")
-    if cron_expr:
+    if cron_expr is not None:
+        # The "cron" key is present — use the cron-string matcher.  An empty
+        # or whitespace-only string is not a valid 5-field expression and must
+        # fail closed (return False), not fall through to the legacy path.
         return _cron_string_matches(str(cron_expr), now)
     # Legacy format: {minute, hour, day_of_week} keys.
     # Convert Python weekday (Mon=0..Sun=6) to cron weekday (Sun=0..Sat=6)

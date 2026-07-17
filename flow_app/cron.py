@@ -62,7 +62,13 @@ def cron_field_matches(expression: object, value: int) -> bool:
 
 
 def cron_field_matches_dow(expression: object, value: int) -> bool:
-    """Match day-of-week with standard cron semantics (0=Sunday, 7 also = Sunday)."""
+    """Match day-of-week with standard cron semantics (0=Sunday, 7 also = Sunday).
+
+    Supports the same syntax as ``cron_field_matches``: ``*``, ``*/N``, single
+    integers, ranges (``1-5``), and comma-separated lists (``1,3,5``).  The value
+    7 is normalised to 0 (Sunday) so ``0 9 * * 0`` and ``0 9 * * 7`` match the
+    same day.
+    """
     text = str(expression).strip()
     if not text or text == "*":
         return True
@@ -72,6 +78,28 @@ def cron_field_matches_dow(expression: object, value: int) -> bool:
         except ValueError:
             return False
         return divisor > 0 and value % divisor == 0
+    # Range support: e.g. "1-5" matches cron weekdays in [1, 5].
+    if "-" in text and not text.startswith("-"):
+        parts = text.split("-")
+        if len(parts) == 2:
+            try:
+                low, high = int(parts[0]), int(parts[1])
+            except ValueError:
+                return False
+            # Normalise 7 → 0 so ranges that include 7 behave correctly.
+            low = 0 if low == 7 else low
+            high = 0 if high == 7 else high
+            return low <= value <= high
+        return False
+    # Comma-separated list: e.g. "1,3,5" or "0,7" (both match Sunday).
+    if "," in text:
+        for sub in text.split(","):
+            sub = sub.strip()
+            if not sub:
+                continue
+            if cron_field_matches_dow(sub, value):
+                return True
+        return False
     try:
         cron_val = int(text)
     except ValueError:

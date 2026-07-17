@@ -453,6 +453,58 @@ def test_cron_validate_accepts_day_of_week_7():
     assert error is None
 
 
+def test_cron_weekday_range_monday_through_friday():
+    """AC #1-3: validate_cron_string('0 9 * * 1-5') is None; matches Monday,
+    does NOT match Saturday.  Exercises the production cron_string_matches, not
+    a field-level helper."""
+    from flow_app.cron import cron_string_matches, validate_cron_string
+
+    assert validate_cron_string("0 9 * * 1-5") is None
+    monday = datetime(2026, 5, 25, 9, 0)  # Monday
+    saturday = datetime(2026, 5, 30, 9, 0)  # Saturday
+    assert cron_string_matches("0 9 * * 1-5", monday) is True
+    assert cron_string_matches("0 9 * * 1-5", saturday) is False
+
+
+def test_cron_weekday_comma_list_through_cron_string_matches():
+    """AC #4: Exercise day-of-week comma lists through cron_string_matches,
+    not cron_field_matches.  '1,3,5' matches Mon/Wed/Fri but not Tue/Thu."""
+    from flow_app.cron import cron_string_matches
+
+    monday = datetime(2026, 5, 25, 9, 0)    # Monday
+    tuesday = datetime(2026, 5, 26, 9, 0)   # Tuesday
+    wednesday = datetime(2026, 5, 27, 9, 0) # Wednesday
+    friday = datetime(2026, 5, 29, 9, 0)    # Friday
+    assert cron_string_matches("0 9 * * 1,3,5", monday) is True
+    assert cron_string_matches("0 9 * * 1,3,5", wednesday) is True
+    assert cron_string_matches("0 9 * * 1,3,5", friday) is True
+    assert cron_string_matches("0 9 * * 1,3,5", tuesday) is False
+
+
+def test_cron_weekday_both_zero_and_seven_match_sunday():
+    """AC #5: Assert both 0 and 7 match Sunday through cron_string_matches."""
+    from flow_app.cron import cron_string_matches
+
+    sunday = datetime(2026, 5, 31, 9, 0)  # Sunday
+    assert cron_string_matches("0 9 * * 0", sunday) is True
+    assert cron_string_matches("0 9 * * 7", sunday) is True
+
+
+def test_cron_config_matches_empty_cron_string_is_false():
+    """AC #6: trigger_config with json.dumps({'cron': ''}) must return False
+    from _cron_config_matches.  Malformed and wrong-field-count remain fail-closed."""
+    from flow_app.runner import _cron_config_matches
+
+    now = datetime(2026, 5, 25, 9, 0)
+    assert _cron_config_matches(json.dumps({"cron": ""}), now) is False
+    # Malformed JSON fail-closed
+    assert _cron_config_matches("not json", now) is False
+    # Non-dict fail-closed
+    assert _cron_config_matches(json.dumps(["cron", "0 9 * * *"]), now) is False
+    # Wrong field count fail-closed
+    assert _cron_config_matches(json.dumps({"cron": "0 9 *"}), now) is False
+
+
 def test_create_cron_rule_rejects_invalid_cron_expression(client):
     response = client.post(
         "/api/automation-rules",

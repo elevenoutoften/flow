@@ -157,27 +157,115 @@ class TaskService:
         Fires automation rules, Telegram, and Discord notifications for each
         task.  These are deferred until after the DB commit so a rolled-back
         batch never triggers external HTTP calls or spawned agent processes.
-        A post-commit notification failure is recorded through existing delivery
-        semantics and does NOT roll back the committed task batch.
+
+        Effect state (notification delivery rows, automation rule ``last_run_at``,
+        rule action results such as added notes) is persisted in an explicit
+        transaction at the end of this call.  The already-committed task batch is
+        never re-created or rolled back — only the post-commit effect rows are
+        flushed and committed here.  A post-commit notification failure is
+        recorded through existing delivery semantics (or a persisted failure
+        row when the provider raises before recording one) and does NOT roll
+        back the committed task batch.
         """
+        import logging
+
+        from flow_app.repository import create_notification_delivery, update_notification_delivery
+
+        logger = logging.getLogger("flow.services.task")
+
+        def _persist_provider_failure(provider: str, task_id: str, exc: BaseException) -> None:
+            """Record an auditable failure row when a provider raises before recording one."""
+            try:
+                delivery = create_notification_delivery(
+                    self.db,
+                    provider=provider,
+                    event="task_created",
+                    task_id=task_id,
+                    payload="",
+                    max_retries=3,
+                )
+                update_notification_delivery(
+                    self.db,
+                    delivery,
+                    status="failed",
+                    attempts=1,
+                    next_attempt_at=None,
+                    last_response_code=None,
+                    last_response_body=f"provider raised before recording: {exc}"[:2000],
+                )
+            except Exception:
+                logger.exception(
+                    "failed to persist %s failure record for task_id=%s",
+                    provider,
+                    task_id,
+                )
+
         results: list[dict] = []
         for task in tasks:
             # Re-attach the task to this session in case it became detached.
             task = self.db.get(Task, task.id) or task
+            rule_failed = False
             try:
                 self._emit_rule(self.db, "task_created", task_id=task.id, actor=actor)
-            except Exception:
-                pass  # rule failures are recorded by emit_event, not raised
+            except Exception as exc:
+                # Rule failures are normally recorded by emit_event, but an
+                # unexpected exception escaping it must not silently vanish.
+                # Log with rule + task identity so the failure is auditable.
+                rule_failed = True
+                logger.exception(
+                    "post-commit rule emission failed: task_id=%s trigger=task_created error=%s",
+                    task.id,
+                    exc,
+                )
+
+            # Telegram notification.  A provider that raises before recording a
+            # delivery row leaves no auditable trace — persist a failure row so
+            # the loss is observable instead of swallowed.
             try:
                 self._telegram.send(self.db, "task_created", task)
-            except Exception:
-                pass  # delivery failures recorded via delivery rows
+            except Exception as exc:
+                logger.exception(
+                    "post-commit telegram notification failed: task_id=%s provider=telegram error=%s",
+                    task.id,
+                    exc,
+                )
+                _persist_provider_failure("telegram", task.id, exc)
+
+            # Discord notification.  Same persisted-failure-record contract.
             if self._discord is not None:
                 try:
                     self._discord.send(self.db, "task_created", task)
-                except Exception:
-                    pass
-            results.append({"task_id": task.id})
+                except Exception as exc:
+                    logger.exception(
+                        "post-commit discord notification failed: task_id=%s provider=discord error=%s",
+                        task.id,
+                        exc,
+                    )
+                    _persist_provider_failure("discord", task.id, exc)
+
+            results.append({"task_id": task.id, "rule_failed": rule_failed})
+
+        # Persist all post-commit effect state (notification delivery rows,
+        # rule last_run_at, rule action results such as added notes) in one
+        # explicit transaction.  The already-committed task batch is not
+        # touched — only the effect rows staged above are committed here.
+        # If this commit fails, the tasks remain committed (they were persisted
+        # by the caller's earlier commit) and the effect loss is logged.
+        try:
+            self.db.flush()
+            self._commit(self.db)
+        except Exception as exc:
+            # The route's _commit raises HTTPException on failure; at the
+            # service layer we log and roll back the effect transaction only.
+            # The committed task batch is unaffected.
+            logger.exception(
+                "post-commit effect persistence failed: %s — task batch remains committed, effect rows rolled back",
+                exc,
+            )
+            try:
+                self.db.rollback()
+            except Exception:
+                pass
         return results
 
     def list_tasks(
